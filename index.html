@@ -235,6 +235,30 @@ function initMap(center) {
     if (suppressMapClick) { suppressMapClick = false; return; }
     markers.forEach(m => m.iw.close());
   });
+let mapTimer = null;
+
+const handleMapLongPress = (latLng) => {
+  const name = prompt("이 위치에 추가할 마커 이름을 입력하세요:", "새 마커");
+  if (name && name.trim()) {
+    addMarker(latLng, name.trim());
+    autoSaveToDB(); // 생성 즉시 IndexedDB에 저장
+  }
+};
+
+// 터치 이벤트 (모바일)
+kakao.maps.event.addListener(map, 'touchstart', (e) => {
+  mapTimer = setTimeout(() => handleMapLongPress(e.latLng), 600);
+});
+kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapTimer));
+kakao.maps.event.addListener(map, 'touchmove', () => clearTimeout(mapTimer));
+
+// 마우스 이벤트 (PC)
+kakao.maps.event.addListener(map, 'mousedown', (e) => {
+  if (e.nativeEvent.button === 0) { // 왼쪽 클릭만
+    mapTimer = setTimeout(() => handleMapLongPress(e.latLng), 600);
+  }
+});
+kakao.maps.event.addListener(map, 'mouseup', () => clearTimeout(mapTimer));
 }
 
 kakao.maps.load(() => {

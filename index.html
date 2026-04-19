@@ -299,7 +299,7 @@ window.addEventListener('beforeinstallprompt', e => {
 // ─── 변수 ─────────────────────────────────────────────
 let map, markers = [], polylines = [];
 let trackingOn = false, watchId = null, locationMarker = null;
-let hasData = false, suppressMapClick = false;
+let hasData = false, suppressMapClick = false, suppressLongPress = false;
 
 // ─── 지도 초기화 ──────────────────────────────────────
 function initMap(center) {
@@ -312,40 +312,25 @@ function initMap(center) {
     markers.forEach(m => m.iw.close());
   });
   // 지도 길게 누르기 → 마커 추가
-  let mapTimer = null;
-  let longPressLatLng = null;
+  // 카카오맵 API 이벤트 사용 (마커 이벤트와 충돌 방지)
+  let mapLongPressTimer = null;
 
-  const mapContainer = document.getElementById('map');
-
-  // 픽셀 좌표 → LatLng 변환
-  function pixelToLatLng(clientX, clientY) {
-    const rect = mapContainer.getBoundingClientRect();
-    const proj = map.getProjection();
-    const point = new kakao.maps.Point(clientX - rect.left, clientY - rect.top);
-    return proj.coordsFromPoint(point);
-  }
-
-  // 터치 이벤트 (모바일)
-  mapContainer.addEventListener('touchstart', (e) => {
-    const t = e.touches[0];
-    longPressLatLng = pixelToLatLng(t.clientX, t.clientY);
-    mapTimer = setTimeout(() => {
-      if (longPressLatLng) openMarkerModal(longPressLatLng);
-    }, 600);
-  }, { passive: true });
-  mapContainer.addEventListener('touchend', () => { clearTimeout(mapTimer); longPressLatLng = null; }, { passive: true });
-  mapContainer.addEventListener('touchmove', () => { clearTimeout(mapTimer); longPressLatLng = null; }, { passive: true });
-
-  // 마우스 이벤트 (PC)
-  mapContainer.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    longPressLatLng = pixelToLatLng(e.clientX, e.clientY);
-    mapTimer = setTimeout(() => {
-      if (longPressLatLng) openMarkerModal(longPressLatLng);
-    }, 600);
+  kakao.maps.event.addListener(map, 'touchstart', (mouseEvent) => {
+    if (suppressLongPress) return;
+    mapLongPressTimer = setTimeout(() => {
+      openMarkerModal(mouseEvent.latLng);
+    }, 700);
   });
-  mapContainer.addEventListener('mouseup', () => { clearTimeout(mapTimer); longPressLatLng = null; });
-  mapContainer.addEventListener('mousemove', () => { clearTimeout(mapTimer); longPressLatLng = null; });
+  kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
+  kakao.maps.event.addListener(map, 'touchmove', () => clearTimeout(mapLongPressTimer));
+  kakao.maps.event.addListener(map, 'drag', () => clearTimeout(mapLongPressTimer));
+  kakao.maps.event.addListener(map, 'mousedown', (mouseEvent) => {
+    if (suppressLongPress) return;
+    mapLongPressTimer = setTimeout(() => {
+      openMarkerModal(mouseEvent.latLng);
+    }, 700);
+  });
+  kakao.maps.event.addListener(map, 'mouseup', () => clearTimeout(mapLongPressTimer));
 }
 
 kakao.maps.load(() => {
@@ -524,8 +509,12 @@ function showDeleteHint() {
 const LONG_PRESS_MS = 600;
 function attachLongPress(target, onLongPress) {
   let timer = null, startX = 0, startY = 0;
-  function start(x, y) { startX = x; startY = y; timer = setTimeout(onLongPress, LONG_PRESS_MS); }
-  function cancel() { clearTimeout(timer); timer = null; }
+  function start(x, y) {
+    startX = x; startY = y;
+    suppressLongPress = true;  // 마커/선 위에서 누름 → 지도 롱프레스 차단
+    timer = setTimeout(() => { suppressLongPress = false; onLongPress(); }, LONG_PRESS_MS);
+  }
+  function cancel() { clearTimeout(timer); timer = null; suppressLongPress = false; }
 
   kakao.maps.event.addListener(target, 'touchstart', e => {
     const t = e.changedTouches ? e.changedTouches[0] : e;

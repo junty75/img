@@ -311,30 +311,45 @@ function initMap(center) {
     if (suppressMapClick) { suppressMapClick = false; return; }
     markers.forEach(m => m.iw.close());
   });
-let mapTimer = null;
+  // 지도 길게 누르기 → 마커 추가
+  let mapTimer = null;
+  let longPressLatLng = null;
 
-const handleMapLongPress = (latLng) => {
-  openMarkerModal(latLng);
-};
+  const mapContainer = document.getElementById('map');
 
-// 터치 이벤트 (모바일)
-kakao.maps.event.addListener(map, 'touchstart', (e) => {
-  mapTimer = setTimeout(() => handleMapLongPress(e.latLng), 600);
-});
-kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapTimer));
-kakao.maps.event.addListener(map, 'touchmove', () => clearTimeout(mapTimer));
-
-// 마우스 이벤트 (PC)
-kakao.maps.event.addListener(map, 'mousedown', (e) => {
-  if (e.nativeEvent.button === 0) { // 왼쪽 클릭만
-    mapTimer = setTimeout(() => handleMapLongPress(e.latLng), 600);
+  // 픽셀 좌표 → LatLng 변환
+  function pixelToLatLng(clientX, clientY) {
+    const rect = mapContainer.getBoundingClientRect();
+    const proj = map.getProjection();
+    const point = new kakao.maps.Point(clientX - rect.left, clientY - rect.top);
+    return proj.coordsFromPoint(point);
   }
-});
-kakao.maps.event.addListener(map, 'mouseup', () => clearTimeout(mapTimer));
+
+  // 터치 이벤트 (모바일)
+  mapContainer.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    longPressLatLng = pixelToLatLng(t.clientX, t.clientY);
+    mapTimer = setTimeout(() => {
+      if (longPressLatLng) openMarkerModal(longPressLatLng);
+    }, 600);
+  }, { passive: true });
+  mapContainer.addEventListener('touchend', () => { clearTimeout(mapTimer); longPressLatLng = null; }, { passive: true });
+  mapContainer.addEventListener('touchmove', () => { clearTimeout(mapTimer); longPressLatLng = null; }, { passive: true });
+
+  // 마우스 이벤트 (PC)
+  mapContainer.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    longPressLatLng = pixelToLatLng(e.clientX, e.clientY);
+    mapTimer = setTimeout(() => {
+      if (longPressLatLng) openMarkerModal(longPressLatLng);
+    }, 600);
+  });
+  mapContainer.addEventListener('mouseup', () => { clearTimeout(mapTimer); longPressLatLng = null; });
+  mapContainer.addEventListener('mousemove', () => { clearTimeout(mapTimer); longPressLatLng = null; });
 }
 
 kakao.maps.load(() => {
-  initMap(new kakao.maps.LatLng(35.6478, 127.5213));
+  initMap(new kakao.maps.LatLng(37.5665, 126.9780));
 
   loadKMZfromDB().then(file => {
     if (file) loadKMZ(file, true); 

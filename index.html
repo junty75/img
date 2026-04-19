@@ -311,8 +311,10 @@ function initMap(center) {
     if (suppressMapClick) { suppressMapClick = false; return; }
     markers.forEach(m => m.iw.close());
   });
-  // 지도 길게 누르기 → 마커 추가 (DOM 이벤트 + projection 좌표 변환)
+  // 지도 길게 누르기 → 마커 추가
+  // 카카오맵 내부 캔버스에 이벤트를 붙여야 터치가 정확히 잡힘
   let mapLongPressTimer = null;
+  let longPressLatLng = null;
   const mapContainer = document.getElementById('map');
 
   function getLatLngFromClient(clientX, clientY) {
@@ -321,22 +323,44 @@ function initMap(center) {
     return proj.coordsFromPoint(new kakao.maps.Point(clientX - rect.left, clientY - rect.top));
   }
 
-  mapContainer.addEventListener('touchstart', (e) => {
-    if (suppressLongPress) return;
-    const t = e.touches[0];
-    const latLng = getLatLngFromClient(t.clientX, t.clientY);
-    mapLongPressTimer = setTimeout(() => openMarkerModal(latLng), 700);
-  }, { passive: true });
-  mapContainer.addEventListener('touchend', () => clearTimeout(mapLongPressTimer), { passive: true });
-  mapContainer.addEventListener('touchmove', () => clearTimeout(mapLongPressTimer), { passive: true });
+  function cancelLongPress() {
+    clearTimeout(mapLongPressTimer);
+    mapLongPressTimer = null;
+    longPressLatLng = null;
+  }
 
+  // 캔버스 레이어(카카오맵 내부)에 직접 이벤트 등록 - capture 단계에서 잡음
+  mapContainer.addEventListener('touchstart', (e) => {
+    // 두 손가락 이상이면 핀치줌 → 무조건 취소
+    if (e.touches.length !== 1 || suppressLongPress) { cancelLongPress(); return; }
+    const t = e.touches[0];
+    longPressLatLng = getLatLngFromClient(t.clientX, t.clientY);
+    mapLongPressTimer = setTimeout(() => {
+      if (longPressLatLng) openMarkerModal(longPressLatLng);
+    }, 600);
+  }, { passive: true, capture: true });
+
+  mapContainer.addEventListener('touchend', (e) => {
+    cancelLongPress();
+  }, { passive: true, capture: true });
+
+  mapContainer.addEventListener('touchmove', (e) => {
+    cancelLongPress();
+  }, { passive: true, capture: true });
+
+  // 손가락 추가될 때(핀치 시작)도 취소
+  mapContainer.addEventListener('touchcancel', cancelLongPress, { passive: true });
+
+  // PC 마우스
   mapContainer.addEventListener('mousedown', (e) => {
     if (e.button !== 0 || suppressLongPress) return;
-    const latLng = getLatLngFromClient(e.clientX, e.clientY);
-    mapLongPressTimer = setTimeout(() => openMarkerModal(latLng), 700);
-  });
-  mapContainer.addEventListener('mouseup', () => clearTimeout(mapLongPressTimer));
-  mapContainer.addEventListener('mousemove', () => clearTimeout(mapLongPressTimer));
+    longPressLatLng = getLatLngFromClient(e.clientX, e.clientY);
+    mapLongPressTimer = setTimeout(() => {
+      if (longPressLatLng) openMarkerModal(longPressLatLng);
+    }, 600);
+  }, { capture: true });
+  mapContainer.addEventListener('mouseup', cancelLongPress, { capture: true });
+  mapContainer.addEventListener('mousemove', cancelLongPress, { capture: true });
 }
 
 kakao.maps.load(() => {

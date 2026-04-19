@@ -80,6 +80,38 @@
     #photoViewer img { max-width: 100%; max-height: 85vh; border-radius: 8px; object-fit: contain; }
     #photoViewer .pv-name { color: rgba(255,255,255,0.8); font-size: 13px; margin-top: 10px; }
 
+    /* 마커 추가 모달 */
+    #markerModal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5); z-index: 7000;
+      align-items: flex-end; justify-content: center;
+    }
+    #markerModal.show { display: flex; }
+    #markerModalBox {
+      background: white; width: 100%; max-width: 480px;
+      border-radius: 16px 16px 0 0;
+      padding: 20px 20px 32px;
+      box-shadow: 0 -4px 24px rgba(0,0,0,0.2);
+      animation: slideUp 0.22s ease;
+    }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    #markerModal h3 { margin: 0 0 14px; font-size: 16px; color: #333; }
+    #markerNameInput {
+      width: 100%; padding: 11px 14px;
+      border: 1.5px solid #ddd; border-radius: 10px;
+      font-size: 15px; outline: none;
+      transition: border-color 0.15s;
+    }
+    #markerNameInput:focus { border-color: #1a73e8; }
+    .modal-btns { display: flex; gap: 10px; margin-top: 14px; }
+    .modal-btns button {
+      flex: 1; padding: 12px; border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+    }
+    #modalCancelBtn { background: #f1f3f4; color: #555; }
+    #modalConfirmBtn { background: #1a73e8; color: white; }
+    #modalConfirmBtn:active { background: #1558b0; }
+
     /* iOS 설치 안내 배너 */
     #installBanner {
       display: none; position: fixed;
@@ -134,8 +166,52 @@
   <div class="banner-step">하단 공유 버튼(□↑) → <b>홈 화면에 추가</b> 선택</div>
 </div>
 
+<!-- 마커 추가 모달 -->
+<div id="markerModal">
+  <div id="markerModalBox">
+    <h3>📍 마커 추가</h3>
+    <input type="text" id="markerNameInput" placeholder="마커 이름을 입력하세요" maxlength="50">
+    <div class="modal-btns">
+      <button id="modalCancelBtn">취소</button>
+      <button id="modalConfirmBtn">추가</button>
+    </div>
+  </div>
+</div>
+
 <script>
-// ─── 강력한 뒤로가기 방지 로직 ───────────────────────────
+// ─── 마커 추가 모달 ───────────────────────────────────
+let pendingMarkerLatLng = null;
+
+function openMarkerModal(latLng) {
+  pendingMarkerLatLng = latLng;
+  const input = document.getElementById('markerNameInput');
+  input.value = '';
+  document.getElementById('markerModal').classList.add('show');
+  setTimeout(() => input.focus(), 100);
+}
+
+function closeMarkerModal() {
+  document.getElementById('markerModal').classList.remove('show');
+  pendingMarkerLatLng = null;
+}
+
+document.getElementById('markerModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('markerModal')) closeMarkerModal();
+});
+document.getElementById('modalCancelBtn').onclick = closeMarkerModal;
+document.getElementById('modalConfirmBtn').onclick = () => {
+  const name = document.getElementById('markerNameInput').value.trim();
+  if (!name) { document.getElementById('markerNameInput').focus(); return; }
+  if (pendingMarkerLatLng) {
+    addMarker(pendingMarkerLatLng, name);
+    autoSaveToDB();
+  }
+  closeMarkerModal();
+};
+document.getElementById('markerNameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('modalConfirmBtn').click();
+  if (e.key === 'Escape') closeMarkerModal();
+});
 function preventBack() {
   window.history.pushState(null, null, window.location.href);
 }
@@ -238,11 +314,7 @@ function initMap(center) {
 let mapTimer = null;
 
 const handleMapLongPress = (latLng) => {
-  const name = prompt("이 위치에 추가할 마커 이름을 입력하세요:", "새 마커");
-  if (name && name.trim()) {
-    addMarker(latLng, name.trim());
-    autoSaveToDB(); // 생성 즉시 IndexedDB에 저장
-  }
+  openMarkerModal(latLng);
 };
 
 // 터치 이벤트 (모바일)
@@ -262,22 +334,7 @@ kakao.maps.event.addListener(map, 'mouseup', () => clearTimeout(mapTimer));
 }
 
 kakao.maps.load(() => {
-  initMap(new kakao.maps.LatLng(37.5665, 126.9780));
-  navigator.geolocation.getCurrentPosition(
-    pos => {
-      const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
-      map.setCenter(ll);
-      if (locationMarker) locationMarker.setMap(null);
-      locationMarker = new kakao.maps.Marker({
-        map, position: ll,
-        image: new kakao.maps.MarkerImage(
-          'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png',
-          new kakao.maps.Size(24, 35)
-        )
-      });
-    },
-    () => {}, { enableHighAccuracy: true, timeout: 5000 }
-  );
+  initMap(new kakao.maps.LatLng(35.6478, 127.5213));
 
   loadKMZfromDB().then(file => {
     if (file) loadKMZ(file, true); 

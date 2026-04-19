@@ -311,26 +311,32 @@ function initMap(center) {
     if (suppressMapClick) { suppressMapClick = false; return; }
     markers.forEach(m => m.iw.close());
   });
-  // 지도 길게 누르기 → 마커 추가
-  // 카카오맵 API 이벤트 사용 (마커 이벤트와 충돌 방지)
+  // 지도 길게 누르기 → 마커 추가 (DOM 이벤트 + projection 좌표 변환)
   let mapLongPressTimer = null;
+  const mapContainer = document.getElementById('map');
 
-  kakao.maps.event.addListener(map, 'touchstart', (mouseEvent) => {
+  function getLatLngFromClient(clientX, clientY) {
+    const rect = mapContainer.getBoundingClientRect();
+    const proj = map.getProjection();
+    return proj.coordsFromPoint(new kakao.maps.Point(clientX - rect.left, clientY - rect.top));
+  }
+
+  mapContainer.addEventListener('touchstart', (e) => {
     if (suppressLongPress) return;
-    mapLongPressTimer = setTimeout(() => {
-      openMarkerModal(mouseEvent.latLng);
-    }, 700);
+    const t = e.touches[0];
+    const latLng = getLatLngFromClient(t.clientX, t.clientY);
+    mapLongPressTimer = setTimeout(() => openMarkerModal(latLng), 700);
+  }, { passive: true });
+  mapContainer.addEventListener('touchend', () => clearTimeout(mapLongPressTimer), { passive: true });
+  mapContainer.addEventListener('touchmove', () => clearTimeout(mapLongPressTimer), { passive: true });
+
+  mapContainer.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || suppressLongPress) return;
+    const latLng = getLatLngFromClient(e.clientX, e.clientY);
+    mapLongPressTimer = setTimeout(() => openMarkerModal(latLng), 700);
   });
-  kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
-  kakao.maps.event.addListener(map, 'touchmove', () => clearTimeout(mapLongPressTimer));
-  kakao.maps.event.addListener(map, 'drag', () => clearTimeout(mapLongPressTimer));
-  kakao.maps.event.addListener(map, 'mousedown', (mouseEvent) => {
-    if (suppressLongPress) return;
-    mapLongPressTimer = setTimeout(() => {
-      openMarkerModal(mouseEvent.latLng);
-    }, 700);
-  });
-  kakao.maps.event.addListener(map, 'mouseup', () => clearTimeout(mapLongPressTimer));
+  mapContainer.addEventListener('mouseup', () => clearTimeout(mapLongPressTimer));
+  mapContainer.addEventListener('mousemove', () => clearTimeout(mapLongPressTimer));
 }
 
 kakao.maps.load(() => {

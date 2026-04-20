@@ -629,26 +629,26 @@ async function loadKMZ(file, silent = false) {
   try {
     const zip = await JSZip.loadAsync(file);
 
-    // .kml 파일을 이름에 관계없이 자동 탐색 (루트 우선, 없으면 하위 폴더도 검색)
+    // .kml 파일을 이름에 관계없이 자동 탐색 (dir 속성 무관하게 파일명으로만 판단 - 모바일 호환)
     const zipFiles = Object.keys(zip.files);
-    const kmlEntry = zipFiles.find(name => !zip.files[name].dir && name.toLowerCase().endsWith('.kml') && !name.includes('/'))
-                  || zipFiles.find(name => !zip.files[name].dir && name.toLowerCase().endsWith('.kml'));
+    const kmlEntry = zipFiles.find(name => /\.kml$/i.test(name));
     const kmlFile = kmlEntry ? zip.file(kmlEntry) : null;
-    if (!kmlFile) { alert('KMZ 안에 .kml 파일이 없습니다.\n\n포함된 파일 목록:\n' + zipFiles.join('\n')); hideLoading(); return; }
+    if (!kmlFile) { alert('.kml 파일이 없습니다.\n\n포함된 파일:\n' + zipFiles.join('\n')); hideLoading(); return; }
 
     showLoading('데이터 읽는 중...');
     const kmlText = await kmlFile.async('string');
     const xml = new DOMParser().parseFromString(kmlText, 'application/xml');
+    // Folder 안에 있는 Placemark도 모두 포함
     const placemarks = Array.from(xml.getElementsByTagName('Placemark'));
     const bounds = new kakao.maps.LatLngBounds();
 
     for (let i = 0; i < placemarks.length; i++) {
       const pm = placemarks[i];
-      const pmName = pm.getElementsByTagName('name')[0]?.textContent
-                  || pm.getElementsByTagName('n')[0]?.textContent
+      const pmName = pm.getElementsByTagName('name')[0]?.textContent?.trim()
+                  || pm.getElementsByTagName('n')[0]?.textContent?.trim()
                   || '설명 없음';
 
-      // 이미지 경로 읽기 방법 1: Data 태그 (기존 방식)
+      // 이미지 경로 방법 1: Data 태그 (기존 방식)
       let photoFilename = '';
       for (const d of Array.from(pm.getElementsByTagName('Data'))) {
         if (d.getAttribute('name') === 'photoFile') {
@@ -657,15 +657,15 @@ async function loadKMZ(file, silent = false) {
         }
       }
 
-      // 이미지 경로 읽기 방법 2: Picasa 방식 - description 안의 <img src="..."> 에서 추출
+      // 이미지 경로 방법 2: description 안 <img src="..."> 추출 (CDATA 포함)
       if (!photoFilename) {
         const descEl = pm.getElementsByTagName('description')[0];
         if (descEl) {
           const descText = descEl.textContent || '';
-          const imgMatch = descText.match(/src=["']?([^"'\s>]+\.(jpe?g|png))["']?/i)
-                        || descText.match(/<img[^>]+src=["']?([^"'\s>]+)["']?/i);
+          const imgMatch = descText.match(/src=["']([^"']+\.(jpe?g|png))["']/i)
+                        || descText.match(/src=([^\s>]+\.(jpe?g|png))/i);
           if (imgMatch) {
-            const thumbPath = imgMatch[1];
+            const thumbPath = imgMatch[1].trim();
             const rollPath = thumbPath.replace('_thumb.', '_roll.');
             const rollEntry = zipFiles.find(z => z === rollPath || z.endsWith('/' + rollPath.split('/').pop()));
             photoFilename = rollEntry ? rollPath : thumbPath;
@@ -702,12 +702,13 @@ async function loadKMZ(file, silent = false) {
         bounds.extend(ll);
 
         if (photoFilename) {
-          // files/, images/ 등 다양한 경로 후보 중복 없이 탐색
+          // files/, images/, photo/ 등 다양한 경로 후보 중복 없이 탐색
           const baseName = photoFilename.split('/').pop();
           const candidateSet = new Set([
             photoFilename,
             `files/${photoFilename}`,
             `images/${baseName}`,
+            `photo/${baseName}`,
             ...zipFiles.filter(p => p.endsWith(baseName))
           ]);
           let photoZipFile = null;

@@ -634,7 +634,7 @@ async function loadKMZ(file, silent = false) {
     const kmlEntry = zipFiles.find(name => !zip.files[name].dir && name.toLowerCase().endsWith('.kml') && !name.includes('/'))
                   || zipFiles.find(name => !zip.files[name].dir && name.toLowerCase().endsWith('.kml'));
     const kmlFile = kmlEntry ? zip.file(kmlEntry) : null;
-    if (!kmlFile) { alert('KMZ 안에 .kml 파일이 없습니다.'); hideLoading(); return; }
+    if (!kmlFile) { alert('KMZ 안에 .kml 파일이 없습니다.\n\n포함된 파일 목록:\n' + zipFiles.join('\n')); hideLoading(); return; }
 
     showLoading('데이터 읽는 중...');
     const kmlText = await kmlFile.async('string');

@@ -628,15 +628,19 @@ async function loadKMZ(file, silent = false) {
 
   try {
     const zip = await JSZip.loadAsync(file);
-    const kmlFile = zip.file('doc.kml');
-    if (!kmlFile) { alert('doc.kml 파일이 없습니다.'); hideLoading(); return; }
+
+    // .kml 파일을 이름에 관계없이 자동 탐색 (루트 우선, 없으면 하위 폴더도 검색)
+    const zipFiles = Object.keys(zip.files);
+    const kmlEntry = zipFiles.find(name => !zip.files[name].dir && name.toLowerCase().endsWith('.kml') && !name.includes('/'))
+                  || zipFiles.find(name => !zip.files[name].dir && name.toLowerCase().endsWith('.kml'));
+    const kmlFile = kmlEntry ? zip.file(kmlEntry) : null;
+    if (!kmlFile) { alert('KMZ 안에 .kml 파일이 없습니다.'); hideLoading(); return; }
 
     showLoading('데이터 읽는 중...');
     const kmlText = await kmlFile.async('string');
     const xml = new DOMParser().parseFromString(kmlText, 'application/xml');
     const placemarks = Array.from(xml.getElementsByTagName('Placemark'));
     const bounds = new kakao.maps.LatLngBounds();
-    const zipFiles = Object.keys(zip.files);
 
     for (let i = 0; i < placemarks.length; i++) {
       const pm = placemarks[i];
@@ -644,11 +648,28 @@ async function loadKMZ(file, silent = false) {
                   || pm.getElementsByTagName('n')[0]?.textContent
                   || '설명 없음';
 
+      // 이미지 경로 읽기 방법 1: Data 태그 (기존 방식)
       let photoFilename = '';
       for (const d of Array.from(pm.getElementsByTagName('Data'))) {
         if (d.getAttribute('name') === 'photoFile') {
           photoFilename = d.getElementsByTagName('value')[0]?.textContent || '';
           break;
+        }
+      }
+
+      // 이미지 경로 읽기 방법 2: Picasa 방식 - description 안의 <img src="..."> 에서 추출
+      if (!photoFilename) {
+        const descEl = pm.getElementsByTagName('description')[0];
+        if (descEl) {
+          const descText = descEl.textContent || '';
+          const imgMatch = descText.match(/src=["']?([^"'\s>]+\.(jpe?g|png))["']?/i)
+                        || descText.match(/<img[^>]+src=["']?([^"'\s>]+)["']?/i);
+          if (imgMatch) {
+            const thumbPath = imgMatch[1];
+            const rollPath = thumbPath.replace('_thumb.', '_roll.');
+            const rollEntry = zipFiles.find(z => z === rollPath || z.endsWith('/' + rollPath.split('/').pop()));
+            photoFilename = rollEntry ? rollPath : thumbPath;
+          }
         }
       }
 
@@ -681,12 +702,19 @@ async function loadKMZ(file, silent = false) {
         bounds.extend(ll);
 
         if (photoFilename) {
-          const candidates = [`files/${photoFilename}`, photoFilename, ...zipFiles.filter(p => p.endsWith(photoFilename))];
+          // files/, images/ 등 다양한 경로 후보 중복 없이 탐색
+          const baseName = photoFilename.split('/').pop();
+          const candidateSet = new Set([
+            photoFilename,
+            `files/${photoFilename}`,
+            `images/${baseName}`,
+            ...zipFiles.filter(p => p.endsWith(baseName))
+          ]);
           let photoZipFile = null;
-          for (const c of candidates) { photoZipFile = zip.file(c); if (photoZipFile) break; }
+          for (const c of candidateSet) { photoZipFile = zip.file(c); if (photoZipFile) break; }
           if (photoZipFile) {
             const base64 = await photoZipFile.async('base64');
-            const ext = photoFilename.split('.').pop().toLowerCase();
+            const ext = baseName.split('.').pop().toLowerCase();
             const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
             addPhotoMarker(ll, `data:${mime};base64,${base64}`, pmName);
           } else {

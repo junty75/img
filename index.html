@@ -12,7 +12,7 @@
   <link rel="manifest" href="./manifest.json">
   <link rel="apple-touch-icon" href="./icon-192.png">
   <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=94bf4516825c146467eb2318cd55b782&autoload=false"></script>
-  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <style>
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { height: 100%; margin: 0; overflow: hidden; }
@@ -29,6 +29,16 @@
     #saveBtn:disabled { opacity: 0.4; cursor: not-allowed; }
     #loadBtn { top: 16px; right: 16px; }
     #myLocationBtn { top: 72px; right: 16px; padding: 0; transition: background 0.2s; }
+    #myLocationBtn.active { background: #e8f0fe; box-shadow: 0 2px 8px rgba(26,115,232,0.4); }
+    #drawBtn { top: 128px; right: 16px; padding: 0; transition: background 0.2s; font-size: 18px; }
+    #drawBtn.active { background: #fce8e6; box-shadow: 0 2px 8px rgba(219,68,55,0.4); }
+    .distance-overlay {
+      background: white; border: 1.5px solid #db4040;
+      padding: 4px 8px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; color: #db4040;
+      white-space: nowrap; pointer-events: none;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    }
     #myLocationBtn.active { background: #e8f0fe; box-shadow: 0 2px 8px rgba(26,115,232,0.4); }
     #myLocationBtn svg { width: 26px; height: 26px; }
     #fileInput { display: none; }
@@ -112,48 +122,6 @@
     #modalConfirmBtn { background: #1a73e8; color: white; }
     #modalConfirmBtn:active { background: #1558b0; }
 
-    /* 롱프레스 액션 메뉴 */
-    #actionMenu {
-      display: none; position: fixed; inset: 0;
-      background: rgba(0,0,0,0.4); z-index: 7500;
-      align-items: flex-end; justify-content: center;
-    }
-    #actionMenu.show { display: flex; }
-    #actionMenuBox {
-      background: white; width: 100%; max-width: 480px;
-      border-radius: 16px 16px 0 0;
-      padding: 16px 16px 32px;
-      box-shadow: 0 -4px 24px rgba(0,0,0,0.2);
-      animation: slideUp 0.2s ease;
-    }
-    #actionMenuBox .menu-title {
-      font-size: 13px; color: #999; text-align: center;
-      margin-bottom: 12px;
-    }
-    #actionMenuBox .menu-item {
-      display: flex; align-items: center; gap: 14px;
-      padding: 14px 10px; border-radius: 10px;
-      cursor: pointer; font-size: 16px; font-weight: 500;
-      transition: background 0.15s;
-    }
-    #actionMenuBox .menu-item:active { background: #f1f3f4; }
-    #actionMenuBox .menu-item .menu-icon { font-size: 24px; width: 32px; text-align: center; }
-    #actionMenuBox .menu-cancel {
-      margin-top: 8px; text-align: center; padding: 12px;
-      color: #e53935; font-size: 15px; font-weight: 600; cursor: pointer;
-    }
-
-    /* 선 그리기 모드 안내 토스트 */
-    #drawToast {
-      display: none; position: fixed;
-      top: 80px; left: 50%; transform: translateX(-50%);
-      background: rgba(0,0,0,0.75); color: white;
-      font-size: 13px; padding: 8px 18px;
-      border-radius: 20px; z-index: 5000;
-      pointer-events: none; white-space: nowrap;
-    }
-    #drawToast.show { display: block; }
-
     /* iOS 설치 안내 배너 */
     #installBanner {
       display: none; position: fixed;
@@ -185,6 +153,7 @@
     <line x1="18" y1="12" x2="22" y2="12" stroke="#1a73e8" stroke-width="2" stroke-linecap="round"/>
   </svg>
 </button>
+<button class="btn" id="drawBtn" title="선 그리기">✏️</button>
 <input type="file" id="fileInput" accept=".kmz">
 
 <div id="loading">
@@ -207,23 +176,6 @@
   </div>
   <div class="banner-step">하단 공유 버튼(□↑) → <b>홈 화면에 추가</b> 선택</div>
 </div>
-
-<!-- 롱프레스 액션 메뉴 -->
-<div id="actionMenu">
-  <div id="actionMenuBox">
-    <div class="menu-title">무엇을 추가할까요?</div>
-    <div class="menu-item" id="menuMarker">
-      <span class="menu-icon">📍</span> 마커 추가
-    </div>
-    <div class="menu-item" id="menuDraw">
-      <span class="menu-icon">✏️</span> 선 그리기 시작
-    </div>
-    <div class="menu-cancel" id="menuCancel">취소</div>
-  </div>
-</div>
-
-<!-- 선 그리기 안내 토스트 -->
-<div id="drawToast">✏️ 탭하여 선을 그리세요 · 길게 눌러 완료</div>
 
 <!-- 마커 추가 모달 -->
 <div id="markerModal">
@@ -355,85 +307,55 @@ window.addEventListener('beforeinstallprompt', e => {
   document.body.appendChild(btn);
 });
 
-// ─── 선 그리기 모드 ───────────────────────────────────
-let drawingMode = false;
-let currentPolyline = null;
-let currentPath = [];
-let drawingName = '';
-
-function startDrawing(latLng) {
-  drawingMode = true;
-  currentPath = [latLng];
-  currentPolyline = new kakao.maps.Polyline({
-    map, path: currentPath,
-    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
-  });
-  document.getElementById('drawToast').classList.add('show');
-}
-
-function finishDrawing() {
-  if (!drawingMode) return;
-  drawingMode = false;
-  document.getElementById('drawToast').classList.remove('show');
-  if (currentPath.length < 2) {
-    if (currentPolyline) currentPolyline.setMap(null);
-    currentPolyline = null; currentPath = [];
-    return;
-  }
-  // 선 이름 입력
-  const name = prompt('선 이름을 입력하세요', '선') || '선';
-  const poly = currentPolyline;
-  const path = [...currentPath];
-  attachLongPress(poly, () => {
-    if (!confirm(`"${name}" 선을 삭제할까요?`)) return;
-    poly.setMap(null);
-    polylines = polylines.filter(p => p.poly !== poly);
-    autoSaveToDB();
-  });
-  polylines.push({ poly, name, path });
-  currentPolyline = null; currentPath = [];
-  autoSaveToDB();
-}
-
-// ─── 롱프레스 액션 메뉴 ───────────────────────────────
-let pendingLongPressLatLng = null;
-
-function openActionMenu(latLng) {
-  pendingLongPressLatLng = latLng;
-  document.getElementById('actionMenu').classList.add('show');
-  navigator.vibrate && navigator.vibrate(30);
-}
-function closeActionMenu() {
-  document.getElementById('actionMenu').classList.remove('show');
-  pendingLongPressLatLng = null;
-}
-
-document.getElementById('menuMarker').onclick = () => {
-  closeActionMenu();
-  if (pendingLongPressLatLng) openMarkerModal(pendingLongPressLatLng);
-};
-document.getElementById('menuDraw').onclick = () => {
-  closeActionMenu();
-  if (pendingLongPressLatLng) startDrawing(pendingLongPressLatLng);
-};
-document.getElementById('menuCancel').onclick = closeActionMenu;
-document.getElementById('actionMenu').addEventListener('click', e => {
-  if (e.target === document.getElementById('actionMenu')) closeActionMenu();
-});
+// ─── 변수 ─────────────────────────────────────────────
+let map, markers = [], polylines = [];
 let trackingOn = false, watchId = null, locationMarker = null;
 let hasData = false, suppressMapClick = false, suppressLongPress = false;
+let drawingMode = false, currentPolyline = null, currentPath = [];
+let moveLine = null, distanceOverlay = null;
 
 // ─── 지도 초기화 ──────────────────────────────────────
 function initMap(center) {
   map = new kakao.maps.Map(document.getElementById('map'), {
     center, level: 5, mapTypeId: kakao.maps.MapTypeId.HYBRID
   });
-  kakao.maps.event.addListener(map, 'click', () => {
+  kakao.maps.event.addListener(map, 'click', (e) => {
     preventBack();
     if (suppressMapClick) { suppressMapClick = false; return; }
+    if (drawingMode) {
+      currentPath.push(e.latLng);
+      currentPolyline.setPath(currentPath);
+      return;
+    }
     markers.forEach(m => m.iw.close());
   });
-  // 지도 빈 곳 길게 누르기 → 액션 메뉴 or 선그리기 완료
+
+  // 선그리기 중 마우스 이동 → 거리 미리보기
+  kakao.maps.event.addListener(map, 'mousemove', (e) => {
+    if (!drawingMode || currentPath.length === 0) return;
+    const last = currentPath[currentPath.length - 1];
+    if (!moveLine) {
+      moveLine = new kakao.maps.Polyline({
+        strokeWeight: 2, strokeColor: '#db4040',
+        strokeOpacity: 0.5, strokeStyle: 'shortdash'
+      });
+    }
+    moveLine.setPath([last, e.latLng]);
+    moveLine.setMap(map);
+    const total = currentPolyline.getLength() + moveLine.getLength();
+    const fmt = d => d < 1000 ? d.toFixed(0) + 'm' : (d/1000).toFixed(2) + 'km';
+    const html = '<div class="distance-overlay">총 ' + fmt(total) + '</div>';
+    if (distanceOverlay) {
+      distanceOverlay.setPosition(e.latLng);
+      distanceOverlay.setContent(html);
+    } else {
+      distanceOverlay = new kakao.maps.CustomOverlay({
+        map, content: html, position: e.latLng, xAnchor: 0, yAnchor: 1.4, zIndex: 3
+      });
+    }
+  });
+  // 지도 빈 곳 길게 누르기 → attachLongPress와 동일한 카카오맵 이벤트 방식 사용
+  // suppressLongPress=true(마커/선 위) 이면 실행 안 됨 → 자동으로 분기
   let mapLongPressTimer = null;
   let startX = 0, startY = 0;
 
@@ -443,21 +365,11 @@ function initMap(center) {
     startX = t.clientX; startY = t.clientY;
     clearTimeout(mapLongPressTimer);
     mapLongPressTimer = setTimeout(() => {
-      if (drawingMode) {
-        finishDrawing();
-      } else {
-        openActionMenu(e.latLng);
-      }
+      navigator.vibrate && navigator.vibrate(30);
+      openMarkerModal(e.latLng);
     }, 600);
   });
-  kakao.maps.event.addListener(map, 'touchend', (e) => {
-    clearTimeout(mapLongPressTimer);
-    // 선 그리기 중 탭 → 점 추가
-    if (drawingMode && e.latLng) {
-      currentPath.push(e.latLng);
-      currentPolyline.setPath(currentPath);
-    }
-  });
+  kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
   kakao.maps.event.addListener(map, 'touchmove', (e) => {
     const t = e.changedTouches ? e.changedTouches[0] : e;
     if (Math.abs(t.clientX - startX) > 8 || Math.abs(t.clientY - startY) > 8)
@@ -468,22 +380,9 @@ function initMap(center) {
   kakao.maps.event.addListener(map, 'mousedown', (e) => {
     if (suppressLongPress) return;
     clearTimeout(mapLongPressTimer);
-    mapLongPressTimer = setTimeout(() => {
-      if (drawingMode) {
-        finishDrawing();
-      } else {
-        openActionMenu(e.latLng);
-      }
-    }, 600);
+    mapLongPressTimer = setTimeout(() => openMarkerModal(e.latLng), 600);
   });
   kakao.maps.event.addListener(map, 'mouseup', () => clearTimeout(mapLongPressTimer));
-  // PC 클릭 → 선 그리기 중 점 추가
-  kakao.maps.event.addListener(map, 'click', (e) => {
-    if (drawingMode) {
-      currentPath.push(e.latLng);
-      currentPolyline.setPath(currentPath);
-    }
-  });
 }
 
 kakao.maps.load(() => {
@@ -506,6 +405,51 @@ kakao.maps.load(() => {
     });
   }
 });
+
+// ─── 선 그리기 ───────────────────────────────────────
+function startDrawing() {
+  drawingMode = true;
+  currentPath = [];
+  currentPolyline = new kakao.maps.Polyline({
+    map, path: currentPath,
+    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
+  });
+  // 길게누르기로 선 삭제 가능하게
+  attachLongPress(currentPolyline, () => {
+    if (!confirm('이 선을 삭제할까요?')) return;
+    currentPolyline.setMap(null);
+    polylines = polylines.filter(p => p.poly !== currentPolyline);
+    autoSaveToDB();
+  });
+  polylines.push({ poly: currentPolyline, name: '선', path: currentPath });
+  document.getElementById('drawBtn').classList.add('active');
+  document.getElementById('drawBtn').title = '선 그리기 종료';
+}
+
+function stopDrawing() {
+  drawingMode = false;
+  if (moveLine) { moveLine.setMap(null); moveLine = null; }
+  if (distanceOverlay) { distanceOverlay.setMap(null); distanceOverlay = null; }
+  // 점이 1개 이하면 의미없는 선 → 제거
+  if (currentPolyline && currentPath.length <= 1) {
+    currentPolyline.setMap(null);
+    polylines = polylines.filter(p => p.poly !== currentPolyline);
+  } else if (currentPolyline) {
+    // path 스냅샷 저장
+    const lastPoly = polylines.find(p => p.poly === currentPolyline);
+    if (lastPoly) lastPoly.path = [...currentPath];
+    autoSaveToDB();
+  }
+  currentPolyline = null;
+  currentPath = [];
+  document.getElementById('drawBtn').classList.remove('active');
+  document.getElementById('drawBtn').title = '선 그리기';
+}
+
+document.getElementById('drawBtn').onclick = () => {
+  if (drawingMode) stopDrawing();
+  else startDrawing();
+};
 
 // ─── 자동 저장 기능 ───────────────────────────────────
 async function autoSaveToDB() {
@@ -772,27 +716,55 @@ async function loadKMZ(file, silent = false) {
 
   try {
     const zip = await JSZip.loadAsync(file);
-    const kmlFile = zip.file('doc.kml');
-    if (!kmlFile) { alert('doc.kml 파일이 없습니다.'); hideLoading(); return; }
+    const zipFiles = Object.keys(zip.files);
+
+    // 파일명에 널문자(\u0000)가 포함된 경우 제거 후 탐색
+    let kmlText = null;
+    for (const name of zipFiles) {
+      const cleanName = name.replace(/\0/g, '');
+      if (/\.kml$/i.test(cleanName)) {
+        try {
+          const text = await zip.files[name].async('string');
+          if (text && text.length > 0) { kmlText = text; break; }
+        } catch(e) {}
+      }
+    }
+    if (!kmlText) { alert('.kml 파일을 읽을 수 없습니다.\n포함된 파일:\n' + zipFiles.map(n=>n.replace(/\0/g,'')).join('\n')); hideLoading(); return; }
 
     showLoading('데이터 읽는 중...');
-    const kmlText = await kmlFile.async('string');
     const xml = new DOMParser().parseFromString(kmlText, 'application/xml');
+    // Folder 안에 있는 Placemark도 모두 포함
     const placemarks = Array.from(xml.getElementsByTagName('Placemark'));
     const bounds = new kakao.maps.LatLngBounds();
-    const zipFiles = Object.keys(zip.files);
 
     for (let i = 0; i < placemarks.length; i++) {
       const pm = placemarks[i];
-      const pmName = pm.getElementsByTagName('name')[0]?.textContent
-                  || pm.getElementsByTagName('n')[0]?.textContent
+      const pmName = pm.getElementsByTagName('name')[0]?.textContent?.trim()
+                  || pm.getElementsByTagName('n')[0]?.textContent?.trim()
                   || '설명 없음';
 
+      // 이미지 경로 방법 1: Data 태그 (기존 방식)
       let photoFilename = '';
       for (const d of Array.from(pm.getElementsByTagName('Data'))) {
         if (d.getAttribute('name') === 'photoFile') {
           photoFilename = d.getElementsByTagName('value')[0]?.textContent || '';
           break;
+        }
+      }
+
+      // 이미지 경로 방법 2: description 안 <img src="..."> 추출 (CDATA 포함)
+      if (!photoFilename) {
+        const descEl = pm.getElementsByTagName('description')[0];
+        if (descEl) {
+          const descText = descEl.textContent || '';
+          const imgMatch = descText.match(/src=["']([^"']+\.(jpe?g|png))["']/i)
+                        || descText.match(/src=([^\s>]+\.(jpe?g|png))/i);
+          if (imgMatch) {
+            const thumbPath = imgMatch[1].trim();
+            const rollPath = thumbPath.replace('_thumb.', '_roll.');
+            const rollEntry = zipFiles.find(z => z === rollPath || z.endsWith('/' + rollPath.split('/').pop()));
+            photoFilename = rollEntry ? rollPath : thumbPath;
+          }
         }
       }
 
@@ -825,12 +797,24 @@ async function loadKMZ(file, silent = false) {
         bounds.extend(ll);
 
         if (photoFilename) {
-          const candidates = [`files/${photoFilename}`, photoFilename, ...zipFiles.filter(p => p.endsWith(photoFilename))];
+          // files/, images/, photo/ 등 다양한 경로 후보 탐색 (널문자 제거 후 비교)
+          const baseName = photoFilename.split('/').pop();
           let photoZipFile = null;
-          for (const c of candidates) { photoZipFile = zip.file(c); if (photoZipFile) break; }
+          for (const name of zipFiles) {
+            const cleanName = name.replace(/\0/g, '');
+            if (cleanName === photoFilename ||
+                cleanName === `files/${photoFilename}` ||
+                cleanName === `images/${baseName}` ||
+                cleanName === `photo/${baseName}` ||
+                cleanName.endsWith('/' + baseName) ||
+                cleanName === baseName) {
+              photoZipFile = zip.files[name];
+              break;
+            }
+          }
           if (photoZipFile) {
             const base64 = await photoZipFile.async('base64');
-            const ext = photoFilename.split('.').pop().toLowerCase();
+            const ext = baseName.split('.').pop().toLowerCase();
             const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
             addPhotoMarker(ll, `data:${mime};base64,${base64}`, pmName);
           } else {

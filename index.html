@@ -1036,32 +1036,24 @@ async function loadImageAsMarker(imgFile) {
 document.getElementById('saveBtn').onclick = exportKMZ;
 
 async function exportKMZ() {
-
-  // 🔥 (추가) 뒤로가기 스택 보호
-  if (window.history && window.history.pushState) {
-    window.history.pushState({ page: 'save' }, null, '');
-  }
-
-  // 1. 날짜
+  // 1. 현재 날짜 문자열
   const now = new Date();
   const dateStr = now.getFullYear().toString() +
                   (now.getMonth() + 1).toString().padStart(2, '0') +
                   now.getDate().toString().padStart(2, '0');
 
-  // 2. 주소 prefix
+  // 2. 지도 중심 좌표로 주소 조회 → 읍면+리 이름 추출
   const getAddrPrefix = () => new Promise(resolve => {
     const center = map.getCenter();
     geocoder.coord2Address(center.getLng(), center.getLat(), (result, status) => {
       if (status !== kakao.maps.services.Status.OK || !result[0]) { resolve(''); return; }
-
-      const parts = (result[0].address?.address_name || '')
-        .split(' ')
-        .filter(p => !/^\d/.test(p));
-
+      const parts = (result[0].address?.address_name || '').split(' ').filter(p => !/^\d/.test(p));
+      // 읍·면이 있으면: 읍면명(접미사제거) + 리명(접미사포함)
       const eupMyeon = parts.find(p => /[읍면]$/.test(p)) || '';
       const ri       = parts.find(p => /리$/.test(p)) || '';
-      const gu       = parts.find(p => /구$/.test(p)) || '';
-      const dong     = [...parts].reverse().find(p => /동(\d+가)?$/.test(p)) || '';
+      // 구가 있으면: 구명(접미사제거) + 동명(접미사포함, 가번지 포함)
+      const gu   = parts.find(p => /구$/.test(p)) || '';
+      const dong = [...parts].reverse().find(p => /동(\d+가)?$/.test(p)) || '';
 
       let prefix = '';
       if (eupMyeon && ri) {
@@ -1082,109 +1074,55 @@ async function exportKMZ() {
   const prefix = await getAddrPrefix();
 
   const activeM = markers.filter(m => m.marker.getMap());
-  const lastMarkerRaw =
-    ([...activeM].reverse().find(m => !m.imgSrc)?.name ||
-     activeM.at(-1)?.name || '');
-
-  const lastMarkerName = lastMarkerRaw
-    .replace(/_\d{8}.*$/, '')
-    .replace(/[\\/:*?"<>|]/g, '')
-    .trim();
+  const lastMarkerRaw = ([...activeM].reverse().find(m => !m.imgSrc)?.name
+                        || activeM.at(-1)?.name || '');
+  const lastMarkerName = lastMarkerRaw.replace(/_\d{8}.*$/, '').replace(/[\\/:*?"<>|]/g, '').trim();
 
   const defaultName = lastMarkerName
     ? `${prefix}${dateStr}_${lastMarkerName}`
     : `${prefix}${dateStr}_`;
 
-  // 3. 파일명 입력
+  // 3. 사용자 파일명 입력
   const userInput = prompt("저장할 파일 이름을 입력하세요 (확장자 제외):", defaultName);
   if (userInput === null) return;
-
   const fileName = (userInput.trim() || defaultName) + ".kmz";
 
   showLoading('KMZ 저장 중...');
-
   try {
     const zip = new JSZip();
     const filesFolder = zip.folder('files');
     let placemarkXml = '';
     let photoIndex = 0;
 
-    // 마커
+    // ... (기존 마커 및 폴리라인 데이터 구성 코드는 동일하게 유지) ...
     for (const m of markers) {
       if (!m.marker.getMap()) continue;
-
       const pos = m.marker.getPosition();
       const lat = pos.getLat(), lng = pos.getLng();
-
-      const safeName = (m.name || '')
-        .replace(/&/g,'&amp;')
-        .replace(/</g,'&lt;')
-        .replace(/>/g,'&gt;');
-
+      const safeName = (m.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       if (m.imgSrc) {
         const compressed = await compressImage(m.imgSrc);
         const base64Data = compressed.split(',')[1];
-
         const filename = `photo_${String(photoIndex++).padStart(4,'0')}.jpg`;
         filesFolder.file(filename, base64Data, { base64: true });
-
-        placemarkXml += `
-  <Placemark>
-    <name>${safeName}</name>
-    <ExtendedData>
-      <Data name="photoFile"><value>${filename}</value></Data>
-    </ExtendedData>
-    <Point><coordinates>${lng},${lat},0</coordinates></Point>
-  </Placemark>`;
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data></ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       } else {
-        placemarkXml += `
-  <Placemark>
-    <name>${safeName}</name>
-    <Point><coordinates>${lng},${lat},0</coordinates></Point>
-  </Placemark>`;
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       }
     }
-
-    // 폴리라인
     for (const pl of polylines) {
       if (!pl.poly.getMap()) continue;
-
-      const safeName = (pl.name || '')
-        .replace(/&/g,'&amp;')
-        .replace(/</g,'&lt;')
-        .replace(/>/g,'&gt;');
-
+      const safeName = (pl.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       const coords = pl.path.map(p => `${p.getLng()},${p.getLat()},0`).join('\n      ');
-
-      placemarkXml += `
-  <Placemark>
-    <name>${safeName}</name>
-    <LineString><coordinates>${coords}</coordinates></LineString>
-  </Placemark>`;
+      placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <LineString><coordinates>${coords}</coordinates></LineString>\n  </Placemark>`;
     }
 
-    zip.file('doc.kml',
-`<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-<Document>${placemarkXml}
-</Document>
-</kml>`);
+    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
 
-    const blob = await zip.generateAsync({
-      type: 'blob',
-      compression: 'DEFLATE'
-    });
-
-    // 🔥 핵심: KMZ MIME 유지
-    const file = new File([blob], fileName, {
-      type: 'application/vnd.google-earth.kmz'
-    });
-
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    const file = new File([blob], fileName, { type: 'application/vnd.google-earth.kmz' });
     const url = URL.createObjectURL(file);
-
-    // 🔥 (추가) iOS 체크
-    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-
+    
     if (isIOS) {
       const newTab = window.open(url, '_blank');
       if (!newTab) window.location.href = url;
@@ -1198,9 +1136,7 @@ async function exportKMZ() {
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
-
     hideLoading();
-
   } catch (err) {
     hideLoading();
     alert('KMZ 저장 중 오류: ' + err.message);

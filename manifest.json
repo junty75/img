@@ -1,0 +1,14 @@
+{
+  "name": "KMZ 뷰어",
+  "short_name": "KMZ 뷰어",
+  "start_url": "./",
+  "display": "standalone",
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "application/vnd.google-earth.kmz": [".kmz"]
+      }
+    }
+  ]
+}

@@ -406,52 +406,37 @@ document.getElementById('markerBtn').onclick = () => {
   }
 };
 
-// ─── 뒤로가기 제어 ───────────────────────────────────
-window.addEventListener('load', () => {
-  history.pushState(null, '', window.location.href);
+let historyState = 0; // 상태 카운터 추가
 
-  window.addEventListener('popstate', function(e) {
-    // 1. 사진 전체화면 열려있으면 닫기
-    const photoViewer = document.getElementById('photoViewer');
-    if (photoViewer && photoViewer.classList.contains('show')) {
-      photoViewer.classList.remove('show');
-      history.pushState(null, '', window.location.href);
-      return;
-    }
-    // 2. 마커 배치 모드(📍) 활성 중이면 취소
-    if (typeof markerPlacingMode !== 'undefined' && markerPlacingMode) {
-      markerPlacingMode = false;
-      document.getElementById('markerBtn').classList.remove('active');
-      document.getElementById('crosshair').classList.remove('show');
-      history.pushState(null, '', window.location.href);
-      return;
-    }
-    // 3. 마커 추가 모달 열려있으면 닫기
-    const markerModal = document.getElementById('markerModal');
-    if (markerModal && markerModal.classList.contains('show')) {
-      closeMarkerModal();
-      history.pushState(null, '', window.location.href);
-      return;
-    }
-    // 4. 마커 수정/삭제 모달 열려있으면 닫기
-    const markerEditModal = document.getElementById('markerEditModal');
-    if (markerEditModal && markerEditModal.classList.contains('show')) {
-      closeMarkerEditModal();
-      history.pushState(null, '', window.location.href);
-      return;
-    }
-    // 5. 선그리기 중이면 이전 포인트 삭제
+function preventBack() {
+  historyState++;
+  window.history.pushState({ id: historyState }, null, '');
+}
+
+window.onload = () => {
+  // 1. 처음 로드될 때 히스토리 스택에 상태 추가
+  window.history.pushState({ page: 'map' }, null, '');
+
+  window.onpopstate = (e) => {
+    // 2. 그리기 모드일 때 뒤로가기를 누르면 (이전 점 삭제)
     if (drawingMode && currentPath.length > 0) {
-      undoLastPoint();
-      setTimeout(() => history.pushState(null, '', window.location.href), 0);
-      return;
+      undoLastPoint(); // 실제 삭제 동작 수행
+      
+      // 3. 삭제 후 즉시 다시 히스토리를 푸시하여 
+      // 뒤로가기 스택이 비지 않게 유지 (종료 방지)
+      window.history.pushState({ page: 'map' }, null, '');
+    } else {
+      if (confirm('앱을 종료하시겠습니까?')) {
+        // 실제 종료를 원하면 주석 해제 (단, 웹앱 환경에 따라 다름)
+        // window.history.back(); 
+      } else {
+        // 종료 취소 시 다시 상태 복구
+        window.history.pushState({ page: 'map' }, null, '');
+      }
     }
-    // 6. 그 외 종료 확인
-    if (!confirm('앱을 종료하시겠습니까?')) {
-      history.pushState(null, '', window.location.href);
-    }
-  });
+  };
 
+  // PC 키보드 이벤트
   document.addEventListener('keydown', e => {
     if (drawingMode && currentPath.length > 0) {
       if (e.key === 'Backspace' || e.key === 'Escape') {
@@ -460,7 +445,7 @@ window.addEventListener('load', () => {
       }
     }
   });
-});
+};
 
 // [추가] undoLastPoint 함수가 선언되어 있는지 확인해주세요. 
 // 만약 없다면 아래 내용을 참고하여 추가해야 합니다.
@@ -1130,24 +1115,35 @@ async function exportKMZ() {
 
     zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
 
-    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-    const finalName = fileName.endsWith('.kmz') ? fileName : fileName + '.kmz';
-    const file = new File([blob], finalName, { type: 'application/vnd.google-earth.kmz' });
-    const url = URL.createObjectURL(file);
+// (기존 zip.generateAsync 부분 수정)
+    const blob = await zip.generateAsync({ 
+      type: 'blob', 
+      compression: 'DEFLATE',
+      mimeType: 'application/vnd.google-earth.kmz' // MIME 타입 추가
+    });
 
+    const url = URL.createObjectURL(blob);
+
+    // 1. 공통 다운로드 태그 생성
+    const a = document.createElement('a');
+    a.href = url;
+    // 확장자 강제 지정
+    a.download = fileName.endsWith('.kmz') ? fileName : fileName + '.kmz';
+    document.body.appendChild(a);
+
+    // 2. 환경별 다운로드 실행
     if (isIOS) {
-      const newTab = window.open(url, '_blank');
-      if (!newTab) window.location.href = url;
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      // iOS 환경 대응
+      window.open(url, '_blank');
     } else {
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = finalName;
-      document.body.appendChild(a);
+      // 안드로이드 및 PC 환경
       a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
+
+    // 3. 정리
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000); 
+    
     hideLoading();
   } catch (err) {
     hideLoading();

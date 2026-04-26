@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="KMZ뷰어">
+  <meta name="theme-color" content="#1a73e8">
+  <title>KMZ 뷰어</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=94bf4516825c146467eb2318cd55b782&autoload=false&libraries=services"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/piexifjs"></script>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    #map { width: 100%; height: 100%; }
+
+    .btn {
+      position: absolute; z-index: 1000;
+      background: white; border: none; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; width: 48px; height: 48px;
+    }
+    #saveBtn { top: 16px; right: 72px; }
+    #saveBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #loadBtn { top: 16px; right: 16px; }
+    #myLocationBtn { top: 72px; right: 16px; padding: 0; transition: background 0.2s; }
+    #myLocationBtn.active { background: #1a73e8; box-shadow: 0 2px 8px rgba(26,115,232,0.6); }
+    #myLocationBtn.active svg path, #myLocationBtn.active svg circle { stroke: white; }
+    #drawBtn { top: 128px; right: 16px; padding: 0; transition: background 0.2s; font-size: 18px; }
+    #drawBtn.active { background: #e53935; box-shadow: 0 2px 8px rgba(219,68,55,0.6); }
+    #markerBtn { top: 184px; right: 16px; padding: 0; transition: background 0.2s; font-size: 20px; }
+    #markerBtn.active { background: #43a047; box-shadow: 0 2px 8px rgba(67,160,71,0.6); }
+    #clearBtn { top: 240px; right: 16px; padding: 0; transition: background 0.2s; }
+
+    /* 마커 조준원 */
+    #crosshair {
+      display: none; position: fixed;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 40px; height: 40px;
+      border: 3px solid #e53935; border-radius: 50%;
+      pointer-events: none; z-index: 2000;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.15);
+    }
+    #crosshair::after {
+      content: ''; position: absolute;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 7px; height: 7px;
+      background: #e53935; border-radius: 50%;
+    }
+    #crosshair.show { display: block; }
+
+    /* 마커 수정/삭제 모달 */
+    #markerEditModal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5); z-index: 7500;
+      align-items: flex-start; justify-content: center;
+    }
+    #markerEditModal.show { display: flex; }
+    #markerEditModalBox {
+      background: white; width: 100%; max-width: 480px;
+      border-radius: 0 0 16px 16px;
+      padding: 20px 20px 24px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+      animation: slideDown 0.22s ease;
+    }
+    #markerEditModal h3 { margin: 0 0 14px; font-size: 16px; color: #333; }
+    #markerEditNameInput {
+      width: 100%; padding: 11px 14px;
+      border: 1.5px solid #ddd; border-radius: 10px;
+      font-size: 15px; outline: none;
+      transition: border-color 0.15s; margin-bottom: 14px;
+    }
+    #markerEditNameInput:focus { border-color: #1a73e8; }
+    .edit-modal-btns { display: flex; gap: 10px; }
+    .edit-modal-btns button {
+      flex: 1; padding: 12px; border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+    }
+    #editSaveBtn  { background: #1a73e8; color: white; }
+    #editDeleteBtn{ background: #e53935; color: white; }
+    #editCancelBtn{ background: #f1f3f4; color: #555; }
+
+    /* 선 컨텍스트 메뉴 */
+    #polyMenu {
+      display: none; position: fixed; z-index: 9000;
+      background: white; border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      overflow: hidden; min-width: 140px;
+    }
+    #polyMenu.show { display: block; }
+    #polyMenu button {
+      display: block; width: 100%; padding: 13px 18px;
+      border: none; background: none; text-align: left;
+      font-size: 15px; cursor: pointer;
+    }
+    #polyMenu button:hover { background: #f1f3f4; }
+    #polyMenu button.danger { color: #e53935; }
+
+    /* CSS scale 줌 버튼 */
+    #zoomBtns {
+      position: absolute; z-index: 1000;
+      right: 16px; bottom: 32px;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    #zoomBtns button {
+      width: 48px; height: 48px;
+      background: white; border: none; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      font-size: 26px; font-weight: 300; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      color: #333;
+    }
+    #zoomBtns button:active { background: #f1f3f4; }
+    .distance-overlay {
+      background: white; border: 1.5px solid #db4040;
+      padding: 4px 8px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; color: #db4040;
+      white-space: nowrap; pointer-events: none;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    }
+    #myLocationBtn svg { width: 26px; height: 26px; }
+    #fileInput { display: none; }
+
+    /* 로딩 */
+    #loading {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45); z-index: 9999;
+      flex-direction: column; gap: 12px;
+      align-items: center; justify-content: center;
+      color: white; font-size: 15px;
+    }
+    #loading.show { display: flex; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 4px solid rgba(255,255,255,0.3);
+      border-top-color: white; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* 삭제 힌트 토스트 */
+    #deleteHint {
+      display: none; position: fixed;
+      bottom: 32px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.75); color: white;
+      font-size: 13px; padding: 8px 16px;
+      border-radius: 20px; z-index: 5000;
+      pointer-events: none; white-space: nowrap;
+    }
+    #deleteHint.show { display: block; }
+
+    /* 사진 InfoWindow */
+    .photo-iw { background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.35); max-width: 300px; }
+    .photo-iw-header { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; font-size: 13px; font-weight: bold; border-bottom: 1px solid #eee; gap: 6px; }
+    .photo-iw-header .iw-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .photo-iw-header .iw-map-btn { font-size: 15px; cursor: pointer; line-height: 1; }
+    .photo-iw-header .iw-close { cursor: pointer; color: #999; font-size: 14px; line-height: 1; }
+    .photo-iw img { width: 100%; max-height: 260px; object-fit: cover; display: block; cursor: zoom-in; }
+
+    /* 전체화면 사진 뷰어 */
+    #photoViewer {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.9); z-index: 8000;
+      align-items: center; justify-content: center;
+      flex-direction: column; padding: 16px;
+    }
+    #photoViewer.show { display: flex; }
+    #photoViewer img { max-width: 100%; max-height: 85vh; border-radius: 8px; object-fit: contain; }
+    #photoViewer .pv-name { color: rgba(255,255,255,0.8); font-size: 13px; margin-top: 10px; }
+
+    /* 마커 추가 모달 */
+    #markerModal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5); z-index: 7000;
+      align-items: flex-start; justify-content: center;
+    }
+    #markerModal.show { display: flex; }
+    #markerModalBox {
+      background: white; width: 100%; max-width: 480px;
+      border-radius: 0 0 16px 16px;
+      padding: 20px 20px 24px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+      animation: slideDown 0.22s ease;
+    }
+    @keyframes slideDown { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+    #markerModal h3 { margin: 0 0 14px; font-size: 16px; color: #333; }
+    #markerNameInput {
+      width: 100%; padding: 11px 14px;
+      border: 1.5px solid #ddd; border-radius: 10px;
+      font-size: 15px; outline: none;
+      transition: border-color 0.15s;
+    }
+    #markerNameInput:focus { border-color: #1a73e8; }
+    .modal-btns { display: flex; gap: 10px; margin-top: 14px; }
+    .modal-btns button {
+      flex: 1; padding: 12px; border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+    }
+    #modalCancelBtn { background: #f1f3f4; color: #555; }
+    #modalConfirmBtn { background: #1a73e8; color: white; }
+    #modalConfirmBtn:active { background: #1558b0; }
+
+    /* iOS 설치 안내 배너 */
+    #installBanner {
+      display: none; position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: white; padding: 14px 16px;
+      box-shadow: 0 -2px 12px rgba(0,0,0,0.15);
+      z-index: 6000; flex-direction: column; gap: 8px;
+    }
+    #installBanner.show { display: flex; }
+    #installBanner .banner-row { display: flex; align-items: center; justify-content: space-between; }
+    #installBanner .banner-text { font-size: 14px; color: #333; line-height: 1.5; }
+    #installBanner .banner-close { background: none; border: none; font-size: 20px; color: #999; cursor: pointer; padding: 4px; }
+    #installBanner .banner-step { font-size: 12px; color: #666; }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<button class="btn" id="saveBtn" title="KMZ로 저장" disabled>💾</button>
+<button class="btn" id="loadBtn" title="KMZ / 사진 불러오기">📂</button>
+<button class="btn" id="myLocationBtn" title="현재 위치">
+  <svg viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="4" stroke="#1a73e8" stroke-width="2"/>
+    <circle cx="12" cy="12" r="8" stroke="#1a73e8" stroke-width="1.5" stroke-dasharray="2 2"/>
+    <line x1="12" y1="2" x2="12" y2="6" stroke="#1a73e8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="12" y1="18" x2="12" y2="22" stroke="#1a73e8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="2" y1="12" x2="6" y2="12" stroke="#1a73e8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="18" y1="12" x2="22" y2="12" stroke="#1a73e8" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+</button>
+<button class="btn" id="drawBtn" title="선 그리기">✏️</button>
+<button class="btn" id="markerBtn" title="마커 추가">📍</button>
+<button class="btn" id="clearBtn" title="화면 초기화">🧹</button>
+<input type="file" id="fileInput" accept=".kmz,.zip,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
+
+<!-- 마커 조준원 -->
+<div id="crosshair"></div>
+
+<!-- 선 컨텍스트 메뉴 -->
+<div id="polyMenu">
+  <button id="polyEditBtn">✏️ 수정</button>
+  <button id="polyDeleteBtn" class="danger">🗑️ 삭제</button>
+  <button id="polyMenuCancelBtn">✕ 취소</button>
+</div>
+
+<!-- CSS scale 줌 버튼 -->
+<div id="zoomBtns">
+  <button id="cssZoomIn">+</button>
+  <button id="cssZoomOut">−</button>
+</div>
+
+<!-- 마커 수정/삭제 모달 -->
+<div id="markerEditModal">
+  <div id="markerEditModalBox">
+    <h3>📍 마커 수정</h3>
+    <input type="text" id="markerEditNameInput" placeholder="마커 이름" maxlength="50">
+    <div class="edit-modal-btns">
+      <button id="editSaveBtn">수정</button>
+      <button id="editDeleteBtn">삭제</button>
+      <button id="editCancelBtn">취소</button>
+    </div>
+  </div>
+</div>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loadingMsg">불러오는 중...</div>
+</div>
+
+<div id="deleteHint">길게 눌러서 마커 / 선을 삭제할 수 있어요</div>
+
+<div id="photoViewer">
+  <img id="viewerImg" src="" alt="">
+  <div class="pv-name" id="viewerName"></div>
+</div>
+
+<!-- iOS 홈화면 추가 안내 -->
+<div id="installBanner">
+  <div class="banner-row">
+    <span class="banner-text">📲 홈 화면에 추가하면 앱처럼 사용할 수 있어요</span>
+    <button class="banner-close" id="bannerClose">✕</button>
+  </div>
+  <div class="banner-step">하단 공유 버튼(□↑) → <b>홈 화면에 추가</b> 선택</div>
+</div>
+
+<!-- 마커 추가 모달 -->
+<div id="markerModal">
+  <div id="markerModalBox">
+    <h3>📍 마커 추가</h3>
+    <input type="text" id="markerNameInput" placeholder="마커 이름을 입력하세요" maxlength="50">
+    <div class="modal-btns">
+      <button id="modalCancelBtn">취소</button>
+      <button id="modalConfirmBtn">추가</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── 마커 추가 모달 ───────────────────────────────────
+let pendingMarkerLatLng = null;
+
+function openMarkerModal(latLng) {
+  pendingMarkerLatLng = latLng;
+  const input = document.getElementById('markerNameInput');
+  input.value = '';
+  document.getElementById('markerModal').classList.add('show');
+  setTimeout(() => input.focus(), 100);
+}
+
+function closeMarkerModal() {
+  document.getElementById('markerModal').classList.remove('show');
+  pendingMarkerLatLng = null;
+}
+
+document.getElementById('markerModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('markerModal')) closeMarkerModal();
+});
+document.getElementById('modalCancelBtn').onclick = closeMarkerModal;
+document.getElementById('modalConfirmBtn').onclick = () => {
+  const name = document.getElementById('markerNameInput').value.trim();
+  if (!name) { document.getElementById('markerNameInput').focus(); return; }
+  if (pendingMarkerLatLng) {
+    addMarker(pendingMarkerLatLng, name);
+// [추가]
+    document.getElementById('saveBtn').disabled = false;
+    autoSaveToDB();
+  }
+  closeMarkerModal();
+};
+document.getElementById('markerNameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('modalConfirmBtn').click();
+  if (e.key === 'Escape') closeMarkerModal();
+});
+
+// ─── 마커 수정/삭제 모달 ──────────────────────────────
+let editTarget = null; // { marker, iw, name, ... }
+
+function openMarkerEditModal(markerObj) {
+  editTarget = markerObj;
+  document.getElementById('markerEditNameInput').value = markerObj.name || '';
+  document.getElementById('markerEditModal').classList.add('show');
+  setTimeout(() => document.getElementById('markerEditNameInput').focus(), 100);
+}
+function closeMarkerEditModal() {
+  document.getElementById('markerEditModal').classList.remove('show');
+  editTarget = null;
+}
+document.getElementById('markerEditModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('markerEditModal')) closeMarkerEditModal();
+});
+document.getElementById('editCancelBtn').onclick = closeMarkerEditModal;
+document.getElementById('editSaveBtn').onclick = () => {
+  if (!editTarget) return;
+  const newName = document.getElementById('markerEditNameInput').value.trim();
+  if (!newName) { document.getElementById('markerEditNameInput').focus(); return; }
+  // 이름 업데이트
+  const entry = markers.find(m => m.marker === editTarget.marker);
+  if (entry) entry.name = newName;
+  // InfoWindow 내 이름 텍스트 갱신
+  const nameSpan = editTarget.iw.getContent().querySelector('span');
+  if (nameSpan) nameSpan.textContent = newName;
+  editTarget.iw.close();
+  closeMarkerEditModal();
+  autoSaveToDB();
+};
+document.getElementById('editDeleteBtn').onclick = () => {
+  if (!editTarget) return;
+  const t = editTarget;
+  t.iw.close();
+  t.marker.setMap(null);
+  markers = markers.filter(m => m.marker !== t.marker);
+  if (markers.length === 0 && polylines.length === 0) document.getElementById('saveBtn').disabled = true;
+  closeMarkerEditModal();
+  autoSaveToDB();
+};
+document.getElementById('markerEditNameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('editSaveBtn').click();
+  if (e.key === 'Escape') closeMarkerEditModal();
+});
+
+// ─── 마커 추가 버튼 (조준원 모드) ────────────────────
+let markerPlacingMode = false;
+
+document.getElementById('markerBtn').onclick = () => {
+  if (markerPlacingMode) {
+    // 2차 클릭: 지도 중심 좌표로 마커 이름 입력 모달 열기
+    markerPlacingMode = false;
+    document.getElementById('markerBtn').classList.remove('active');
+    document.getElementById('crosshair').classList.remove('show');
+    const center = map.getCenter();
+    openMarkerModal(center);
+  } else {
+    // 1차 클릭: 조준원 표시
+    markerPlacingMode = true;
+    document.getElementById('markerBtn').classList.add('active');
+    document.getElementById('crosshair').classList.add('show');
+  }
+};
+
+let historyState = 0; // 상태 카운터 추가
+
+function preventBack() {
+  historyState++;
+  window.history.pushState({ id: historyState }, null, '');
+}
+
+window.onload = () => {
+  // 1. 처음 로드될 때 히스토리 스택에 상태 추가
+  window.history.pushState({ page: 'map' }, null, '');
+
+  window.onpopstate = (e) => {
+    // 2. 그리기 모드일 때 뒤로가기를 누르면 (이전 점 삭제)
+    if (drawingMode && currentPath.length > 0) {
+      undoLastPoint(); // 실제 삭제 동작 수행
+      
+      // 3. 삭제 후 즉시 다시 히스토리를 푸시하여 
+      // 뒤로가기 스택이 비지 않게 유지 (종료 방지)
+      window.history.pushState({ page: 'map' }, null, '');
+    } else {
+      if (confirm('앱을 종료하시겠습니까?')) {
+        // 실제 종료를 원하면 주석 해제 (단, 웹앱 환경에 따라 다름)
+        // window.history.back(); 
+      } else {
+        // 종료 취소 시 다시 상태 복구
+        window.history.pushState({ page: 'map' }, null, '');
+      }
+    }
+  };
+
+  // PC 키보드 이벤트
+  document.addEventListener('keydown', e => {
+    if (drawingMode && currentPath.length > 0) {
+      if (e.key === 'Backspace' || e.key === 'Escape') {
+        e.preventDefault();
+        undoLastPoint();
+      }
+    }
+  });
+};
+
+// [추가] undoLastPoint 함수가 선언되어 있는지 확인해주세요. 
+// 만약 없다면 아래 내용을 참고하여 추가해야 합니다.
+function undoLastPoint() {
+  if (currentPath.length > 0) {
+    currentPath.pop(); // 배열에서 마지막 점 삭제
+    currentPolyline.setPath(currentPath); // 지도에 반영
+    
+    // 거리 표시 업데이트
+    if (currentPath.length > 0) {
+        updateDistanceOverlay(currentPath[currentPath.length - 1]);
+    } else {
+        if (distanceOverlay) distanceOverlay.setMap(null);
+    }
+  }
+}
+// ─── IndexedDB: KMZ 파일 저장/복원 ───────────────────
+const DB_NAME = 'kmz-viewer', DB_VER = 1, STORE = 'kmz';
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveKMZtoDB(fileOrBlob, fileName = 'last_state.kmz') {
+  try {
+    const db = await openDB();
+    const buf = await fileOrBlob.arrayBuffer();
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put({ buf, name: fileName }, 'last');
+    console.log('데이터가 DB에 저장되었습니다.');
+  } catch (e) { console.warn('DB 저장 실패', e); }
+}
+
+async function loadKMZfromDB() {
+  try {
+    const db = await openDB();
+    return new Promise(resolve => {
+      const req = db.transaction(STORE).objectStore(STORE).get('last');
+      req.onsuccess = () => {
+        if (req.result) {
+          resolve(new File([req.result.buf], req.result.name, { type: 'application/vnd.google-earth.kmz' }));
+        } else resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch (e) { return null; }
+}
+
+// ─── iOS 홈화면 추가 안내 ─────────────────────────────
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone = window.navigator.standalone === true;
+const bannerDismissed = localStorage.getItem('installBannerDismissed');
+if (isIOS && !isStandalone && !bannerDismissed) {
+  setTimeout(() => document.getElementById('installBanner').classList.add('show'), 2000);
+}
+document.getElementById('bannerClose').onclick = () => {
+  document.getElementById('installBanner').classList.remove('show');
+  localStorage.setItem('installBannerDismissed', '1');
+};
+
+// ─── Android 설치 프롬프트 ────────────────────────────
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const btn = document.createElement('button');
+  btn.className = 'btn';
+  btn.style.cssText = 'top:16px; right:128px; font-size:18px;';
+  btn.title = '앱 설치';
+  btn.textContent = '📥';
+  btn.onclick = () => {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(() => { deferredPrompt = null; btn.remove(); });
+  };
+  document.body.appendChild(btn);
+});
+
+// ─── 변수 ─────────────────────────────────────────────
+let map, markers = [], polylines = [];
+let trackingOn = false, watchId = null, locationMarker = null;
+let hasData = false, suppressMapClick = false, suppressLongPress = false;
+let drawingMode = false, currentPolyline = null, currentPath = [];
+let moveLine = null, distanceOverlay = null;
+let geocoder = null;
+let cssScale = 1; // CSS scale 전역 (레벨1 이후 확대용)
+let lastClientX = 0, lastClientY = 0; // 마지막 터치/클릭 화면 좌표
+
+// 네이티브 이벤트로 마지막 좌표 저장 (카카오 이벤트에는 clientX 없음)
+document.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    lastClientX = e.touches[0].clientX;
+    lastClientY = e.touches[0].clientY;
+  }
+}, { passive: true });
+document.addEventListener('mousemove', e => {
+  lastClientX = e.clientX;
+  lastClientY = e.clientY;
+}, { passive: true });
+
+// CSS scale 확대 시 클릭 좌표 보정 → 위경도 변환
+// transformOrigin이 중심(50% 50%)이므로 화면 중심 기준 오프셋을 cssScale로 나눠 역산
+function getScaledLatLng(clientX, clientY) {
+  const mapEl = document.getElementById('map');
+  const mapW = mapEl.offsetWidth;
+  const mapH = mapEl.offsetHeight;
+  const screenCenterX = mapW / 2;
+  const screenCenterY = mapH / 2;
+  // scale 전 실제 지도 내 픽셀 좌표로 역산
+  const px = screenCenterX + (clientX - screenCenterX) / cssScale;
+  const py = screenCenterY + (clientY - screenCenterY) / cssScale;
+  const proj = map.getProjection();
+  const centerPx = proj.pointFromCoords(map.getCenter());
+  return proj.coordsFromPoint(new kakao.maps.Point(
+    centerPx.x - mapW / 2 + px,
+    centerPx.y - mapH / 2 + py
+  ));
+}
+
+// ─── 지도 초기화 ──────────────────────────────────────
+function initMap(center) {
+  map = new kakao.maps.Map(document.getElementById('map'), {
+    center, level: 5, mapTypeId: kakao.maps.MapTypeId.HYBRID,
+    disableDoubleClick: true
+  });
+  geocoder = new kakao.maps.services.Geocoder();
+
+  // 더블탭/더블클릭으로 선 삭제 (줌 대신)
+  let lastTapTime = 0, lastTapPolyline = null;
+
+  kakao.maps.event.addListener(map, 'click', (e) => {
+    preventBack();
+    if (suppressMapClick) { suppressMapClick = false; return; }
+    if (drawingMode) {
+      // scale 1이면 그대로, scale 확대 중이면 저장된 네이티브 좌표로 보정
+      const latLng = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
+      currentPath.push(latLng);
+      currentPolyline.setPath(currentPath);
+      updateDistanceOverlay(latLng);
+      return;
+    }
+    markers.forEach(m => m.iw.close());
+  });
+
+  // 거리 오버레이 업데이트 함수 (PC mousemove + 모바일 공용)
+  function updateDistanceOverlay(latLng, isPreview) {
+    if (!drawingMode || currentPath.length === 0) return;
+    const last = currentPath[currentPath.length - 1];
+    const fmt = d => d < 1000 ? Math.round(d) + 'm' : (d/1000).toFixed(2) + 'km';
+
+    if (isPreview) {
+      // 미리보기: 점선 + 현재 마우스 위치까지 거리
+      if (!moveLine) {
+        moveLine = new kakao.maps.Polyline({
+          strokeWeight: 2, strokeColor: '#db4040',
+          strokeOpacity: 0.6, strokeStyle: 'shortdash'
+        });
+      }
+      moveLine.setPath([last, latLng]);
+      moveLine.setMap(map);
+      const total = currentPolyline.getLength() + moveLine.getLength();
+      const html = '<div class="distance-overlay">✏️ 총 ' + fmt(total) + '</div>';
+      if (distanceOverlay) {
+        distanceOverlay.setPosition(latLng);
+        distanceOverlay.setContent(html);
+      } else {
+        distanceOverlay = new kakao.maps.CustomOverlay({
+          map, content: html, position: latLng, xAnchor: 0, yAnchor: 1.8, zIndex: 3
+        });
+      }
+    } else {
+      // 점 찍은 후: 확정된 총 거리 표시
+      if (moveLine) { moveLine.setMap(null); moveLine = null; }
+      const total = currentPolyline.getLength();
+      const html = '<div class="distance-overlay">📍 총 ' + fmt(total) + '</div>';
+      if (distanceOverlay) {
+        distanceOverlay.setPosition(latLng);
+        distanceOverlay.setContent(html);
+      } else {
+        distanceOverlay = new kakao.maps.CustomOverlay({
+          map, content: html, position: latLng, xAnchor: 0, yAnchor: 1.8, zIndex: 3
+        });
+      }
+    }
+  }
+
+  
+  kakao.maps.event.addListener(map, 'mousemove', (e) => {
+    if (!drawingMode || currentPath.length === 0) return;
+    const latLng = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
+    updateDistanceOverlay(latLng, true);
+  });
+  // 지도 빈 곳 길게 누르기 제거 (마커는 📍 버튼으로만 추가)
+  let mapLongPressTimer = null;
+  let startX = 0, startY = 0;
+
+  kakao.maps.event.addListener(map, 'touchstart', (e) => {
+    if (suppressLongPress) return;
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    startX = t.clientX; startY = t.clientY;
+  });
+  kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
+  kakao.maps.event.addListener(map, 'touchmove', (e) => {
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    if (Math.abs(t.clientX - startX) > 8 || Math.abs(t.clientY - startY) > 8) {
+      clearTimeout(mapLongPressTimer);
+      if (drawingMode && currentPath.length > 0) {
+        const latLng = cssScale > 1 ? getScaledLatLng(t.clientX, t.clientY) : e.latLng;
+        updateDistanceOverlay(latLng, true);
+      }
+    }
+  });
+
+  // PC 마우스 (롱프레스 마커추가 제거)
+  kakao.maps.event.addListener(map, 'mouseup', () => clearTimeout(mapLongPressTimer));
+
+  // ─── 레벨 1 이후 CSS scale 확대 ──────────────────────
+  const mapEl = document.getElementById('map');
+  const MAX_CSS_SCALE = 8;
+
+  function applyScale(newScale) {
+    cssScale = Math.max(1, Math.min(MAX_CSS_SCALE, newScale));
+    mapEl.style.transformOrigin = '50% 50%';
+    mapEl.style.transform = cssScale === 1 ? '' : `scale(${cssScale})`;
+  }
+
+  // 핀치줌: 레벨 1일 때만 CSS scale 적용
+  let pinchStartDist = null, pinchStartScale = 1;
+  mapEl.addEventListener('touchstart', ev => {
+    if (ev.touches.length === 2) {
+      const dx = ev.touches[0].clientX - ev.touches[1].clientX;
+      const dy = ev.touches[0].clientY - ev.touches[1].clientY;
+      pinchStartDist = Math.hypot(dx, dy);
+      pinchStartScale = cssScale;
+    }
+  }, { passive: true });
+
+  mapEl.addEventListener('touchmove', ev => {
+    if (ev.touches.length !== 2 || pinchStartDist === null) return;
+    if (map.getLevel() > 1) { pinchStartDist = null; return; }
+    const dx = ev.touches[0].clientX - ev.touches[1].clientX;
+    const dy = ev.touches[0].clientY - ev.touches[1].clientY;
+    const dist = Math.hypot(dx, dy);
+    applyScale(pinchStartScale * (dist / pinchStartDist));
+  }, { passive: true });
+
+  mapEl.addEventListener('touchend', () => { pinchStartDist = null; }, { passive: true });
+
+  // 마우스 휠: 레벨 1에서 추가 확대
+  mapEl.addEventListener('wheel', ev => {
+    if (map.getLevel() > 1) return; // 레벨 1 아닐 때는 카카오맵이 처리
+    if (cssScale <= 1 && ev.deltaY > 0) return; // scale 1에서 축소 시도 → 카카오맵에 넘김
+    ev.stopPropagation();
+    const delta = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+    applyScale(cssScale * delta);
+  }, { passive: false });
+
+  // 줌 레벨 올라가면 (축소) CSS scale도 함께 1로 리셋
+  kakao.maps.event.addListener(map, 'zoom_changed', () => {
+    if (map.getLevel() > 1) applyScale(1);
+  });
+
+  // CSS scale +/- 버튼
+  document.getElementById('cssZoomIn').onclick = () => {
+    if (map.getLevel() > 1) {
+      map.setLevel(map.getLevel() - 1); // 카카오맵 확대
+    } else {
+      applyScale(cssScale * 2); // CSS scale 2배
+    }
+  };
+  document.getElementById('cssZoomOut').onclick = () => {
+    if (cssScale > 1) {
+      applyScale(cssScale / 2); // CSS scale 축소
+    } else {
+      map.setLevel(map.getLevel() + 1); // 카카오맵 축소
+    }
+  };
+}
+
+kakao.maps.load(() => {
+  initMap(new kakao.maps.LatLng(35.6478, 127.5213));
+
+  loadKMZfromDB().then(file => {
+    if (file) loadKMZ(file, true); 
+  });
+
+  // ─── File Handling API: KMZ 파일로 앱 실행됐을 때 ─────
+  if ('launchQueue' in window) {
+    window.launchQueue.setConsumer(async (launchParams) => {
+      if (!launchParams.files || launchParams.files.length === 0) return;
+      const fileHandle = launchParams.files[0];
+      const file = await fileHandle.getFile();
+      if (file.name.toLowerCase().endsWith('.kmz')) {
+        await saveKMZtoDB(file);
+        loadKMZ(file);
+      }
+    });
+  }
+});
+
+// ─── 선 그리기 ───────────────────────────────────────
+// ─── 선 컨텍스트 메뉴 ────────────────────────────────
+let polyMenuTarget = null; // { poly, entry }
+
+function showPolyMenu(x, y, poly, entry) {
+  if (drawingMode && poly === currentPolyline) return;
+  polyMenuTarget = { poly, entry };
+  const menu = document.getElementById('polyMenu');
+  menu.style.left = Math.min(x, window.innerWidth - 160) + 'px';
+  menu.style.top  = Math.min(y, window.innerHeight - 130) + 'px';
+  menu.classList.add('show');
+}
+function hidePolyMenu() {
+  document.getElementById('polyMenu').classList.remove('show');
+  polyMenuTarget = null;
+}
+document.addEventListener('click', e => {
+  if (!document.getElementById('polyMenu').contains(e.target)) hidePolyMenu();
+});
+
+document.getElementById('polyMenuCancelBtn').onclick = hidePolyMenu;
+
+document.getElementById('polyDeleteBtn').onclick = () => {
+  if (!polyMenuTarget) return;
+  const t = polyMenuTarget;
+  t.poly.setMap(null);
+  polylines = polylines.filter(p => p.poly !== t.poly);
+  if (markers.length === 0 && polylines.length === 0) document.getElementById('saveBtn').disabled = true;
+  autoSaveToDB();
+  hidePolyMenu();
+};
+
+document.getElementById('polyEditBtn').onclick = () => {
+  if (!polyMenuTarget) return;
+  const { poly, entry } = polyMenuTarget;
+  hidePolyMenu();
+
+  // 기존 선 제거 후 그리기 모드로 복원
+  if (drawingMode) stopDrawing();
+  poly.setMap(null);
+  polylines = polylines.filter(p => p.poly !== poly);
+
+  // 기존 path로 새 폴리라인 생성 후 그리기 모드 진입
+  drawingMode = true;
+  currentPath = [...(entry.path || poly.getPath())];
+  currentPolyline = new kakao.maps.Polyline({
+    map, path: currentPath,
+    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
+  });
+  attachPolylineDelete(currentPolyline);
+  polylines.push({ poly: currentPolyline, name: entry.name || '선', path: currentPath });
+  document.getElementById('drawBtn').classList.add('active');
+  document.getElementById('drawBtn').title = '선 그리기 종료';
+
+  // 거리 오버레이 표시
+  if (currentPath.length > 0) {
+    const last = currentPath[currentPath.length - 1];
+    updateDistanceOverlay(last);
+  }
+};
+
+function attachPolylineDelete(poly, entry) {
+  // 우클릭 (PC)
+  kakao.maps.event.addListener(poly, 'rightclick', e => {
+    suppressMapClick = true;
+    showPolyMenu(e.clientX || lastClientX, e.clientY || lastClientY, poly, entry || polylines.find(p => p.poly === poly));
+  });
+  // 길게 누르기 (모바일)
+  attachLongPress(poly, () => {
+    if (drawingMode && poly === currentPolyline) return;
+    showPolyMenu(lastClientX, lastClientY, poly, polylines.find(p => p.poly === poly));
+  });
+}
+
+function startDrawing() {
+  drawingMode = true;
+  currentPath = [];
+  currentPolyline = new kakao.maps.Polyline({
+    map, path: currentPath,
+    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
+  });
+  attachPolylineDelete(currentPolyline);
+  polylines.push({ poly: currentPolyline, name: '선', path: currentPath });
+  document.getElementById('drawBtn').classList.add('active');
+  document.getElementById('drawBtn').title = '선 그리기 종료';
+}
+
+function stopDrawing() {
+  document.getElementById('crosshair').classList.remove('show');
+  drawingMode = false;
+  if (moveLine) { moveLine.setMap(null); moveLine = null; }
+  if (distanceOverlay) { distanceOverlay.setMap(null); distanceOverlay = null; }
+  // 점이 1개 이하면 의미없는 선 → 제거
+  if (currentPolyline && currentPath.length <= 1) {
+    currentPolyline.setMap(null);
+    polylines = polylines.filter(p => p.poly !== currentPolyline);
+} else if (currentPolyline) {
+    // path 스냅샷 저장
+    const lastPoly = polylines.find(p => p.poly === currentPolyline);
+    if (lastPoly) lastPoly.path = [...currentPath];
+    document.getElementById('saveBtn').disabled = false;
+    autoSaveToDB();
+  }  currentPolyline = null;
+  currentPath = [];
+  document.getElementById('drawBtn').classList.remove('active');
+  document.getElementById('drawBtn').title = '선 그리기';
+}
+
+document.getElementById('drawBtn').onclick = () => {
+  if (drawingMode) stopDrawing();
+  else startDrawing();
+};
+
+// ─── 화면 초기화 버튼 ───────────────────────────────
+document.getElementById('clearBtn').onclick = () => {
+  if (!confirm('모든 마커와 선을 삭제하고 화면을 초기화할까요?')) return;
+  markers.forEach(m => { m.iw.close(); m.marker.setMap(null); });
+  markers = [];
+  polylines.forEach(p => p.poly.setMap(null));
+  polylines = [];
+  if (drawingMode) stopDrawing();
+  hasData = false;
+  document.getElementById('saveBtn').disabled = true;
+  autoSaveToDB();
+};
+
+// ─── 자동 저장 기능 ───────────────────────────────────
+async function autoSaveToDB() {
+  try {
+    const zip = new JSZip();
+    const filesFolder = zip.folder('files');
+    let placemarkXml = '';
+    let photoIndex = 0;
+
+    for (const m of markers) {
+      if (!m.marker.getMap()) continue;
+      const pos = m.marker.getPosition();
+      const lat = pos.getLat(), lng = pos.getLng();
+      const safeName = (m.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      if (m.imgSrc) {
+        const compressed = await compressImage(m.imgSrc);
+        const base64Data = compressed.split(',')[1];
+        const filename = `photo_${String(photoIndex++).padStart(4,'0')}.jpg`;
+        filesFolder.file(filename, base64Data, { base64: true });
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data></ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+      } else {
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+      }
+    }
+    for (const pl of polylines) {
+      if (!pl.poly.getMap()) continue;
+      const safeName = (pl.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const coords = pl.path.map(p => `${p.getLng()},${p.getLat()},0`).join('\n      ');
+      placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <LineString><coordinates>${coords}</coordinates></LineString>\n  </Placemark>`;
+    }
+
+    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
+
+    const blob = await zip.generateAsync({ 
+          type: 'blob', 
+          compression: 'DEFLATE',
+          mimeType: 'application/vnd.google-earth.kmz' 
+        });
+
+    await saveKMZtoDB(blob);
+  } catch (err) {
+    console.error('자동 저장 오류:', err);
+  }
+}
+
+// ─── 전체화면 뷰어 ────────────────────────────────────
+const photoViewer = document.getElementById('photoViewer');
+photoViewer.addEventListener('click', e => {
+  if (e.target === photoViewer || e.target === document.getElementById('viewerName')) {
+    photoViewer.classList.remove('show');
+  }
+});
+function openViewer(src, name) {
+  document.getElementById('viewerImg').src = src;
+  document.getElementById('viewerName').textContent = name;
+  photoViewer.classList.add('show');
+}
+
+// ─── 내 위치 토글 ─────────────────────────────────────
+document.getElementById('myLocationBtn').onclick = () => {
+  const btn = document.getElementById('myLocationBtn');
+  if (trackingOn) {
+    trackingOn = false;
+    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    if (locationMarker) { locationMarker.setMap(null); locationMarker = null; }
+    btn.classList.remove('active');
+  } else {
+    trackingOn = true;
+    btn.classList.add('active');
+    watchId = navigator.geolocation.watchPosition(pos => {
+      const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+      map.setCenter(ll);
+      if (locationMarker) locationMarker.setMap(null);
+      locationMarker = new kakao.maps.Marker({
+        map, position: ll,
+        image: new kakao.maps.MarkerImage(
+          'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png',
+          new kakao.maps.Size(24, 35)
+        )
+      });
+    }, () => {
+      alert('위치 정보를 가져올 수 없습니다.');
+      trackingOn = false;
+      btn.classList.remove('active');
+    }, { enableHighAccuracy: true, maximumAge: 3000 });
+  }
+};
+
+// ─── 불러오기 ─────────────────────────────────────────
+document.getElementById('loadBtn').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = async e => {
+  const files = Array.from(e.target.files);
+  if (!files.length) return;
+  e.target.value = '';
+
+  // 이미지 파일과 지도 파일 분리
+  const imageFiles = files.filter(f => /\.(jpe?g|png)$/i.test(f.name) || f.type.startsWith('image/'));
+  const mapFiles = files.filter(f => /\.(kmz|zip)$/i.test(f.name));
+
+  // 지도 파일 처리 (여러 개 모두)
+  for (const file of mapFiles) {
+    await loadKMZ(file);
+  }
+  if (mapFiles.length > 0) autoSaveToDB();
+
+  // 이미지 파일 처리 - 현재 지도 중심에 사진 마커 추가
+  for (const imgFile of imageFiles) {
+    await loadImageAsMarker(imgFile);
+  }
+};
+
+// ─── 이미지 파일을 사진 마커로 추가 (EXIF GPS 우선) ──
+async function loadImageAsMarker(imgFile) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const imgSrc = ev.target.result;
+      const name = imgFile.name.replace(/\.[^.]+$/, '');
+
+      // EXIF GPS 읽기
+      let latlng = null;
+      try {
+        const exif = piexif.load(imgSrc);
+        const gps = exif['GPS'];
+        if (gps && gps[piexif.GPSIFD.GPSLatitude] && gps[piexif.GPSIFD.GPSLongitude]) {
+          const toDec = (dms, ref) => {
+            const d = dms[0][0]/dms[0][1];
+            const m = dms[1][0]/dms[1][1];
+            const s = dms[2][0]/dms[2][1];
+            return (d + m/60 + s/3600) * ((ref === 'S' || ref === 'W') ? -1 : 1);
+          };
+          const lat = toDec(gps[piexif.GPSIFD.GPSLatitude],  gps[piexif.GPSIFD.GPSLatitudeRef]  || 'N');
+          const lng = toDec(gps[piexif.GPSIFD.GPSLongitude], gps[piexif.GPSIFD.GPSLongitudeRef] || 'E');
+          if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
+            latlng = new kakao.maps.LatLng(lat, lng);
+          }
+        }
+      } catch(e) {}
+
+      if (latlng) {
+        addPhotoMarker(latlng, imgSrc, name);
+        map.panTo(latlng);
+      } else {
+        addPhotoMarker(map.getCenter(), imgSrc, name);
+      }
+      document.getElementById('saveBtn').disabled = false;
+      autoSaveToDB();
+      resolve();
+    };
+    reader.readAsDataURL(imgFile);
+  });
+}
+
+// ─── 저장(KMZ 내보내기) ───────────────────────────────
+document.getElementById('saveBtn').onclick = exportKMZ;
+
+async function exportKMZ() {
+  // 1. 현재 날짜 문자열
+  const now = new Date();
+  const dateStr = now.getFullYear().toString() +
+                  (now.getMonth() + 1).toString().padStart(2, '0') +
+                  now.getDate().toString().padStart(2, '0');
+
+  // 2. 지도 중심 좌표로 주소 조회 → 읍면+리 이름 추출
+  const getAddrPrefix = () => new Promise(resolve => {
+    const center = map.getCenter();
+    geocoder.coord2Address(center.getLng(), center.getLat(), (result, status) => {
+      if (status !== kakao.maps.services.Status.OK || !result[0]) { resolve(''); return; }
+      const parts = (result[0].address?.address_name || '').split(' ').filter(p => !/^\d/.test(p));
+      // 읍·면이 있으면: 읍면명(접미사제거) + 리명(접미사포함)
+      const eupMyeon = parts.find(p => /[읍면]$/.test(p)) || '';
+      const ri       = parts.find(p => /리$/.test(p)) || '';
+      // 구가 있으면: 구명(접미사제거) + 동명(접미사포함, 가번지 포함)
+      const gu   = parts.find(p => /구$/.test(p)) || '';
+      const dong = [...parts].reverse().find(p => /동(\d+가)?$/.test(p)) || '';
+
+      let prefix = '';
+      if (eupMyeon && ri) {
+        prefix = `${eupMyeon.replace(/[읍면]$/, '')}${ri}_`;
+      } else if (eupMyeon) {
+        prefix = `${eupMyeon}_`;
+      } else if (gu && dong) {
+        prefix = `${gu.replace(/구$/, '')}${dong}_`;
+      } else if (gu) {
+        prefix = `${gu.replace(/구$/, '')}_`;
+      } else if (dong) {
+        prefix = `${dong}_`;
+      }
+      resolve(prefix);
+    });
+  });
+
+  const prefix = await getAddrPrefix();
+
+  const activeM = markers.filter(m => m.marker.getMap());
+  const lastMarkerRaw = ([...activeM].reverse().find(m => !m.imgSrc)?.name
+                        || activeM.at(-1)?.name || '');
+  const lastMarkerName = lastMarkerRaw.replace(/_\d{8}.*$/, '').replace(/[\\/:*?"<>|]/g, '').trim();
+
+  const defaultName = lastMarkerName
+    ? `${prefix}${dateStr}_${lastMarkerName}`
+    : `${prefix}${dateStr}_`;
+
+  // 3. 사용자 파일명 입력
+  const userInput = prompt("저장할 파일 이름을 입력하세요 (확장자 제외):", defaultName);
+  if (userInput === null) return;
+  const fileName = (userInput.trim() || defaultName) + ".kmz";
+
+  showLoading('KMZ 저장 중...');
+  try {
+    const zip = new JSZip();
+    const filesFolder = zip.folder('files');
+    let placemarkXml = '';
+    let photoIndex = 0;
+
+    // ... (기존 마커 및 폴리라인 데이터 구성 코드는 동일하게 유지) ...
+    for (const m of markers) {
+      if (!m.marker.getMap()) continue;
+      const pos = m.marker.getPosition();
+      const lat = pos.getLat(), lng = pos.getLng();
+      const safeName = (m.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      if (m.imgSrc) {
+        const compressed = await compressImage(m.imgSrc);
+        const base64Data = compressed.split(',')[1];
+        const filename = `photo_${String(photoIndex++).padStart(4,'0')}.jpg`;
+        filesFolder.file(filename, base64Data, { base64: true });
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data></ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+      } else {
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+      }
+    }
+    for (const pl of polylines) {
+      if (!pl.poly.getMap()) continue;
+      const safeName = (pl.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const coords = pl.path.map(p => `${p.getLng()},${p.getLat()},0`).join('\n      ');
+      placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <LineString><coordinates>${coords}</coordinates></LineString>\n  </Placemark>`;
+    }
+
+    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
+
+// (기존 zip.generateAsync 부분 수정)
+    const blob = await zip.generateAsync({ 
+      type: 'blob', 
+      compression: 'DEFLATE',
+      mimeType: 'application/vnd.google-earth.kmz' // MIME 타입 추가
+    });
+
+    const url = URL.createObjectURL(blob);
+
+    // 1. 공통 다운로드 태그 생성
+    const a = document.createElement('a');
+    a.href = url;
+    // 확장자 강제 지정
+    a.download = fileName.endsWith('.kmz') ? fileName : fileName + '.kmz';
+    document.body.appendChild(a);
+
+    // 2. 환경별 다운로드 실행
+    if (isIOS) {
+      // iOS 환경 대응
+      window.open(url, '_blank');
+    } else {
+      // 안드로이드 및 PC 환경
+      a.click();
+    }
+
+    // 3. 정리
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000); 
+    
+    hideLoading();
+  } catch (err) {
+    hideLoading();
+    alert('KMZ 저장 중 오류: ' + err.message);
+  }
+}
+// ─── 이미지 압축 (저장 시 500KB 이하) ────────────────
+function compressImage(imgSrc) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const TARGET = 300 * 1024; // 500KB (base64 환산)
+      const canvas = document.createElement('canvas');
+      const MAX = 1920;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+        else       { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      let quality = 0.85;
+      let result = canvas.toDataURL('image/jpeg', quality);
+      // base64 길이 * 0.75 ≈ 실제 바이트
+      while (result.length * 0.75 > TARGET && quality > 0.1) {
+        quality = Math.round((quality - 0.05) * 100) / 100;
+        result = canvas.toDataURL('image/jpeg', quality);
+      }
+      resolve(result);
+    };
+    img.src = imgSrc;
+  });
+}
+function showLoading(msg) {
+  document.getElementById('loadingMsg').textContent = msg || '불러오는 중...';
+  document.getElementById('loading').classList.add('show');
+}
+function hideLoading() { document.getElementById('loading').classList.remove('show'); }
+
+// ─── 삭제 힌트 ────────────────────────────────────────
+let hintShown = false;
+function showDeleteHint() {
+  if (hintShown) return;
+  hintShown = true;
+  const el = document.getElementById('deleteHint');
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ─── 길게 누르기 ──────────────────────────────────────
+const LONG_PRESS_MS = 600;
+function attachLongPress(target, onLongPress) {
+  let timer = null, startX = 0, startY = 0;
+  function start(x, y) {
+    startX = x; startY = y;
+    suppressLongPress = true;  // 마커/선 위에서 누름 → 지도 롱프레스 차단
+    timer = setTimeout(() => { suppressLongPress = false; onLongPress(); }, LONG_PRESS_MS);
+  }
+  function cancel() { clearTimeout(timer); timer = null; suppressLongPress = false; }
+
+  kakao.maps.event.addListener(target, 'touchstart', e => {
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    start(t.clientX, t.clientY);
+  });
+  kakao.maps.event.addListener(target, 'touchend', cancel);
+  kakao.maps.event.addListener(target, 'touchmove', e => {
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    if (Math.abs(t.clientX - startX) > 8 || Math.abs(t.clientY - startY) > 8) cancel();
+  });
+  kakao.maps.event.addListener(target, 'mousedown', e => {
+    if (e && e.button != null && e.button !== 0) return;
+    try {
+      const point = map.getProjection().pointFromCoords(
+        target.getPosition ? target.getPosition() : target.getPath()[0]
+      );
+      start(point.x, point.y);
+    } catch (_) {}
+  });
+  kakao.maps.event.addListener(target, 'mouseup', cancel);
+}
+
+// ─── 마커 추가 ────────────────────────────────────────
+function addMarker(latlng, name) {
+  const marker = new kakao.maps.Marker({ map, position: latlng });
+  const div = document.createElement('div');
+  div.style.cssText = 'background:white;padding:6px 10px;border-radius:6px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,0.3);display:flex;align-items:center;gap:6px;';
+  div.innerHTML = `<span>${name}</span><span style="cursor:pointer;color:#999;">✕</span>`;
+  const iw = new kakao.maps.InfoWindow({ content: div, removable: false });
+  div.querySelector('span:last-child').onclick = () => iw.close();
+  kakao.maps.event.addListener(marker, 'click', () => { suppressMapClick = true; iw.open(map, marker); });
+  // 길게 누르기 → 수정/삭제 모달
+  const entry = { marker, iw, name, imgSrc: null };
+  attachLongPress(marker, () => {
+    iw.close();
+    openMarkerEditModal(entry);
+  });
+  markers.push(entry);
+  showDeleteHint();
+}
+
+// ─── 사진 마커 추가 ───────────────────────────────────
+function addPhotoMarker(latlng, imgSrc, name) {
+  const marker = new kakao.maps.Marker({ map, position: latlng });
+  const lat = latlng.getLat(), lng = latlng.getLng();
+  const kakaoAppUrl = `kakaomap://look?p=${lat},${lng}`;
+  const kakaoWebUrl = `https://map.kakao.com/link/map/${encodeURIComponent(name)},${lat},${lng}`;
+
+  const div = document.createElement('div');
+  div.className = 'photo-iw';
+  div.innerHTML = `
+    <div class="photo-iw-header">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</span>
+      <div class="iw-actions">
+        <span class="iw-map-btn" title="카카오맵에서 열기">🗺️</span>
+        <span class="iw-close">✕</span>
+      </div>
+    </div>
+    <img src="${imgSrc}" title="탭하면 크게 보기">
+  `;
+  const iw = new kakao.maps.InfoWindow({ content: div, removable: false });
+  div.querySelector('.iw-close').onclick = () => iw.close();
+  div.querySelector('.iw-map-btn').onclick = () => {
+    window.location.href = kakaoAppUrl;
+    setTimeout(() => { if (!document.hidden) window.open(kakaoWebUrl, '_blank'); }, 1500);
+  };
+  div.querySelector('img').onclick = () => openViewer(imgSrc, name);
+  kakao.maps.event.addListener(marker, 'click', () => { suppressMapClick = true; iw.open(map, marker); });
+  // 길게 누르기 → 수정/삭제 모달
+  const entry = { marker, iw, name, imgSrc };
+  attachLongPress(marker, () => {
+    iw.close();
+    openMarkerEditModal(entry);
+  });
+  markers.push(entry);
+  showDeleteHint();
+}
+
+// ─── KMZ 불러오기 ─────────────────────────────────────
+async function loadKMZ(file, silent = false) {
+  // .zip 확장자도 KMZ(ZIP 기반)이므로 동일하게 처리
+  const isZipOrKMZ = /\.(kmz|zip)$/i.test(file.name) || file.type === 'application/vnd.google-earth.kmz' || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
+  if (!isZipOrKMZ) { alert('KMZ 또는 ZIP 파일만 불러올 수 있습니다.'); return; }
+  if (!silent) showLoading('KMZ 압축 해제 중...');
+  else showLoading('이전 데이터 복원 중...');
+
+  // DB 자동 복원(silent)일 때만 기존 데이터 초기화
+  // 사용자가 직접 불러올 때는 기존 마커/선 유지하고 추가
+  if (silent) {
+    markers.forEach(m => { m.iw.close(); m.marker.setMap(null); });
+    markers = [];
+    polylines.forEach(p => p.poly.setMap(null));
+    polylines = [];
+    hasData = false;
+    document.getElementById('saveBtn').disabled = true;
+  }
+
+  try {
+    const zip = await JSZip.loadAsync(file);
+    const zipFiles = Object.keys(zip.files);
+
+    // 파일명에 널문자(\u0000)가 포함된 경우 제거 후 탐색
+    let kmlText = null;
+    for (const name of zipFiles) {
+      const cleanName = name.replace(/\0/g, '');
+      if (/\.kml$/i.test(cleanName)) {
+        try {
+          const text = await zip.files[name].async('string');
+          if (text && text.length > 0) { kmlText = text; break; }
+        } catch(e) {}
+      }
+    }
+    if (!kmlText) { alert('.kml 파일을 읽을 수 없습니다.\n포함된 파일:\n' + zipFiles.map(n=>n.replace(/\0/g,'')).join('\n')); hideLoading(); return; }
+
+    showLoading('데이터 읽는 중...');
+    const xml = new DOMParser().parseFromString(kmlText, 'application/xml');
+    // Folder 안에 있는 Placemark도 모두 포함
+    const placemarks = Array.from(xml.getElementsByTagName('Placemark'));
+    const bounds = new kakao.maps.LatLngBounds();
+
+    for (let i = 0; i < placemarks.length; i++) {
+      const pm = placemarks[i];
+      const pmName = pm.getElementsByTagName('name')[0]?.textContent?.trim()
+                  || pm.getElementsByTagName('n')[0]?.textContent?.trim()
+                  || '설명 없음';
+
+      // 이미지 경로 방법 1: Data 태그 (기존 방식)
+      let photoFilename = '';
+      for (const d of Array.from(pm.getElementsByTagName('Data'))) {
+        if (d.getAttribute('name') === 'photoFile') {
+          photoFilename = d.getElementsByTagName('value')[0]?.textContent || '';
+          break;
+        }
+      }
+
+      // 이미지 경로 방법 2: description 안 <img src="..."> 추출 (CDATA 포함)
+      if (!photoFilename) {
+        const descEl = pm.getElementsByTagName('description')[0];
+        if (descEl) {
+          const descText = descEl.textContent || '';
+          const imgMatch = descText.match(/src=["']([^"']+\.(jpe?g|png))["']/i)
+                        || descText.match(/src=([^\s>]+\.(jpe?g|png))/i);
+          if (imgMatch) {
+            const thumbPath = imgMatch[1].trim();
+            const rollPath = thumbPath.replace('_thumb.', '_roll.');
+            const rollEntry = zipFiles.find(z => z === rollPath || z.endsWith('/' + rollPath.split('/').pop()));
+            photoFilename = rollEntry ? rollPath : thumbPath;
+          }
+        }
+      }
+
+      const lineString = pm.getElementsByTagName('LineString')[0];
+      const point = pm.getElementsByTagName('Point')[0];
+
+      if (lineString) {
+        const coordsText = lineString.getElementsByTagName('coordinates')[0]?.textContent || '';
+        const pts = coordsText.trim().split(/\s+/).map(c => {
+          const [lng, lat] = c.split(',').map(Number);
+          return new kakao.maps.LatLng(lat, lng);
+        }).filter(ll => !isNaN(ll.getLat()) && !isNaN(ll.getLng()));
+        if (pts.length) {
+          const entry = { poly: null, name: pmName, path: pts };
+          const poly = new kakao.maps.Polyline({ map, path: pts, strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9 });
+          entry.poly = poly;
+          pts.forEach(p => bounds.extend(p));
+          attachPolylineDelete(poly, entry);
+          polylines.push(entry);
+        }
+      } else if (point) {
+        const coordsText = point.getElementsByTagName('coordinates')[0]?.textContent || '';
+        const [lng, lat] = coordsText.trim().split(',').map(Number);
+        if (isNaN(lat) || isNaN(lng)) continue;
+        const ll = new kakao.maps.LatLng(lat, lng);
+        bounds.extend(ll);
+
+        if (photoFilename) {
+          // files/, images/, photo/ 등 다양한 경로 후보 탐색 (널문자 제거 후 비교)
+          const baseName = photoFilename.split('/').pop();
+          let photoZipFile = null;
+          for (const name of zipFiles) {
+            const cleanName = name.replace(/\0/g, '');
+            if (cleanName === photoFilename ||
+                cleanName === `files/${photoFilename}` ||
+                cleanName === `images/${baseName}` ||
+                cleanName === `photo/${baseName}` ||
+                cleanName.endsWith('/' + baseName) ||
+                cleanName === baseName) {
+              photoZipFile = zip.files[name];
+              break;
+            }
+          }
+          if (photoZipFile) {
+            const base64 = await photoZipFile.async('base64');
+            const ext = baseName.split('.').pop().toLowerCase();
+            const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
+            addPhotoMarker(ll, `data:${mime};base64,${base64}`, pmName);
+          } else {
+            addMarker(ll, pmName);
+          }
+        } else {
+          addMarker(ll, pmName);
+        }
+      }
+
+      if (i % 10 === 0) {
+        showLoading(`마커 생성 중... (${i + 1} / ${placemarks.length})`);
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    if (!bounds.isEmpty()) map.setBounds(bounds);
+    hasData = true;
+    document.getElementById('saveBtn').disabled = false;
+    hideLoading();
+  } catch (err) {
+    hideLoading();
+    alert('오류: ' + err.message);
+  }
+}
+</script>
+</body>
+</html>

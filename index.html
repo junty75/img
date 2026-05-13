@@ -19,6 +19,15 @@
     html, body { height: 100%; margin: 0; overflow: hidden; }
     #map { width: 100%; height: 100%; }
 
+    /* ── 상단 주소표시 ── */
+    #address-display {
+      position: absolute; top: 10px; left: 10px; z-index: 2000;
+      background: rgba(0,0,0,0.62); color: white; font-size: 13px;
+      padding: 5px 10px; border-radius: 6px; pointer-events: auto; cursor: pointer;
+      white-space: nowrap; max-width: calc(100vw - 24px);
+      overflow: hidden; text-overflow: ellipsis;
+    }
+
     .btn {
       position: absolute; z-index: 1000;
       background: white; border: none; border-radius: 8px;
@@ -85,6 +94,30 @@
     #editSaveBtn  { background: #1a73e8; color: white; }
     #editDeleteBtn{ background: #e53935; color: white; }
     #editCancelBtn{ background: #f1f3f4; color: #555; }
+    #editMoveBtn  { background: #00897b; color: white; }
+    #markerEditModalBox .edit-modal-btns button { font-size: 13px; padding: 10px 4px; }
+
+    /* ── 이동 힌트 ── */
+    #moveHint {
+      display: none; position: fixed; bottom: 100px;
+      left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.84); color: white; font-size: 13px;
+      padding: 10px 18px; border-radius: 12px; z-index: 5100;
+      pointer-events: auto; text-align: center; white-space: nowrap;
+    }
+    #moveHint.show { display: block; }
+    #moveHint .mh-row { margin-top: 8px; display: flex; gap: 8px; justify-content: center; }
+    #moveHint .mh-row button { padding: 6px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    #moveHint .mh-ok  { background: #1a73e8; color: white; }
+    #moveHint .mh-cancel { background: #555; color: white; }
+
+    /* ── 지도종류 선택 ── */
+    #mapTypeBox { position: absolute; z-index: 1000; top: 296px; right: 16px; }
+    #mapTypeBox select {
+      width: 48px; padding: 5px 1px; border: none; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 11px;
+      background: white; cursor: pointer; text-align: center;
+    }
 
     /* 선 컨텍스트 메뉴 */
     #polyMenu {
@@ -225,6 +258,9 @@
 
 <div id="map"></div>
 
+<!-- 주소 표시 -->
+<div id="address-display" onclick="copyAddr()" title="탭하면 주소 복사">위치 확인 중...</div>
+
 <button class="btn" id="saveBtn" title="KMZ로 저장" disabled>💾</button>
 <button class="btn" id="loadBtn" title="KMZ / 사진 불러오기">📂</button>
 <button class="btn" id="myLocationBtn" title="현재 위치">
@@ -240,6 +276,16 @@
 <button class="btn" id="drawBtn" title="선 그리기">✏️</button>
 <button class="btn" id="markerBtn" title="마커 추가">📍</button>
 <button class="btn" id="clearBtn" title="화면 초기화">🧹</button>
+<!-- 지도종류 선택 -->
+<div id="mapTypeBox">
+  <select id="mapTypeSelect" onchange="changeMapType(this.value)" title="지도 종류">
+    <option value="HYBRID" selected>위성+지도</option>
+    <option value="SKYVIEW">위성사진</option>
+    <option value="ROADMAP">일반지도</option>
+    <option value="TERRAIN">🏔️ 지형도</option>
+    <option value="USE_DISTRICT">🗺️ 지적도</option>
+  </select>
+</div>
 <input type="file" id="fileInput" accept=".kmz,.zip,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
 
 <!-- 마커 조준원 -->
@@ -265,6 +311,7 @@
     <input type="text" id="markerEditNameInput" placeholder="마커 이름" maxlength="50">
     <div class="edit-modal-btns">
       <button id="editSaveBtn">수정</button>
+      <button id="editMoveBtn">이동</button>
       <button id="editDeleteBtn">삭제</button>
       <button id="editCancelBtn">취소</button>
     </div>
@@ -277,6 +324,15 @@
 </div>
 
 <div id="deleteHint">길게 눌러서 마커 / 선을 삭제할 수 있어요</div>
+
+<!-- 이동 힌트 -->
+<div id="moveHint">
+  지도를 이동하여 마커 위치를 선택하세요
+  <div class="mh-row">
+    <button class="mh-ok" id="moveOkBtn">확인</button>
+    <button class="mh-cancel" id="moveCancelBtn">취소</button>
+  </div>
+</div>
 
 <div id="photoViewer">
   <img id="viewerImg" src="" alt="">
@@ -305,6 +361,44 @@
 </div>
 
 <script>
+// ─── 주소 표시 (클릭 지점) ────────────────────────────
+let addrTimer = null;
+function scheduleAddrUpdate(lat, lng) {
+  clearTimeout(addrTimer);
+  addrTimer = setTimeout(() => {
+    if (!geocoder) return;
+    geocoder.coord2Address(lng, lat, (result, status) => {
+      if (status !== kakao.maps.services.Status.OK || !result[0]) {
+        document.getElementById('address-display').textContent = '';
+        return;
+      }
+      const addr = result[0].address;
+      const parts = (addr?.address_name || '').split(' ').filter(p => !/^\d/.test(p));
+      const eupMyeon = parts.find(p => /[읍면]$/.test(p)) || '';
+      const ri = parts.find(p => /리$/.test(p)) || '';
+      const gu = parts.find(p => /구$/.test(p)) || '';
+      const dong = [...parts].reverse().find(p => /동(\d+가)?$/.test(p)) || '';
+      let text = '';
+      if (eupMyeon && ri) text = `${eupMyeon} ${ri}`;
+      else if (eupMyeon) text = eupMyeon;
+      else if (gu && dong) text = `${gu} ${dong}`;
+      else if (dong) text = dong;
+      else text = addr?.address_name || '';
+      document.getElementById('address-display').textContent = text;
+    });
+  }, 600);
+}
+
+function copyAddr() {
+  const el = document.getElementById('address-display');
+  const val = el.textContent;
+  if (!val || val === '위치 확인 중...') return;
+  navigator.clipboard.writeText(val).catch(() => {});
+  const prev = el.textContent;
+  el.textContent = '✅ 복사됨';
+  setTimeout(() => el.textContent = prev, 1300);
+}
+
 // ─── 마커 추가 모달 ───────────────────────────────────
 let pendingMarkerLatLng = null;
 
@@ -386,6 +480,40 @@ document.getElementById('markerEditNameInput').addEventListener('keydown', e => 
   if (e.key === 'Enter') document.getElementById('editSaveBtn').click();
   if (e.key === 'Escape') closeMarkerEditModal();
 });
+
+// ─── 마커 이동 모드 ───────────────────────────────────
+let moveTarget = null;
+let moveOriginalPos = null;
+
+function onMapCenterChanged() {
+  if (moveTarget) moveTarget.marker.setPosition(map.getCenter());
+}
+
+document.getElementById('editMoveBtn').onclick = () => {
+  if (!editTarget) return;
+  moveTarget = editTarget;
+  moveOriginalPos = moveTarget.marker.getPosition();
+  moveTarget.iw.close();
+  closeMarkerEditModal();
+  // 마커를 지도 중심으로 이동 후 추적
+  moveTarget.marker.setPosition(map.getCenter());
+  kakao.maps.event.addListener(map, 'center_changed', onMapCenterChanged);
+  document.getElementById('moveHint').classList.add('show');
+};
+
+document.getElementById('moveOkBtn').onclick = () => {
+  kakao.maps.event.removeListener(map, 'center_changed', onMapCenterChanged);
+  moveTarget = null; moveOriginalPos = null;
+  document.getElementById('moveHint').classList.remove('show');
+  autoSaveToDB();
+};
+
+document.getElementById('moveCancelBtn').onclick = () => {
+  if (moveTarget && moveOriginalPos) moveTarget.marker.setPosition(moveOriginalPos);
+  kakao.maps.event.removeListener(map, 'center_changed', onMapCenterChanged);
+  moveTarget = null; moveOriginalPos = null;
+  document.getElementById('moveHint').classList.remove('show');
+};
 
 // ─── 마커 추가 버튼 (조준원 모드) ────────────────────
 let markerPlacingMode = false;
@@ -531,6 +659,8 @@ window.addEventListener('beforeinstallprompt', e => {
 // ─── 변수 ─────────────────────────────────────────────
 let map, markers = [], polylines = [];
 let trackingOn = false, watchId = null, locationMarker = null;
+let deviceHeading = null;   // 기기 나침반 방향
+let headingInterval = null; // 정지 중 방향 갱신 타이머
 let hasData = false, suppressMapClick = false, suppressLongPress = false;
 let drawingMode = false, currentPolyline = null, currentPath = [];
 let moveLine = null, distanceOverlay = null;
@@ -592,6 +722,8 @@ function initMap(center) {
       return;
     }
     markers.forEach(m => m.iw.close());
+    // 클릭 지점 주소 업데이트
+    scheduleAddrUpdate(e.latLng.getLat(), e.latLng.getLng());
   });
 
   // 거리 오버레이 업데이트 함수 (PC mousemove + 모바일 공용)
@@ -933,6 +1065,44 @@ function openViewer(src, name) {
   photoViewer.classList.add('show');
 }
 
+// ─── 위치 마커 HTML (방향 화살표) ─────────────────────
+function makeLocationContent(heading) {
+  const hasH = heading != null && !isNaN(heading) && heading >= 0;
+  if (hasH) {
+    const rot = Math.round(heading);
+    return `<div style="width:30px;height:50px;pointer-events:none;">` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="50" ` +
+      `style="transform:rotate(${rot}deg);transform-origin:15px 25px;overflow:visible;">` +
+      `<polygon points="15,2 6,20 24,20" fill="rgba(229,57,53,0.82)" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>` +
+      `<circle cx="15" cy="25" r="9" fill="#e53935" stroke="white" stroke-width="2.5"/>` +
+      `</svg></div>`;
+  }
+  return `<div style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;pointer-events:none;">` +
+    `<div style="width:18px;height:18px;background:#e53935;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>` +
+    `</div>`;
+}
+
+// ─── 기기 나침반 리스너 설정 ──────────────────────────
+function setupDeviceOrientation() {
+  const addListeners = () => {
+    window.addEventListener('deviceorientationabsolute', e => {
+      if (e.alpha != null) deviceHeading = (360 - e.alpha) % 360;
+    }, true);
+    window.addEventListener('deviceorientation', e => {
+      if (e.webkitCompassHeading != null) deviceHeading = e.webkitCompassHeading;
+      else if (e.absolute && e.alpha != null) deviceHeading = (360 - e.alpha) % 360;
+    }, true);
+  };
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission()
+      .then(s => { if (s === 'granted') addListeners(); })
+      .catch(() => addListeners());
+  } else {
+    addListeners();
+  }
+}
+
 // ─── 내 위치 토글 ─────────────────────────────────────
 document.getElementById('myLocationBtn').onclick = () => {
   const btn = document.getElementById('myLocationBtn');
@@ -940,25 +1110,38 @@ document.getElementById('myLocationBtn').onclick = () => {
     trackingOn = false;
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     if (locationMarker) { locationMarker.setMap(null); locationMarker = null; }
+    if (headingInterval) { clearInterval(headingInterval); headingInterval = null; }
     btn.classList.remove('active');
   } else {
     trackingOn = true;
     btn.classList.add('active');
+    setupDeviceOrientation();
+    // 정지 중에도 방향 갱신 (0.5초마다)
+    headingInterval = setInterval(() => {
+      if (locationMarker && deviceHeading !== null) {
+        locationMarker.setContent(makeLocationContent(deviceHeading));
+      }
+    }, 500);
     watchId = navigator.geolocation.watchPosition(pos => {
       const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
       map.setCenter(ll);
-      if (locationMarker) locationMarker.setMap(null);
-      locationMarker = new kakao.maps.Marker({
-        map, position: ll,
-        image: new kakao.maps.MarkerImage(
-          'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png',
-          new kakao.maps.Size(24, 35)
-        )
-      });
+      const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0)
+        ? pos.coords.heading : deviceHeading;
+      if (!locationMarker) {
+        locationMarker = new kakao.maps.CustomOverlay({
+          map, position: ll,
+          content: makeLocationContent(h),
+          xAnchor: 0.5, yAnchor: 0.5, zIndex: 10
+        });
+      } else {
+        locationMarker.setPosition(ll);
+        locationMarker.setContent(makeLocationContent(h));
+      }
     }, () => {
       alert('위치 정보를 가져올 수 없습니다.');
       trackingOn = false;
       btn.classList.remove('active');
+      if (headingInterval) { clearInterval(headingInterval); headingInterval = null; }
     }, { enableHighAccuracy: true, maximumAge: 3000 });
   }
 };
@@ -1177,6 +1360,27 @@ function compressImage(imgSrc) {
     img.src = imgSrc;
   });
 }
+// ─── 지도 종류 변경 (Kakao) ──────────────────────────
+let _lastBaseType = 'HYBRID';
+let _terrainOn = false, _cadastralOn = false;
+
+function changeMapType(value) {
+  if (_terrainOn)   { map.removeOverlayMapTypeId(kakao.maps.MapTypeId.TERRAIN);      _terrainOn  = false; }
+  if (_cadastralOn) { map.removeOverlayMapTypeId(kakao.maps.MapTypeId.USE_DISTRICT); _cadastralOn = false; }
+  if (value === 'TERRAIN') {
+    map.setMapTypeId(kakao.maps.MapTypeId[_lastBaseType]);
+    map.addOverlayMapTypeId(kakao.maps.MapTypeId.TERRAIN);
+    _terrainOn = true;
+  } else if (value === 'USE_DISTRICT') {
+    map.setMapTypeId(kakao.maps.MapTypeId[_lastBaseType]);
+    map.addOverlayMapTypeId(kakao.maps.MapTypeId.USE_DISTRICT);
+    _cadastralOn = true;
+  } else {
+    _lastBaseType = value;
+    map.setMapTypeId(kakao.maps.MapTypeId[value]);
+  }
+}
+
 function showLoading(msg) {
   document.getElementById('loadingMsg').textContent = msg || '불러오는 중...';
   document.getElementById('loading').classList.add('show');

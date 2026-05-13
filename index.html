@@ -384,6 +384,10 @@ function scheduleAddrUpdate(lat, lng) {
       else if (gu && dong) text = `${gu} ${dong}`;
       else if (dong) text = dong;
       else text = addr?.address_name || '';
+      // 번지(지번) 추가
+      const mainNo = addr?.main_address_no || '';
+      const subNo  = addr?.sub_address_no  || '';
+      if (mainNo) text += ' ' + (subNo && subNo !== '0' ? `${mainNo}-${subNo}` : mainNo);
       document.getElementById('address-display').textContent = text;
     });
   }, 600);

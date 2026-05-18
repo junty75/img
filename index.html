@@ -53,8 +53,12 @@
     #saveBtn:disabled { opacity: 0.4; cursor: not-allowed; }
     #loadBtn { top: 16px; right: 16px; }
     #myLocationBtn { top: 72px; right: 16px; padding: 0; transition: background 0.2s; }
-    #myLocationBtn.active { background: #1a73e8; box-shadow: 0 2px 8px rgba(26,115,232,0.6); }
-    #myLocationBtn.active svg path, #myLocationBtn.active svg circle { stroke: white; }
+    /* 1단계: 내위치만 표시 (하늘색) */
+    #myLocationBtn.loc-show { background: #e3f2fd; box-shadow: 0 2px 8px rgba(79,195,247,0.5); }
+    #myLocationBtn.loc-show svg path, #myLocationBtn.loc-show svg circle { stroke: #039be5; }
+    /* 2단계: 위치 따라가기 (파란색) */
+    #myLocationBtn.loc-follow { background: #1a73e8; box-shadow: 0 2px 8px rgba(26,115,232,0.6); }
+    #myLocationBtn.loc-follow svg path, #myLocationBtn.loc-follow svg circle { stroke: white; }
     #drawBtn { top: 128px; right: 16px; padding: 0; transition: background 0.2s; font-size: 18px; }
     #drawBtn.active { background: #e53935; box-shadow: 0 2px 8px rgba(219,68,55,0.6); }
     #markerBtn { top: 184px; right: 16px; padding: 0; transition: background 0.2s; font-size: 20px; }
@@ -552,8 +556,19 @@ document.getElementById('markerBtn').onclick = () => {
   }
 };
 
-// PC 키보드 이벤트
+// 키보드 이벤트 (PC + 모바일 볼륨키)
 document.addEventListener('keydown', e => {
+  // 볼륨 키로 지도 확대/축소 (Android Chrome 등)
+  if (e.key === 'AudioVolumeUp' || e.keyCode === 175) {
+    e.preventDefault();
+    document.getElementById('cssZoomIn').click();
+    return;
+  }
+  if (e.key === 'AudioVolumeDown' || e.keyCode === 174) {
+    e.preventDefault();
+    document.getElementById('cssZoomOut').click();
+    return;
+  }
   if (drawingMode && currentPath.length > 0) {
     if (e.key === 'Backspace' || e.key === 'Escape') {
       e.preventDefault();
@@ -666,7 +681,7 @@ window.addEventListener('beforeinstallprompt', e => {
 
 // ─── 변수 ─────────────────────────────────────────────
 let map, markers = [], polylines = [];
-let trackingOn = false, watchId = null, locationMarker = null;
+let locationMode = 0, watchId = null, locationMarker = null; // 0=끄기 1=내위치표시 2=따라가기
 let deviceHeading = null;   // 기기 나침반 방향
 let headingInterval = null; // 정지 중 방향 갱신 타이머
 let hasData = false, suppressMapClick = false, suppressLongPress = false;
@@ -1110,48 +1125,63 @@ function setupDeviceOrientation() {
   }
 }
 
-// ─── 내 위치 토글 ─────────────────────────────────────
+// ─── 내 위치 버튼 (3단계) ─────────────────────────────
+// 0=끄기(흰색) → 1=내위치만표시(하늘색) → 2=위치따라가기(파란색) → 0=끄기
 document.getElementById('myLocationBtn').onclick = () => {
+  locationMode = (locationMode + 1) % 3;
+  applyLocationMode();
+};
+
+function applyLocationMode() {
   const btn = document.getElementById('myLocationBtn');
-  if (trackingOn) {
-    trackingOn = false;
+  btn.classList.remove('loc-show', 'loc-follow');
+
+  if (locationMode === 0) {
+    // 끄기: GPS 중단, 마커 제거
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     if (locationMarker) { locationMarker.setMap(null); locationMarker = null; }
     if (headingInterval) { clearInterval(headingInterval); headingInterval = null; }
-    btn.classList.remove('active');
-  } else {
-    trackingOn = true;
-    btn.classList.add('active');
-    setupDeviceOrientation();
-    // 정지 중에도 방향 갱신 (0.5초마다)
-    headingInterval = setInterval(() => {
-      if (locationMarker && deviceHeading !== null) {
-        locationMarker.setContent(makeLocationContent(deviceHeading));
-      }
-    }, 500);
-    watchId = navigator.geolocation.watchPosition(pos => {
-      const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
-      map.setCenter(ll);
-      const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0)
-        ? pos.coords.heading : deviceHeading;
-      if (!locationMarker) {
-        locationMarker = new kakao.maps.CustomOverlay({
-          map, position: ll,
-          content: makeLocationContent(h),
-          xAnchor: 0.5, yAnchor: 0.5, zIndex: 10
-        });
-      } else {
-        locationMarker.setPosition(ll);
-        locationMarker.setContent(makeLocationContent(h));
-      }
-    }, () => {
-      alert('위치 정보를 가져올 수 없습니다.');
-      trackingOn = false;
-      btn.classList.remove('active');
-      if (headingInterval) { clearInterval(headingInterval); headingInterval = null; }
-    }, { enableHighAccuracy: true, maximumAge: 3000 });
+  } else if (locationMode === 1) {
+    // 내위치만 표시
+    btn.classList.add('loc-show');
+    startLocationWatchIfNeeded();
+  } else if (locationMode === 2) {
+    // 위치 따라가기
+    btn.classList.add('loc-follow');
+    startLocationWatchIfNeeded();
+    if (locationMarker) map.setCenter(locationMarker.getPosition());
   }
-};
+}
+
+function startLocationWatchIfNeeded() {
+  if (watchId !== null) return;
+  setupDeviceOrientation();
+  headingInterval = setInterval(() => {
+    if (locationMarker && deviceHeading !== null) {
+      locationMarker.setContent(makeLocationContent(deviceHeading));
+    }
+  }, 500);
+  watchId = navigator.geolocation.watchPosition(pos => {
+    const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+    if (locationMode === 2) map.setCenter(ll); // 따라가기 모드에서만 중심 이동
+    const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0)
+      ? pos.coords.heading : deviceHeading;
+    if (!locationMarker) {
+      locationMarker = new kakao.maps.CustomOverlay({
+        map, position: ll,
+        content: makeLocationContent(h),
+        xAnchor: 0.5, yAnchor: 0.5, zIndex: 10
+      });
+    } else {
+      locationMarker.setPosition(ll);
+      locationMarker.setContent(makeLocationContent(h));
+    }
+  }, () => {
+    alert('위치 정보를 가져올 수 없습니다.');
+    locationMode = 0;
+    applyLocationMode();
+  }, { enableHighAccuracy: true, maximumAge: 3000 });
+}
 
 // ─── 불러오기 ─────────────────────────────────────────
 document.getElementById('loadBtn').onclick = () => document.getElementById('fileInput').click();

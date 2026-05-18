@@ -556,19 +556,8 @@ document.getElementById('markerBtn').onclick = () => {
   }
 };
 
-// 키보드 이벤트 (PC + 모바일 볼륨키)
+// PC 키보드 이벤트
 document.addEventListener('keydown', e => {
-  // 볼륨 키로 지도 확대/축소 (Android Chrome 등)
-  if (e.key === 'AudioVolumeUp' || e.keyCode === 175) {
-    e.preventDefault();
-    document.getElementById('cssZoomIn').click();
-    return;
-  }
-  if (e.key === 'AudioVolumeDown' || e.keyCode === 174) {
-    e.preventDefault();
-    document.getElementById('cssZoomOut').click();
-    return;
-  }
   if (drawingMode && currentPath.length > 0) {
     if (e.key === 'Backspace' || e.key === 'Escape') {
       e.preventDefault();

@@ -1115,9 +1115,10 @@ function setupDeviceOrientation() {
 }
 
 // ─── 내 위치 버튼 (3단계) ─────────────────────────────
-// 0=끄기(흰색) → 1=내위치만표시(하늘색) → 2=위치따라가기(파란색) → 0=끄기
+// 0=끄기(흰색) → 2=위치따라가기(파란색) → 1=내위치만표시(하늘색) → 0=끄기
 document.getElementById('myLocationBtn').onclick = () => {
-  locationMode = (locationMode + 1) % 3;
+  const nextMode = [2, 0, 1]; // 0→2→1→0 순환
+  locationMode = nextMode[locationMode];
   applyLocationMode();
 };
 

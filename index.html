@@ -1466,15 +1466,33 @@ function attachLongPress(target, onLongPress) {
   kakao.maps.event.addListener(target, 'mouseup', cancel);
 }
 
+// ─── InfoWindow 외부 클릭 닫기 ──────────────────────
+// 카카오 내부 오버레이가 첫 클릭을 흡수하는 문제를 document 캡처 단계로 우회
+function _closeIWOnOutsideClick(e) {
+  if (!e.target.closest('[data-iw]')) {
+    markers.forEach(m => m.iw.close());
+    document.removeEventListener('click', _closeIWOnOutsideClick, true);
+  }
+}
+function _registerIWCloseHandler() {
+  document.removeEventListener('click', _closeIWOnOutsideClick, true);
+  setTimeout(() => document.addEventListener('click', _closeIWOnOutsideClick, true), 0);
+}
+
 // ─── 마커 추가 ────────────────────────────────────────
 function addMarker(latlng, name) {
   const marker = new kakao.maps.Marker({ map, position: latlng });
   const div = document.createElement('div');
+  div.setAttribute('data-iw', '');
   div.style.cssText = 'background:white;padding:6px 10px;border-radius:6px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,0.3);display:flex;align-items:center;gap:6px;';
   div.innerHTML = `<span>${name}</span><span style="cursor:pointer;color:#999;">✕</span>`;
   const iw = new kakao.maps.InfoWindow({ content: div, removable: false });
   div.querySelector('span:last-child').onclick = () => iw.close();
-  kakao.maps.event.addListener(marker, 'click', () => { suppressMapClick = true; iw.open(map, marker); });
+  kakao.maps.event.addListener(marker, 'click', () => {
+    suppressMapClick = true;
+    iw.open(map, marker);
+    _registerIWCloseHandler();
+  });
   // 길게 누르기 → 수정/삭제 모달
   const entry = { marker, iw, name, imgSrc: null };
   attachLongPress(marker, () => {
@@ -1494,6 +1512,7 @@ function addPhotoMarker(latlng, imgSrc, name) {
 
   const div = document.createElement('div');
   div.className = 'photo-iw';
+  div.setAttribute('data-iw', '');
   div.innerHTML = `
     <div class="photo-iw-header">
       <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</span>
@@ -1511,7 +1530,11 @@ function addPhotoMarker(latlng, imgSrc, name) {
     setTimeout(() => { if (!document.hidden) window.open(kakaoWebUrl, '_blank'); }, 1500);
   };
   div.querySelector('img').onclick = () => openViewer(imgSrc, name);
-  kakao.maps.event.addListener(marker, 'click', () => { suppressMapClick = true; iw.open(map, marker); });
+  kakao.maps.event.addListener(marker, 'click', () => {
+    suppressMapClick = true;
+    iw.open(map, marker);
+    _registerIWCloseHandler();
+  });
   // 길게 누르기 → 수정/삭제 모달
   const entry = { marker, iw, name, imgSrc };
   attachLongPress(marker, () => {

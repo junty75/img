@@ -1154,8 +1154,10 @@ function startLocationWatchIfNeeded() {
   watchId = navigator.geolocation.watchPosition(pos => {
     const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
     if (locationMode === 2) map.setCenter(ll); // 따라가기 모드에서만 중심 이동
-    const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0)
-      ? pos.coords.heading : deviceHeading;
+    // 나침반(바라보는 방향) 우선. GPS heading은 정지 중 무작위로 튀므로 나침반 없을 때만 폴백.
+    const h = (deviceHeading !== null)
+      ? deviceHeading
+      : ((pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0) ? pos.coords.heading : null);
     if (!locationMarker) {
       locationMarker = new kakao.maps.CustomOverlay({
         map, position: ll,

@@ -937,6 +937,7 @@ document.getElementById('polyEditBtn').onclick = () => {
 
   // 기존 path로 새 폴리라인 생성 후 그리기 모드 진입
   drawingMode = true;
+  setMarkersClickThrough(true);
   currentPath = [...(entry.path || poly.getPath())];
   currentPolyline = new kakao.maps.Polyline({
     map, path: currentPath,
@@ -967,8 +968,22 @@ function attachPolylineDelete(poly, entry) {
   });
 }
 
+// ── 선그리기 중 마커 클릭 통과 + 반투명 (마커 위에도 선을 찍을 수 있게) ──
+function setMarkersClickThrough(drawing) {
+  const on = !drawing;
+  const op = drawing ? 0.35 : 1;
+  markers.forEach(m => {
+    try {
+      if (drawing) m.iw.close();
+      m.marker.setClickable(on);
+      m.marker.setOpacity(op);
+    } catch (e) {}
+  });
+}
+
 function startDrawing() {
   drawingMode = true;
+  setMarkersClickThrough(true);
   currentPath = [];
   currentPolyline = new kakao.maps.Polyline({
     map, path: currentPath,
@@ -983,6 +998,7 @@ function startDrawing() {
 function stopDrawing() {
   document.getElementById('crosshair').classList.remove('show');
   drawingMode = false;
+  setMarkersClickThrough(false);
   if (moveLine) { moveLine.setMap(null); moveLine = null; }
   if (distanceOverlay) { distanceOverlay.setMap(null); distanceOverlay = null; }
   // 점이 1개 이하면 의미없는 선 → 제거
@@ -1495,6 +1511,7 @@ function mkMarkerImg(color) {
 // ─── 마커 추가 ────────────────────────────────────────
 function addMarker(latlng, name) {
   const marker = new kakao.maps.Marker({ map, position: latlng, image: mkMarkerImg('#e74c3c') });
+  if (drawingMode) { marker.setClickable(false); marker.setOpacity(0.35); }   // 선그리기 중 생성 시 클릭 통과
   const div = document.createElement('div');
   div.setAttribute('data-iw', '');
   div.style.cssText = 'background:white;padding:6px 10px;border-radius:6px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,0.3);display:flex;align-items:center;gap:6px;';
@@ -1519,6 +1536,7 @@ function addMarker(latlng, name) {
 // ─── 사진 마커 추가 ───────────────────────────────────
 function addPhotoMarker(latlng, imgSrc, name) {
   const marker = new kakao.maps.Marker({ map, position: latlng, image: mkMarkerImg('#2471a3') });
+  if (drawingMode) { marker.setClickable(false); marker.setOpacity(0.35); }   // 선그리기 중 생성 시 클릭 통과
   const lat = latlng.getLat(), lng = latlng.getLng();
   const kakaoAppUrl = `kakaomap://look?p=${lat},${lng}`;
   const kakaoWebUrl = `https://map.kakao.com/link/map/${encodeURIComponent(name)},${lat},${lng}`;

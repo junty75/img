@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kmz-viewer-v12';
+const CACHE_NAME = 'kmz-viewer-v13';
 const STATIC_ASSETS = [
   './index.html',
   './manifest.json',
@@ -14,6 +14,14 @@ self.addEventListener('install', e => {
 });
 
 // 활성화: 이전 캐시 삭제
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
+});
+
 self.addEventListener('fetch', e => {
   if (e.request.mode === 'navigate') {
     return; // 🔥 중요
@@ -24,16 +32,3 @@ self.addEventListener('fetch', e => {
   );
 });
 
-// 요청 처리: 캐시 우선, 없으면 네트워크
-window.addEventListener('popstate', function (e) {
-  if (drawingMode) {
-    if (currentPath.length > 0) {
-      undoLastPoint();
-    }
-    // 🔥 두 번 넣어서 스택 유지 강화
-    history.pushState({ page: 'map' }, null, '');
-    history.pushState({ page: 'map2' }, null, '');
-  } else {
-    history.pushState({ page: 'map' }, null, '');
-  }
-});

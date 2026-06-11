@@ -821,36 +821,8 @@ function initMap(center) {
     mapEl.style.transform = cssScale === 1 ? '' : `scale(${cssScale})`;
   }
 
-  // 핀치줌: 레벨 1일 때만 CSS scale 적용
-  let pinchStartDist = null, pinchStartScale = 1;
-  mapEl.addEventListener('touchstart', ev => {
-    if (ev.touches.length === 2) {
-      const dx = ev.touches[0].clientX - ev.touches[1].clientX;
-      const dy = ev.touches[0].clientY - ev.touches[1].clientY;
-      pinchStartDist = Math.hypot(dx, dy);
-      pinchStartScale = cssScale;
-    }
-  }, { passive: true });
-
-  mapEl.addEventListener('touchmove', ev => {
-    if (ev.touches.length !== 2 || pinchStartDist === null) return;
-    if (map.getLevel() > 1) { pinchStartDist = null; return; }
-    const dx = ev.touches[0].clientX - ev.touches[1].clientX;
-    const dy = ev.touches[0].clientY - ev.touches[1].clientY;
-    const dist = Math.hypot(dx, dy);
-    applyScale(pinchStartScale * (dist / pinchStartDist));
-  }, { passive: true });
-
-  mapEl.addEventListener('touchend', () => { pinchStartDist = null; }, { passive: true });
-
-  // 마우스 휠: 레벨 1에서 추가 확대
-  mapEl.addEventListener('wheel', ev => {
-    if (map.getLevel() > 1) return; // 레벨 1 아닐 때는 카카오맵이 처리
-    if (cssScale <= 1 && ev.deltaY > 0) return; // scale 1에서 축소 시도 → 카카오맵에 넘김
-    ev.stopPropagation();
-    const delta = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
-    applyScale(cssScale * delta);
-  }, { passive: false });
+  // 핀치/휠로 인한 CSS scale 확대는 중심점이 흔들려 조작이 어려우므로 제거.
+  // 최대 확대(레벨1) 이후 추가 확대/축소는 우측 하단 +,- 버튼으로만 가능.
 
   // 줌 레벨 올라가면 (축소) CSS scale도 함께 1로 리셋
   kakao.maps.event.addListener(map, 'zoom_changed', () => {

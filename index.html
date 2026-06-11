@@ -48,6 +48,7 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.3); cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       font-size: 22px; width: 48px; height: 48px;
+      touch-action: manipulation;   /* 더블탭 확대 대기 제거 → 탭 즉시 click 발생 */
     }
     #saveBtn { top: 16px; right: 72px; }
     #saveBtn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -166,6 +167,7 @@
       font-size: 26px; font-weight: 300; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       color: #333;
+      touch-action: manipulation;
     }
     #zoomBtns button:active { background: #f1f3f4; }
     .distance-overlay {

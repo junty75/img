@@ -1038,7 +1038,15 @@ document.getElementById('clearBtn').onclick = () => {
 };
 
 // ─── 자동 저장 기능 ───────────────────────────────────
-async function autoSaveToDB() {
+// 사진 재압축+ZIP 생성이 무거워 UI를 막으므로, 호출을 모아서(debounce) 화면이
+// 먼저 그려진 뒤 백그라운드로 실행한다.
+let _autoSaveTimer = null;
+function autoSaveToDB() {
+  clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(_autoSaveNow, 400);
+}
+
+async function _autoSaveNow() {
   try {
     const zip = new JSZip();
     const filesFolder = zip.folder('files');
@@ -1381,7 +1389,9 @@ async function exportKMZ() {
   }
 }
 // ─── 이미지 압축 (저장 시 500KB 이하) ────────────────
+const _compressCache = new Map();   // 원본 src → 압축 결과 (같은 사진 매번 재압축 방지)
 function compressImage(imgSrc) {
+  if (_compressCache.has(imgSrc)) return Promise.resolve(_compressCache.get(imgSrc));
   return new Promise(resolve => {
     const img = new Image();
     img.onload = () => {
@@ -1413,6 +1423,7 @@ function compressImage(imgSrc) {
         if (exif['Exif']) delete exif['Exif'][piexif.ExifIFD.UserComment];
         result = piexif.insert(piexif.dump(exif), result);
       } catch(e) {}
+      _compressCache.set(imgSrc, result);
       resolve(result);
     };
     img.src = imgSrc;

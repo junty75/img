@@ -441,7 +441,7 @@
 <!-- 사진 정보/메타 수정 모달 -->
 <div id="photoInfoModal">
   <div id="photoInfoBox">
-    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v4</span></h3>
+    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v5</span></h3>
     <label>제목</label>
     <input type="text" id="piTitle" maxlength="80">
     <label>설명</label>
@@ -1459,9 +1459,17 @@ document.getElementById('fileInput').onchange = async e => {
   }
   if (mapFiles.length > 0) autoSaveToDB();
 
-  // 이미지 파일 처리 - 현재 지도 중심에 사진 마커 추가
+  // 이미지 파일 처리 - EXIF 위치 우선, 없으면 지도 중심
+  let noGpsCnt = 0;
   for (const imgFile of imageFiles) {
-    await loadImageAsMarker(imgFile);
+    const hadGps = await loadImageAsMarker(imgFile);
+    if (hadGps === false) noGpsCnt++;
+  }
+  // 안드로이드 갤러리(포토) 선택창은 사진의 위치정보를 제거해서 전달할 수 있음 → 안내
+  if (noGpsCnt > 0) {
+    alert('위치정보를 읽지 못한 사진 ' + noGpsCnt + '장은 지도 중심에 추가했습니다.\n\n' +
+      '※ 갤러리(포토) 선택창은 안드로이드가 위치정보를 제거해서 전달할 수 있습니다.\n' +
+      '사진의 원래 위치를 쓰려면 선택창에서 \'파일(내 파일)\' 앱으로 선택해 보세요.');
   }
 };
 
@@ -1484,6 +1492,7 @@ function _exifSafeCarry(exif, jpegDataUrl) {
       const dt = x[piexif.ExifIFD.DateTimeOriginal] || o[piexif.ImageIFD.DateTime];
       if (dt) { fresh['Exif'][piexif.ExifIFD.DateTimeOriginal] = dt; fresh['0th'][piexif.ImageIFD.DateTime] = dt; }
       if (g[piexif.GPSIFD.GPSLatitude]) {
+        fresh['GPS'][piexif.GPSIFD.GPSVersionID]    = g[piexif.GPSIFD.GPSVersionID]    || [2, 3, 0, 0];
         fresh['GPS'][piexif.GPSIFD.GPSLatitudeRef]  = g[piexif.GPSIFD.GPSLatitudeRef]  || 'N';
         fresh['GPS'][piexif.GPSIFD.GPSLatitude]     = g[piexif.GPSIFD.GPSLatitude];
         fresh['GPS'][piexif.GPSIFD.GPSLongitudeRef] = g[piexif.GPSIFD.GPSLongitudeRef] || 'E';
@@ -1529,6 +1538,8 @@ function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
     if (desc != null) ex['0th'][piexif.ImageIFD.XPComment] = _xpBytes(desc);
     if (taken) { ex['Exif'][piexif.ExifIFD.DateTimeOriginal] = taken; ex['0th'][piexif.ImageIFD.DateTime] = taken; }
     if (lat != null && lng != null) {
+      // GPSVersionID 필수 — 없으면 삼성 갤러리 등 일부 뷰어가 GPS 블록을 무시함
+      ex['GPS'][piexif.GPSIFD.GPSVersionID]    = ex['GPS'][piexif.GPSIFD.GPSVersionID] || [2, 3, 0, 0];
       ex['GPS'][piexif.GPSIFD.GPSLatitudeRef]  = lat >= 0 ? 'N' : 'S';
       ex['GPS'][piexif.GPSIFD.GPSLatitude]     = _gpsRat(lat);
       ex['GPS'][piexif.GPSIFD.GPSLongitudeRef] = lng >= 0 ? 'E' : 'W';
@@ -1668,7 +1679,7 @@ async function loadImageAsMarker(imgFile) {
       }
       document.getElementById('saveBtn').disabled = false;
       autoSaveToDB();
-      resolve();
+      resolve(!!latlng);   // false = 위치정보 못 읽어 지도 중심에 추가됨
     };
     reader.readAsDataURL(imgFile);
   });

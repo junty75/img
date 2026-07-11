@@ -441,7 +441,7 @@
 <!-- 사진 정보/메타 수정 모달 -->
 <div id="photoInfoModal">
   <div id="photoInfoBox">
-    <h3>📷 사진 정보</h3>
+    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v3</span></h3>
     <label>제목</label>
     <input type="text" id="piTitle" maxlength="80">
     <label>설명</label>
@@ -1473,6 +1473,30 @@ function _gpsRat(v) { v = Math.abs(v); const d = Math.floor(v), mF = (v - d) * 6
 function exifNow(d = new Date()) { const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}:${p(d.getMonth()+1)}:${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
 function _escXml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// EXIF 를 통째로 재직렬화(dump)하다 실패하면(일부 폰 MakerNote 등)
+// 핵심 필드(날짜·GPS·제목·설명)만이라도 옮겨서 기록한다 — 실패 시 메타가 통째로 사라지던 문제 방지.
+function _exifSafeCarry(exif, jpegDataUrl) {
+  try { return piexif.insert(piexif.dump(exif), jpegDataUrl); }
+  catch(e) {
+    try {
+      const fresh = { '0th':{}, 'Exif':{}, 'GPS':{}, '1st':{}, 'thumbnail':null };
+      const o = exif['0th'] || {}, x = exif['Exif'] || {}, g = exif['GPS'] || {};
+      const dt = x[piexif.ExifIFD.DateTimeOriginal] || o[piexif.ImageIFD.DateTime];
+      if (dt) { fresh['Exif'][piexif.ExifIFD.DateTimeOriginal] = dt; fresh['0th'][piexif.ImageIFD.DateTime] = dt; }
+      if (g[piexif.GPSIFD.GPSLatitude]) {
+        fresh['GPS'][piexif.GPSIFD.GPSLatitudeRef]  = g[piexif.GPSIFD.GPSLatitudeRef]  || 'N';
+        fresh['GPS'][piexif.GPSIFD.GPSLatitude]     = g[piexif.GPSIFD.GPSLatitude];
+        fresh['GPS'][piexif.GPSIFD.GPSLongitudeRef] = g[piexif.GPSIFD.GPSLongitudeRef] || 'E';
+        fresh['GPS'][piexif.GPSIFD.GPSLongitude]    = g[piexif.GPSIFD.GPSLongitude];
+      }
+      if (o[piexif.ImageIFD.XPTitle])   fresh['0th'][piexif.ImageIFD.XPTitle]   = o[piexif.ImageIFD.XPTitle];
+      if (o[piexif.ImageIFD.XPComment]) fresh['0th'][piexif.ImageIFD.XPComment] = o[piexif.ImageIFD.XPComment];
+      if (o[piexif.ImageIFD.ImageDescription]) fresh['0th'][piexif.ImageIFD.ImageDescription] = o[piexif.ImageIFD.ImageDescription];
+      return piexif.insert(piexif.dump(fresh), jpegDataUrl);
+    } catch(e2) { console.warn('EXIF 기록 실패', e2); return jpegDataUrl; }
+  }
+}
+
 // 사진 dataURL 에서 제목/설명/촬영일시/GPS 읽기
 function readPhotoMeta(imgSrc) {
   const out = { title:'', desc:'', taken:'', lat:null, lng:null };
@@ -1510,16 +1534,28 @@ function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
       ex['GPS'][piexif.GPSIFD.GPSLongitudeRef] = lng >= 0 ? 'E' : 'W';
       ex['GPS'][piexif.GPSIFD.GPSLongitude]    = _gpsRat(lng);
     }
-    return piexif.insert(piexif.dump(ex), imgSrc);
+    return _exifSafeCarry(ex, imgSrc);
   } catch(e) { console.warn('EXIF 기록 실패', e); return imgSrc; }
 }
 // 사진을 기기에 저장 (안드로이드: 다운로드 폴더 → 갤러리에 표시됨)
+// data: URL 은 용량이 크면 안드로이드 크롬에서 다운로드가 '조용히' 실패 → Blob 으로 변환해 저장.
 function downloadPhoto(imgSrc, name) {
+  const nm0 = (name || 'photo').replace(/[\\/:*?"<>|]/g, '_');
+  const nm = /\.jpe?g$/i.test(nm0) ? nm0 : nm0 + '.jpg';
+  let href = imgSrc, revoke = null;
+  try {
+    const i = imgSrc.indexOf(',');
+    const bin = atob(imgSrc.slice(i + 1));
+    const u8 = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
+    const mime = imgSrc.slice(5, i).split(';')[0] || 'image/jpeg';
+    href = URL.createObjectURL(new Blob([u8], { type: mime }));
+    revoke = href;
+  } catch(e) {}
   const a = document.createElement('a');
-  a.href = imgSrc;
-  const nm = (name || 'photo').replace(/[\\/:*?"<>|]/g, '_');
-  a.download = /\.jpe?g$/i.test(nm) ? nm : nm + '.jpg';
+  a.href = href; a.download = nm;
   document.body.appendChild(a); a.click(); a.remove();
+  if (revoke) setTimeout(() => URL.revokeObjectURL(revoke), 10000);
 }
 
 // ─── 사진 정보/메타 수정 모달 ─────────────────────────
@@ -1817,7 +1853,7 @@ function compressImage(imgSrc) {
           delete exif['0th'][piexif.ImageIFD.ImageDescription];
         }
         if (exif['Exif']) delete exif['Exif'][piexif.ExifIFD.UserComment];
-        result = piexif.insert(piexif.dump(exif), result);
+        result = _exifSafeCarry(exif, result);
       } catch(e) {}
       _compressCache.set(imgSrc, result);
       resolve(result);

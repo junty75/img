@@ -70,6 +70,36 @@
     #markerBtn.active { background: #43a047; box-shadow: 0 2px 8px rgba(67,160,71,0.6); }
     #clearBtn { top: 240px; right: 16px; padding: 0; transition: background 0.2s; }
 
+    /* ── 사진 정보/메타 수정 모달 ── */
+    #photoInfoModal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5); z-index: 7800;
+      align-items: center; justify-content: center; padding: 16px;
+    }
+    #photoInfoModal.show { display: flex; }
+    #photoInfoBox {
+      background: white; width: 100%; max-width: 420px;
+      border-radius: 14px; padding: 18px 18px 16px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+      max-height: 90vh; overflow-y: auto;
+    }
+    #photoInfoBox h3 { margin: 0 0 12px; font-size: 16px; color: #333; }
+    #photoInfoBox label { display: block; font-size: 12px; color: #888; margin: 8px 0 3px; }
+    #photoInfoBox input, #photoInfoBox textarea {
+      width: 100%; padding: 9px 12px; border: 1.5px solid #ddd; border-radius: 10px;
+      font-size: 14px; outline: none; font-family: inherit; resize: vertical;
+    }
+    #photoInfoBox input:focus, #photoInfoBox textarea:focus { border-color: #1a73e8; }
+    .pi-row { font-size: 13px; color: #555; margin-top: 8px; word-break: break-all; }
+    .pi-btns { display: flex; gap: 8px; margin-top: 14px; }
+    .pi-btns button {
+      flex: 1; padding: 11px 4px; border: none; border-radius: 10px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    #piSaveBtn { background: #1a73e8; color: white; }
+    #piDownloadBtn { background: #00897b; color: white; }
+    #piCloseBtn { background: #f1f3f4; color: #555; }
+
     /* 마커 조준원 */
     #crosshair {
       display: none; position: fixed;
@@ -406,6 +436,25 @@
 <div id="photoViewer">
   <img id="viewerImg" src="" alt="">
   <div class="pv-name" id="viewerName"></div>
+</div>
+
+<!-- 사진 정보/메타 수정 모달 -->
+<div id="photoInfoModal">
+  <div id="photoInfoBox">
+    <h3>📷 사진 정보</h3>
+    <label>제목</label>
+    <input type="text" id="piTitle" maxlength="80">
+    <label>설명</label>
+    <textarea id="piDesc" rows="3"></textarea>
+    <div class="pi-row" id="piTaken"></div>
+    <div class="pi-row" id="piCoord"></div>
+    <div class="pi-row" id="piAddr"></div>
+    <div class="pi-btns">
+      <button id="piSaveBtn">저장</button>
+      <button id="piDownloadBtn">📥 사진저장</button>
+      <button id="piCloseBtn">닫기</button>
+    </div>
+  </div>
 </div>
 
 <!-- iOS 홈화면 추가 안내 -->
@@ -1224,7 +1273,7 @@ async function _autoSaveNow() {
         const base64Data = compressed.split(',')[1];
         const filename = `photo_${String(photoIndex++).padStart(4,'0')}.jpg`;
         filesFolder.file(filename, base64Data, { base64: true });
-        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data></ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data>${_photoMetaXml(m)}</ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       } else {
         placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       }
@@ -1386,33 +1435,141 @@ document.getElementById('fileInput').onchange = async e => {
   }
 };
 
+// ─── EXIF 메타 유틸 (piexif) ─────────────────────────
+// XPTitle/XPComment 는 UTF-16LE 바이트 배열 (한글 안전 — 탐색기/데스크톱 뷰어와 동일 필드)
+function _xpBytes(str) { const a = []; for (const ch of String(str)) { const c = ch.charCodeAt(0); a.push(c & 0xFF, (c >> 8) & 0xFF); } a.push(0, 0); return a; }
+function _xpStr(bytes) { if (!bytes || !bytes.length) return ''; let s = ''; for (let i = 0; i + 1 < bytes.length; i += 2) { const c = bytes[i] | (bytes[i+1] << 8); if (!c) break; s += String.fromCharCode(c); } return s; }
+function _gpsRat(v) { v = Math.abs(v); const d = Math.floor(v), mF = (v - d) * 60, m = Math.floor(mF), s = Math.round((mF - m) * 60 * 10000); return [[d,1],[m,1],[s,10000]]; }
+function exifNow(d = new Date()) { const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}:${p(d.getMonth()+1)}:${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+function _escXml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// 사진 dataURL 에서 제목/설명/촬영일시/GPS 읽기
+function readPhotoMeta(imgSrc) {
+  const out = { title:'', desc:'', taken:'', lat:null, lng:null };
+  try {
+    const ex = piexif.load(imgSrc);
+    out.title = _xpStr(ex['0th'][piexif.ImageIFD.XPTitle]);
+    out.desc  = _xpStr(ex['0th'][piexif.ImageIFD.XPComment]);
+    out.taken = (ex['Exif'] && ex['Exif'][piexif.ExifIFD.DateTimeOriginal]) || ex['0th'][piexif.ImageIFD.DateTime] || '';
+    const gps = ex['GPS'];
+    if (gps && gps[piexif.GPSIFD.GPSLatitude] && gps[piexif.GPSIFD.GPSLongitude]) {
+      const toDec = (dms, ref) => { const d = dms[0][0]/dms[0][1], m = dms[1][0]/dms[1][1], s = dms[2][0]/dms[2][1]; return (d + m/60 + s/3600) * ((ref === 'S' || ref === 'W') ? -1 : 1); };
+      const lat = toDec(gps[piexif.GPSIFD.GPSLatitude],  gps[piexif.GPSIFD.GPSLatitudeRef]  || 'N');
+      const lng = toDec(gps[piexif.GPSIFD.GPSLongitude], gps[piexif.GPSIFD.GPSLongitudeRef] || 'E');
+      if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) { out.lat = lat; out.lng = lng; }
+    }
+  } catch(e) {}
+  return out;
+}
+// 제목/설명/GPS/촬영일시를 JPEG dataURL 의 EXIF 에 기록 (전달 안 한 항목은 유지)
+function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
+  try {
+    let ex; try { ex = piexif.load(imgSrc); } catch(e) { ex = { '0th':{}, 'Exif':{}, 'GPS':{}, '1st':{}, 'thumbnail':null }; }
+    ex['0th'] = ex['0th'] || {}; ex['Exif'] = ex['Exif'] || {}; ex['GPS'] = ex['GPS'] || {};
+    if (title != null) {
+      ex['0th'][piexif.ImageIFD.XPTitle] = _xpBytes(title);
+      // ImageDescription 은 ASCII 필드 — 한글이면 기록 안 함 (외부 뷰어 인코딩 깨짐 방지, map.html 과 동일 정책)
+      if (/^[\x00-\x7F]*$/.test(title)) ex['0th'][piexif.ImageIFD.ImageDescription] = title;
+      else delete ex['0th'][piexif.ImageIFD.ImageDescription];
+    }
+    if (desc != null) ex['0th'][piexif.ImageIFD.XPComment] = _xpBytes(desc);
+    if (taken) { ex['Exif'][piexif.ExifIFD.DateTimeOriginal] = taken; ex['0th'][piexif.ImageIFD.DateTime] = taken; }
+    if (lat != null && lng != null) {
+      ex['GPS'][piexif.GPSIFD.GPSLatitudeRef]  = lat >= 0 ? 'N' : 'S';
+      ex['GPS'][piexif.GPSIFD.GPSLatitude]     = _gpsRat(lat);
+      ex['GPS'][piexif.GPSIFD.GPSLongitudeRef] = lng >= 0 ? 'E' : 'W';
+      ex['GPS'][piexif.GPSIFD.GPSLongitude]    = _gpsRat(lng);
+    }
+    return piexif.insert(piexif.dump(ex), imgSrc);
+  } catch(e) { console.warn('EXIF 기록 실패', e); return imgSrc; }
+}
+// 사진을 기기에 저장 (안드로이드: 다운로드 폴더 → 갤러리에 표시됨)
+function downloadPhoto(imgSrc, name) {
+  const a = document.createElement('a');
+  a.href = imgSrc;
+  const nm = (name || 'photo').replace(/[\\/:*?"<>|]/g, '_');
+  a.download = /\.jpe?g$/i.test(nm) ? nm : nm + '.jpg';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ─── 사진 정보/메타 수정 모달 ─────────────────────────
+let piTarget = null;
+function openPhotoInfo(entry) {
+  piTarget = entry;
+  const meta = readPhotoMeta(entry.imgSrc);
+  document.getElementById('piTitle').value = entry.name || meta.title || '';
+  document.getElementById('piDesc').value = (entry.desc != null && entry.desc !== '') ? entry.desc : (meta.desc || '');
+  const pos = entry.marker.getPosition();
+  document.getElementById('piTaken').textContent = '📅 촬영일시: ' + (entry.taken || meta.taken || '정보 없음');
+  document.getElementById('piCoord').textContent = '📍 좌표: ' + pos.getLat().toFixed(6) + ', ' + pos.getLng().toFixed(6);
+  const addrEl = document.getElementById('piAddr');
+  addrEl.textContent = '🏠 주소: 조회 중...';
+  if (geocoder) geocoder.coord2Address(pos.getLng(), pos.getLat(), (r, s) => {
+    addrEl.textContent = '🏠 주소: ' + ((s === kakao.maps.services.Status.OK && r[0]) ? (r[0].address?.address_name || '-') : '-');
+  });
+  document.getElementById('photoInfoModal').classList.add('show');
+}
+function closePhotoInfo() {
+  document.getElementById('photoInfoModal').classList.remove('show');
+  piTarget = null;
+}
+document.getElementById('photoInfoModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('photoInfoModal')) closePhotoInfo();
+});
+document.getElementById('piCloseBtn').onclick = closePhotoInfo;
+// 저장: 제목/설명을 마커·EXIF(XPTitle/XPComment)에 기록 → KMZ 저장/사진저장에 그대로 반영
+document.getElementById('piSaveBtn').onclick = () => {
+  if (!piTarget) return;
+  const title = document.getElementById('piTitle').value.trim();
+  const desc = document.getElementById('piDesc').value.trim();
+  if (title) piTarget.name = title;
+  piTarget.desc = desc;
+  piTarget.imgSrc = writePhotoMeta(piTarget.imgSrc, { title: piTarget.name, desc });
+  const c = piTarget.iw.getContent();
+  const sp = c.querySelector('.photo-iw-header span'); if (sp) sp.textContent = piTarget.name;
+  const im = c.querySelector('img'); if (im) im.src = piTarget.imgSrc;
+  autoSaveToDB();
+  closePhotoInfo();
+};
+// 사진저장: 현재 메타(제목/설명/GPS/촬영일시)를 EXIF 에 넣어 기기에 저장
+document.getElementById('piDownloadBtn').onclick = () => {
+  if (!piTarget) return;
+  const pos = piTarget.marker.getPosition();
+  const out = writePhotoMeta(piTarget.imgSrc, {
+    title: piTarget.name, desc: piTarget.desc || '',
+    lat: pos.getLat(), lng: pos.getLng(), taken: piTarget.taken || ''
+  });
+  downloadPhoto(out, piTarget.name);
+};
+
 // ─── 이미지 파일을 사진 마커로 추가 (EXIF GPS 우선) ──
 async function loadImageAsMarker(imgFile) {
   return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      const imgSrc = ev.target.result;
-      const name = imgFile.name.replace(/\.[^.]+$/, '');
+    reader.onload = async (ev) => {
+      let imgSrc = ev.target.result;
+      let name = imgFile.name.replace(/\.[^.]+$/, '');
+      const meta = readPhotoMeta(imgSrc);
+      let latlng = (meta.lat != null) ? new kakao.maps.LatLng(meta.lat, meta.lng) : null;
 
-      // EXIF GPS 읽기
-      let latlng = null;
-      try {
-        const exif = piexif.load(imgSrc);
-        const gps = exif['GPS'];
-        if (gps && gps[piexif.GPSIFD.GPSLatitude] && gps[piexif.GPSIFD.GPSLongitude]) {
-          const toDec = (dms, ref) => {
-            const d = dms[0][0]/dms[0][1];
-            const m = dms[1][0]/dms[1][1];
-            const s = dms[2][0]/dms[2][1];
-            return (d + m/60 + s/3600) * ((ref === 'S' || ref === 'W') ? -1 : 1);
-          };
-          const lat = toDec(gps[piexif.GPSIFD.GPSLatitude],  gps[piexif.GPSIFD.GPSLatitudeRef]  || 'N');
-          const lng = toDec(gps[piexif.GPSIFD.GPSLongitude], gps[piexif.GPSIFD.GPSLongitudeRef] || 'E');
-          if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
-            latlng = new kakao.maps.LatLng(lat, lng);
-          }
-        }
-      } catch(e) {}
+      // 방금 촬영한 사진 판별: GPS 없음 + 파일 시각이 1분 이내.
+      // (📂 → 카메라 촬영은 브라우저가 GPS 를 안 넣고 임시파일이라 갤러리에도 안 남음)
+      const justCaptured = !latlng && (Date.now() - imgFile.lastModified < 60000);
+      if (justCaptured) {
+        // 현재 위치(실패 시 지도 중심) + 촬영일시를 EXIF 에 기록하고 기기에 저장 (카메라앱처럼)
+        const pos = await new Promise(res => navigator.geolocation
+          ? navigator.geolocation.getCurrentPosition(p => res(p), () => res(null), { enableHighAccuracy: true, timeout: 5000 })
+          : res(null));
+        let lat, lng;
+        if (pos) { lat = pos.coords.latitude; lng = pos.coords.longitude; }
+        else { const c = map.getCenter(); lat = c.getLat(); lng = c.getLng(); }
+        const taken = meta.taken || exifNow(new Date(imgFile.lastModified));
+        name = 'IMG_' + taken.replace(/[: ]/g, '').slice(0, 15);
+        imgSrc = writePhotoMeta(imgSrc, { lat, lng, taken });
+        downloadPhoto(imgSrc, name);   // 다운로드 폴더에 저장 → 갤러리에서 보임
+        meta.taken = taken;
+        latlng = new kakao.maps.LatLng(lat, lng);
+      }
 
       if (latlng) {
         addPhotoMarker(latlng, imgSrc, name);
@@ -1420,6 +1577,8 @@ async function loadImageAsMarker(imgFile) {
       } else {
         addPhotoMarker(map.getCenter(), imgSrc, name);
       }
+      const en = markers[markers.length - 1];
+      if (en) { en.taken = meta.taken || ''; en.desc = meta.desc || ''; }
       document.getElementById('saveBtn').disabled = false;
       autoSaveToDB();
       resolve();
@@ -1539,7 +1698,7 @@ async function exportKMZ(scope = 'all') {
         const base64Data = compressed.split(',')[1];
         const filename = `photo_${String(photoIndex++).padStart(4,'0')}.jpg`;
         filesFolder.file(filename, base64Data, { base64: true });
-        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data></ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data>${_photoMetaXml(m)}</ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       } else {
         placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       }
@@ -1758,6 +1917,7 @@ function addPhotoMarker(latlng, imgSrc, name) {
     <div class="photo-iw-header">
       <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</span>
       <div class="iw-actions">
+        <span class="iw-info" title="사진 정보" style="cursor:pointer;font-size:15px;line-height:1;">ℹ️</span>
         <span class="iw-map-btn" title="카카오맵에서 열기">🗺️</span>
         <span class="iw-close">✕</span>
       </div>
@@ -1777,7 +1937,9 @@ function addPhotoMarker(latlng, imgSrc, name) {
     _registerIWCloseHandler();
   });
   // 길게 누르기 → 수정/삭제 모달
-  const entry = { marker, iw, name, imgSrc };
+  const entry = { marker, iw, name, imgSrc, desc: '', taken: '' };
+  div.querySelector('.iw-info').onclick = () => { iw.close(); openPhotoInfo(entry); };
+  div.querySelector('img').onclick = () => openViewer(entry.imgSrc, entry.name);   // 메타 수정 후에도 최신 반영
   attachLongPress(marker, () => {
     iw.close();
     openMarkerEditModal(entry);
@@ -1907,6 +2069,13 @@ function _lineKmlStyleDefs(styles) {
     out += `\n  <Style id="${id}"><LineStyle><color>ff${hex.slice(4,6)}${hex.slice(2,4)}${hex.slice(0,2)}</color><width>${w}</width></LineStyle></Style>`;
   }
   return out;
+}
+// 사진 메타(설명/촬영일시) → ExtendedData 조각 (자동저장/내보내기 → 재로드 복원용)
+function _photoMetaXml(m) {
+  let s = '';
+  if (m.desc) s += `<Data name="desc"><value>${_escXml(m.desc)}</value></Data>`;
+  if (m.taken) s += `<Data name="taken"><value>${_escXml(m.taken)}</value></Data>`;
+  return s;
 }
 // 텍스트 라벨 → KML Placemark (kind=text — 자동저장/내보내기 복원용)
 function _textKmlPlacemark(t) {
@@ -2093,6 +2262,14 @@ async function loadKMZ(file, silent = false) {
             const ext = baseName.split('.').pop().toLowerCase();
             const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
             addPhotoMarker(ll, `data:${mime};base64,${base64}`, pmName);
+            // 저장된 사진 메타(설명/촬영일시) 복원
+            const _en = markers[markers.length - 1];
+            if (_en) {
+              for (const d of Array.from(pm.getElementsByTagName('Data'))) {
+                const nm = d.getAttribute('name'); const v = d.getElementsByTagName('value')[0]?.textContent || '';
+                if (nm === 'desc') _en.desc = v; else if (nm === 'taken') _en.taken = v;
+              }
+            }
           } else {
             addMarker(ll, pmName);
           }

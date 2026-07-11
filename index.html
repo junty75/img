@@ -441,7 +441,7 @@
 <!-- 사진 정보/메타 수정 모달 -->
 <div id="photoInfoModal">
   <div id="photoInfoBox">
-    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v6</span></h3>
+    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v7</span></h3>
     <label>제목</label>
     <input type="text" id="piTitle" maxlength="80">
     <label>설명</label>
@@ -1537,6 +1537,9 @@ function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
     }
     if (desc != null) ex['0th'][piexif.ImageIFD.XPComment] = _xpBytes(desc);
     if (taken) { ex['Exif'][piexif.ExifIFD.DateTimeOriginal] = taken; ex['0th'][piexif.ImageIFD.DateTime] = taken; }
+    // 카메라 파일과 유사하게 기본 태그 보강 (없을 때만)
+    ex['0th'][piexif.ImageIFD.Orientation] = ex['0th'][piexif.ImageIFD.Orientation] || 1;
+    ex['Exif'][piexif.ExifIFD.ExifVersion] = ex['Exif'][piexif.ExifIFD.ExifVersion] || '0231';
     if (lat != null && lng != null) {
       // 카메라 앱과 동일한 GPS 블록 구성 — VersionID·고도·날짜/시간스탬프까지 있어야
       // 삼성 갤러리 등 일부 뷰어가 위치를 표시함
@@ -1557,6 +1560,29 @@ function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
     return _exifSafeCarry(ex, imgSrc);
   } catch(e) { console.warn('EXIF 기록 실패', e); return imgSrc; }
 }
+// JFIF(APP0) 세그먼트 제거 — EXIF(APP1)와 공존하는 비표준 구조를
+// 카메라 파일과 동일한 'SOI + APP1' 구조로 정리 (삼성 갤러리 등이 공존 구조에서 메타를 무시함)
+function _stripApp0(u8) {
+  try {
+    if (u8[0] !== 0xFF || u8[1] !== 0xD8) return u8;
+    let i = 2, app0 = null, hasExif = false;
+    while (i + 3 < u8.length && u8[i] === 0xFF) {
+      const m = u8[i + 1];
+      if (m === 0xDA) break;
+      const len = (u8[i + 2] << 8) | u8[i + 3];
+      if (m === 0xE0) app0 = [i, i + 2 + len];
+      if (m === 0xE1 && u8[i + 4] === 0x45 && u8[i + 5] === 0x78) hasExif = true;   // 'Ex'if
+      i += 2 + len;
+    }
+    if (app0 && hasExif) {
+      const o = new Uint8Array(u8.length - (app0[1] - app0[0]));
+      o.set(u8.subarray(0, app0[0]), 0);
+      o.set(u8.subarray(app0[1]), app0[0]);
+      return o;
+    }
+  } catch(e) {}
+  return u8;
+}
 // 사진을 기기에 저장 (안드로이드: 다운로드 폴더 → 갤러리에 표시됨)
 // data: URL 은 용량이 크면 안드로이드 크롬에서 다운로드가 '조용히' 실패 → Blob 으로 변환해 저장.
 function downloadPhoto(imgSrc, name) {
@@ -1566,9 +1592,10 @@ function downloadPhoto(imgSrc, name) {
   try {
     const i = imgSrc.indexOf(',');
     const bin = atob(imgSrc.slice(i + 1));
-    const u8 = new Uint8Array(bin.length);
+    let u8 = new Uint8Array(bin.length);
     for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
     const mime = imgSrc.slice(5, i).split(';')[0] || 'image/jpeg';
+    if (/jpe?g$/i.test(mime)) u8 = _stripApp0(u8);
     href = URL.createObjectURL(new Blob([u8], { type: mime }));
     revoke = href;
   } catch(e) {}

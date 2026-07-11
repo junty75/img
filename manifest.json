@@ -14,8 +14,30 @@
     {
       "action": "./",
       "accept": {
-        "application/vnd.google-earth.kmz": [".kmz"]
+        "application/vnd.google-earth.kmz": [".kmz"],
+        "application/vnd.google-earth.kml+xml": [".kml"],
+        "application/zip": [".zip"]
       }
     }
-  ]
+  ],
+  "share_target": {
+    "action": "./share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "file",
+          "accept": [
+            "application/vnd.google-earth.kmz",
+            "application/vnd.google-earth.kml+xml",
+            "application/zip",
+            "application/octet-stream",
+            ".kmz", ".kml", ".zip",
+            "image/jpeg", "image/png"
+          ]
+        }
+      ]
+    }
+  }
 }

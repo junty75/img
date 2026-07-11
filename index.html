@@ -62,6 +62,10 @@
     #myLocationBtn.loc-follow svg path, #myLocationBtn.loc-follow svg circle { stroke: white; }
     #drawBtn { top: 128px; right: 16px; padding: 0; transition: background 0.2s; font-size: 18px; }
     #drawBtn.active { background: #e53935; box-shadow: 0 2px 8px rgba(219,68,55,0.6); }
+    /* 선그리기 색/굵기 버튼 (그리기 중에만 표시) */
+    #drawStyleBtn { top: 128px; right: 72px; display: none; font-size: 18px; }
+    #drawStyleBtn.show { display: flex; }
+    #drawStyleBtn .dsb-line { width: 26px; border-radius: 3px; background: #FF5733; height: 4px; }
     #markerBtn { top: 184px; right: 16px; padding: 0; transition: background 0.2s; font-size: 20px; }
     #markerBtn.active { background: #43a047; box-shadow: 0 2px 8px rgba(67,160,71,0.6); }
     #clearBtn { top: 240px; right: 16px; padding: 0; transition: background 0.2s; }
@@ -136,6 +140,39 @@
       width: 48px; padding: 5px 1px; border: none; border-radius: 8px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 11px;
       background: white; cursor: pointer; text-align: center;
+    }
+
+    /* ── 선 스타일 피커 (색상/굵기) ── */
+    #stylePicker {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45); z-index: 9500;
+      align-items: center; justify-content: center;
+    }
+    #stylePicker.show { display: flex; }
+    #stylePickerBox {
+      background: white; border-radius: 14px;
+      padding: 18px 18px 16px; width: 300px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+    }
+    #stylePickerBox h3 { margin: 0 0 12px; font-size: 15px; color: #333; }
+    .sp-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 9px; margin-bottom: 14px; }
+    .sp-swatch {
+      width: 100%; aspect-ratio: 1; border-radius: 50%;
+      border: 1.5px solid rgba(0,0,0,0.18); cursor: pointer; padding: 0;
+    }
+    .sp-swatch.sel { outline: 3px solid #1a73e8; outline-offset: 2px; }
+    .sp-widths { display: flex; gap: 6px; margin-bottom: 14px; }
+    .sp-w {
+      flex: 1; height: 38px; border: 1.5px solid #ddd; border-radius: 8px;
+      background: white; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; padding: 0 4px;
+    }
+    .sp-w.sel { border-color: #1a73e8; background: #e8f0fe; }
+    .sp-w span { display: block; width: 100%; border-radius: 2px; background: #444; }
+    #spCloseBtn {
+      width: 100%; padding: 11px; border: none; border-radius: 10px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      background: #f1f3f4; color: #555;
     }
 
     /* 선 컨텍스트 메뉴 */
@@ -294,6 +331,7 @@
   </svg>
 </button>
 <button class="btn" id="drawBtn" title="선 그리기">✏️</button>
+<button class="btn" id="drawStyleBtn" title="선 색상/굵기"><span class="dsb-line"></span></button>
 <button class="btn" id="markerBtn" title="마커 추가">📍</button>
 <button class="btn" id="clearBtn" title="화면 초기화">🧹</button>
 <!-- 지도종류 선택 -->
@@ -306,7 +344,7 @@
     <option value="USE_DISTRICT">🗺️ 지적도</option>
   </select>
 </div>
-<input type="file" id="fileInput" accept=".kmz,.zip,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
+<input type="file" id="fileInput" accept=".kmz,.zip,.kml,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
 
 <!-- 마커 조준원 -->
 <div id="crosshair"></div>
@@ -314,8 +352,19 @@
 <!-- 선 컨텍스트 메뉴 -->
 <div id="polyMenu">
   <button id="polyEditBtn">✏️ 수정</button>
+  <button id="polyStyleBtn">🎨 색상/굵기</button>
   <button id="polyDeleteBtn" class="danger">🗑️ 삭제</button>
   <button id="polyMenuCancelBtn">✕ 취소</button>
+</div>
+
+<!-- 선 스타일 피커 (색상/굵기) -->
+<div id="stylePicker">
+  <div id="stylePickerBox">
+    <h3>🎨 선 색상 / 굵기</h3>
+    <div class="sp-grid" id="spGrid"></div>
+    <div class="sp-widths" id="spWidths"></div>
+    <button id="spCloseBtn">닫기</button>
+  </div>
 </div>
 
 <!-- CSS scale 줌 버튼 -->
@@ -829,6 +878,9 @@ function initMap(center) {
     if (map.getLevel() > 1) applyScale(1);
   });
 
+  // 묶음선(KMZ MultiGeometry) 뷰포트 컬링 — 이동/줌 멈출 때마다 화면 교차 구간만 다시 그림
+  kakao.maps.event.addListener(map, 'idle', scheduleBundleCull);
+
   // CSS scale +/- 버튼
   document.getElementById('cssZoomIn').onclick = () => {
     if (map.getLevel() > 1) {
@@ -846,26 +898,140 @@ function initMap(center) {
   };
 }
 
+// ─── Web Share Target: '공유 → KMZ 뷰어'로 받은 파일 소비 ─────
+// sw.js 가 공유 POST 를 받아 'shared-files' 캐시에 넣고 './?shared=1' 로 리다이렉트한다.
+async function consumeSharedFiles() {
+  if (!/[?&]shared=1/.test(location.search)) return;
+  history.replaceState(history.state, '', location.pathname);   // URL 정리 (새로고침 시 재소비 방지)
+  try {
+    const cache = await caches.open('shared-files');
+    const mRes = await cache.match('./shared-manifest');
+    if (!mRes) return;
+    const names = await mRes.json();
+    for (let i = 0; i < names.length; i++) {
+      const r = await cache.match('./shared-file-' + i);
+      if (!r) continue;
+      const blob = await r.blob();
+      const file = new File([blob], names[i]);
+      if (/\.(jpe?g|png)$/i.test(names[i])) await loadImageAsMarker(file);
+      else { await loadKMZ(file); autoSaveToDB(); }   // kmz/kml/zip (확장자 불명이어도 PK 헤더로 판별)
+    }
+    await caches.delete('shared-files');
+  } catch (e) { console.warn('공유 파일 처리 실패', e); }
+}
+
 kakao.maps.load(() => {
   initMap(new kakao.maps.LatLng(35.6478, 127.5213));
 
-  loadKMZfromDB().then(file => {
-    if (file) loadKMZ(file, true); 
+  // 이전 데이터 복원 후 공유파일 소비 (동시에 돌면 silent 복원의 초기화가 공유 로드를 지움)
+  loadKMZfromDB().then(async file => {
+    if (file) await loadKMZ(file, true);
+    consumeSharedFiles();
   });
 
-  // ─── File Handling API: KMZ 파일로 앱 실행됐을 때 ─────
+  // ─── File Handling API: KMZ 파일로 앱 실행됐을 때 (데스크톱 Chrome/Edge) ─────
   if ('launchQueue' in window) {
     window.launchQueue.setConsumer(async (launchParams) => {
       if (!launchParams.files || launchParams.files.length === 0) return;
       const fileHandle = launchParams.files[0];
       const file = await fileHandle.getFile();
-      if (file.name.toLowerCase().endsWith('.kmz')) {
+      if (/\.(kmz|zip|kml)$/i.test(file.name)) {
         await saveKMZtoDB(file);
         loadKMZ(file);
       }
     });
   }
 });
+
+// ─── 선 색상/굵기 선택 (map.html 팔레트 이식) ─────────
+const PALETTE_COLORS = [
+  '#000000','#404040','#808080','#BFBFBF','#FFFFFF','#C00000','#FF0000','#FFC000','#FFFF00','#92D050',
+  '#00B050','#00B0F0','#0070C0','#002060','#7030A0','#FF6600','#00B0A0','#E91E63','#795548','#2E86C1'
+];
+const LINE_WIDTHS = [2, 3, 4, 6, 8, 10];
+let currentDrawColor = '#FF5733', currentDrawWidth = 4;
+let _styleTarget = null;   // null=그리기 기본값(그리는 중이면 현재 선), 아니면 polylines entry
+
+function _updateDrawStyleBtn() {
+  const el = document.querySelector('#drawStyleBtn .dsb-line');
+  if (el) { el.style.background = currentDrawColor; el.style.height = Math.min(10, Math.max(3, currentDrawWidth)) + 'px'; }
+}
+
+(function buildStylePicker(){
+  const grid = document.getElementById('spGrid');
+  PALETTE_COLORS.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'sp-swatch'; b.style.background = c; b.dataset.color = c;
+    b.onclick = () => applyPickedStyle(c, null);
+    grid.appendChild(b);
+  });
+  const ws = document.getElementById('spWidths');
+  LINE_WIDTHS.forEach(w => {
+    const b = document.createElement('button');
+    b.className = 'sp-w'; b.dataset.width = w; b.title = w + 'px';
+    b.innerHTML = `<span style="height:${Math.min(w, 12)}px"></span>`;
+    b.onclick = () => applyPickedStyle(null, w);
+    ws.appendChild(b);
+  });
+  document.getElementById('spCloseBtn').onclick = closeStylePicker;
+  document.getElementById('stylePicker').addEventListener('click', e => {
+    if (e.target === document.getElementById('stylePicker')) closeStylePicker();
+  });
+})();
+
+function _spMarkSelected(color, width) {
+  document.querySelectorAll('#spGrid .sp-swatch').forEach(b =>
+    b.classList.toggle('sel', b.dataset.color.toUpperCase() === String(color || '').toUpperCase()));
+  document.querySelectorAll('#spWidths .sp-w').forEach(b =>
+    b.classList.toggle('sel', +b.dataset.width === +width));
+}
+function openStylePicker(target) {
+  _styleTarget = target || null;
+  const c = _styleTarget ? (_styleTarget.color || '#FF5733') : currentDrawColor;
+  const w = _styleTarget ? (_styleTarget.width || 4) : currentDrawWidth;
+  _spMarkSelected(c, w);
+  document.getElementById('stylePicker').classList.add('show');
+}
+function closeStylePicker() {
+  document.getElementById('stylePicker').classList.remove('show');
+  _styleTarget = null;
+}
+// 색 또는 굵기 하나를 고르면 즉시 반영 (모달은 닫기 전까지 유지 — 색·굵기 연속 선택 가능)
+function applyPickedStyle(color, width) {
+  if (_styleTarget) {
+    const en = _styleTarget;
+    restylePolyline(en, color || en.color || '#FF5733', width || en.width || 4);
+    _spMarkSelected(en.color, en.width);
+    autoSaveToDB();
+  } else {
+    if (color) currentDrawColor = color;
+    if (width) currentDrawWidth = width;
+    _updateDrawStyleBtn();
+    _spMarkSelected(currentDrawColor, currentDrawWidth);
+    // 그리는 중이면 현재 그리는 선에도 즉시 반영
+    if (drawingMode && currentPolyline) {
+      const en = polylines.find(p => p.poly === currentPolyline);
+      if (en) currentPolyline = restylePolyline(en, currentDrawColor, currentDrawWidth);
+    }
+  }
+}
+// Kakao Polyline 은 색/굵기 변경 API가 없어 같은 경로로 재생성 후 참조 교체 (map.html _recreatePoly 방식)
+function restylePolyline(entry, color, width) {
+  const old = entry.poly;
+  const parts = old._parts;
+  const poly = new kakao.maps.Polyline({
+    path: parts ? (parts.length === 1 ? parts[0] : parts) : old.getPath(),
+    strokeWeight: width, strokeColor: color, strokeOpacity: 1
+  });
+  if (parts) { poly._parts = parts; poly._pnum = old._pnum; poly._viewCulled = old._viewCulled; }
+  if (old.getMap()) poly.setMap(map);
+  old.setMap(null);
+  entry.poly = poly; entry.color = color; entry.width = width;
+  attachPolylineDelete(poly, entry);
+  if (parts) scheduleBundleCull();   // 묶음선은 화면 교차 구간만 다시 반영
+  return poly;
+}
+document.getElementById('drawStyleBtn').onclick = () => openStylePicker(null);
 
 // ─── 선 그리기 ───────────────────────────────────────
 // ─── 선 컨텍스트 메뉴 ────────────────────────────────
@@ -889,6 +1055,15 @@ document.addEventListener('click', e => {
 
 document.getElementById('polyMenuCancelBtn').onclick = hidePolyMenu;
 
+// 선 색상/굵기 변경 (묶음선 포함 — 재생성 방식이라 전부 가능)
+document.getElementById('polyStyleBtn').onclick = () => {
+  if (!polyMenuTarget) return;
+  const t = polyMenuTarget;
+  const en = t.entry || polylines.find(p => p.poly === t.poly);
+  hidePolyMenu();
+  if (en) openStylePicker(en);
+};
+
 document.getElementById('polyDeleteBtn').onclick = () => {
   if (!polyMenuTarget) return;
   const t = polyMenuTarget;
@@ -902,6 +1077,12 @@ document.getElementById('polyDeleteBtn').onclick = () => {
 document.getElementById('polyEditBtn').onclick = () => {
   if (!polyMenuTarget) return;
   const { poly, entry } = polyMenuTarget;
+  // 묶음선(KMZ MultiGeometry 멀티파트)은 점 편집 불가 (map.html 과 동일 정책)
+  if (poly._parts || (entry && entry.parts && entry.parts.length > 1)) {
+    alert('여러 선이 묶인 객체는 수정할 수 없습니다.');
+    hidePolyMenu();
+    return;
+  }
   hidePolyMenu();
 
   // 기존 선 제거 후 그리기 모드로 복원
@@ -909,18 +1090,22 @@ document.getElementById('polyEditBtn').onclick = () => {
   poly.setMap(null);
   polylines = polylines.filter(p => p.poly !== poly);
 
-  // 기존 path로 새 폴리라인 생성 후 그리기 모드 진입
+  // 기존 path로 새 폴리라인 생성 후 그리기 모드 진입 (원래 색·굵기 유지)
   drawingMode = true;
   setMarkersClickThrough(true);
   currentPath = [...(entry.path || poly.getPath())];
+  currentDrawColor = (entry && entry.color) || currentDrawColor;
+  currentDrawWidth = (entry && entry.width) || currentDrawWidth;
   currentPolyline = new kakao.maps.Polyline({
     map, path: currentPath,
-    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
+    strokeWeight: currentDrawWidth, strokeColor: currentDrawColor, strokeOpacity: 1
   });
   attachPolylineDelete(currentPolyline);
-  polylines.push({ poly: currentPolyline, name: entry.name || '선', path: currentPath });
+  polylines.push({ poly: currentPolyline, name: entry.name || '선', path: currentPath, color: currentDrawColor, width: currentDrawWidth });
   document.getElementById('drawBtn').classList.add('active');
   document.getElementById('drawBtn').title = '선 그리기 종료';
+  document.getElementById('drawStyleBtn').classList.add('show');
+  _updateDrawStyleBtn();
 
   // 거리 오버레이 표시
   if (currentPath.length > 0) {
@@ -961,12 +1146,14 @@ function startDrawing() {
   currentPath = [];
   currentPolyline = new kakao.maps.Polyline({
     map, path: currentPath,
-    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
+    strokeWeight: currentDrawWidth, strokeColor: currentDrawColor, strokeOpacity: 1
   });
   attachPolylineDelete(currentPolyline);
-  polylines.push({ poly: currentPolyline, name: '선', path: currentPath });
+  polylines.push({ poly: currentPolyline, name: '선', path: currentPath, color: currentDrawColor, width: currentDrawWidth });
   document.getElementById('drawBtn').classList.add('active');
   document.getElementById('drawBtn').title = '선 그리기 종료';
+  document.getElementById('drawStyleBtn').classList.add('show');
+  _updateDrawStyleBtn();
 }
 
 function stopDrawing() {
@@ -989,6 +1176,7 @@ function stopDrawing() {
   currentPath = [];
   document.getElementById('drawBtn').classList.remove('active');
   document.getElementById('drawBtn').title = '선 그리기';
+  document.getElementById('drawStyleBtn').classList.remove('show');
 }
 
 document.getElementById('drawBtn').onclick = () => {
@@ -1003,6 +1191,7 @@ document.getElementById('clearBtn').onclick = () => {
   markers = [];
   polylines.forEach(p => p.poly.setMap(null));
   polylines = [];
+  clearTextLabels();
   if (drawingMode) stopDrawing();
   hasData = false;
   document.getElementById('saveBtn').disabled = true;
@@ -1040,19 +1229,20 @@ async function _autoSaveNow() {
         placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       }
     }
+    const styles = new Map();
     for (const pl of polylines) {
-      if (!pl.poly.getMap()) continue;
-      const safeName = (pl.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      const coords = pl.path.map(p => `${p.getLng()},${p.getLat()},0`).join('\n      ');
-      placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <LineString><coordinates>${coords}</coordinates></LineString>\n  </Placemark>`;
+      // 뷰포트 컬링으로 지도에서 뗀 선(_viewCulled)도 데이터는 살아있음 — 저장 포함
+      if (!pl.poly.getMap() && !pl.poly._viewCulled) continue;
+      placemarkXml += _lineKmlPlacemark(pl, styles);
     }
+    for (const t of textLabels) placemarkXml += _textKmlPlacemark(t);
 
-    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
+    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${_lineKmlStyleDefs(styles)}${placemarkXml}\n</Document>\n</kml>`);
 
-    const blob = await zip.generateAsync({ 
-          type: 'blob', 
+    const blob = await zip.generateAsync({
+          type: 'blob',
           compression: 'DEFLATE',
-          mimeType: 'application/vnd.google-earth.kmz' 
+          mimeType: 'application/vnd.google-earth.kmz'
         });
 
     await saveKMZtoDB(blob);
@@ -1182,7 +1372,7 @@ document.getElementById('fileInput').onchange = async e => {
 
   // 이미지 파일과 지도 파일 분리
   const imageFiles = files.filter(f => /\.(jpe?g|png)$/i.test(f.name) || f.type.startsWith('image/'));
-  const mapFiles = files.filter(f => /\.(kmz|zip)$/i.test(f.name));
+  const mapFiles = files.filter(f => /\.(kmz|zip|kml)$/i.test(f.name));
 
   // 지도 파일 처리 (여러 개 모두)
   for (const file of mapFiles) {
@@ -1273,9 +1463,11 @@ async function exportKMZ(scope = 'all') {
   const bounds = scope === 'view' ? map.getBounds() : null;
   const expMarkers = markers.filter(m =>
     m.marker.getMap() && (!bounds || bounds.contain(m.marker.getPosition())));
+  // 뷰포트 컬링으로 지도에서 뗀 선(_viewCulled)도 데이터는 살아있음 — 저장 포함
   const expPolylines = polylines.filter(pl =>
-    pl.poly.getMap() && (!bounds || pl.path.some(p => bounds.contain(p))));
-  if (expMarkers.length === 0 && expPolylines.length === 0) {
+    (pl.poly.getMap() || pl.poly._viewCulled) && (!bounds || pl.path.some(p => bounds.contain(p))));
+  const expLabels = textLabels.filter(t => !bounds || bounds.contain(t.pos));
+  if (expMarkers.length === 0 && expPolylines.length === 0 && expLabels.length === 0) {
     alert(scope === 'view' ? '현재 화면에 보이는 객체가 없습니다.' : '저장할 객체가 없습니다.');
     return;
   }
@@ -1352,13 +1544,11 @@ async function exportKMZ(scope = 'all') {
         placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       }
     }
-    for (const pl of expPolylines) {
-      const safeName = (pl.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      const coords = pl.path.map(p => `${p.getLng()},${p.getLat()},0`).join('\n      ');
-      placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <LineString><coordinates>${coords}</coordinates></LineString>\n  </Placemark>`;
-    }
+    const styles = new Map();
+    for (const pl of expPolylines) placemarkXml += _lineKmlPlacemark(pl, styles);
+    for (const t of expLabels) placemarkXml += _textKmlPlacemark(t);
 
-    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
+    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${_lineKmlStyleDefs(styles)}${placemarkXml}\n</Document>\n</kml>`);
 
 // (기존 zip.generateAsync 부분 수정)
     const blob = await zip.generateAsync({ 
@@ -1596,11 +1786,136 @@ function addPhotoMarker(latlng, imgSrc, name) {
   showDeleteHint();
 }
 
+// ─── 랜덤 색 (KMZ 스타일 없는 선) ────────────────────
+function randColor() { return '#' + Math.floor(Math.random()*0xFFFFFF).toString(16).padStart(6,'0'); }
+
+// ─── CAD 문자(kind=text) 텍스트 라벨 — 마커 없이 글자만(회전 포함) ──
+// map.html addTextLabel 이식. 자동저장/내보내기 복원을 위해 좌표·회전·색을 함께 보관.
+let textLabels = [];
+function addTextLabel(latlng, text, rot, color) {
+  const safe = String(text == null ? '' : text)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const col = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : '#FFEB00';
+  // CAD 회전(반시계, 도) -> 화면 CSS 회전(시계 양수)이라 부호 반전
+  const content =
+    '<div style="transform:rotate(' + (-(Number(rot) || 0)) + 'deg);' +
+    'transform-origin:center center;white-space:nowrap;font-size:13px;' +
+    'font-weight:bold;line-height:1;color:' + col + ';pointer-events:none;' +
+    'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 0 2px #000;">' +
+    safe + '</div>';
+  const ov = new kakao.maps.CustomOverlay({ map, content, position: latlng, xAnchor: 0.5, yAnchor: 0.5, zIndex: 6 });
+  textLabels.push({ ov, name: String(text == null ? '' : text), rot: Number(rot) || 0, color: col, pos: latlng });
+}
+function clearTextLabels() {
+  textLabels.forEach(t => t.ov.setMap(null));
+  textLabels = [];
+}
+
+// ─── 묶음선 뷰포트 컬링 + 줌별 점 단순화 (map.html cullBundlePolys 이식) ──
+// Kakao 는 오버레이의 '전체' 좌표를 줌/이동 때마다 SVG 로 다시 그린다(뷰포트 클리핑 없음)
+// → 좌표 수만 점짜리 묶음선(KMZ MultiGeometry)은 줌인이 매우 느림.
+// 해결: 화면(+여유 30%)과 교차하는 구간만, 화면에서 ~1.3px 이상 간격인 점만 setPath 로 반영.
+// 원본 좌표는 poly._parts 에 그대로 → 내보내기/자동저장은 영향 없음.
+// 화면 밖으로 완전히 나가 지도에서 뗀 선은 _viewCulled=true (내보내기에선 표시 중으로 취급).
+let _cullTimer = null;
+function scheduleBundleCull() { clearTimeout(_cullTimer); _cullTimer = setTimeout(cullBundlePolys, 60); }
+function cullBundlePolys() {
+  if (typeof map === 'undefined' || !map) return;
+  const b = map.getBounds(); if (!b) return;
+  const swp = b.getSouthWest(), nep = b.getNorthEast();
+  const latSpan = nep.getLat() - swp.getLat(), lngSpan = nep.getLng() - swp.getLng();
+  const s = swp.getLat() - latSpan * 0.3, n = nep.getLat() + latSpan * 0.3;
+  const w = swp.getLng() - lngSpan * 0.3, e = nep.getLng() + lngSpan * 0.3;
+  const mapH = (document.getElementById('map') || {}).clientHeight || 800;
+  const eps = latSpan / mapH * 1.3;   // 화면 ~1.3px 미만 간격 점은 생략 (줌아웃일수록 크게 줄어듦)
+  for (const en of polylines) {
+    const pl = en.poly;
+    if (!pl || !pl._parts) continue;
+    // 좌표 숫자 캐시 (getLat/getLng 반복 호출 절약)
+    if (!pl._pnum) pl._pnum = pl._parts.map(part => part.map(p => [p.getLat(), p.getLng()]));
+    const parts = [];
+    for (let pi = 0; pi < pl._parts.length; pi++) {
+      const part = pl._parts[pi], num = pl._pnum[pi];
+      if (num.length < 2) continue;
+      let run = null;
+      let pla = num[0][0], plo = num[0][1];
+      let prevIn = (pla >= s && pla <= n && plo >= w && plo <= e);
+      if (prevIn) { run = [part[0]]; run._la = pla; run._lo = plo; parts.push(run); }
+      for (let i = 1; i < num.length; i++) {
+        const la = num[i][0], lo = num[i][1];
+        const pin = (la >= s && la <= n && lo >= w && lo <= e);
+        let segIn = pin || prevIn;
+        if (!segIn) {
+          // 양 끝점이 밖이어도 화면을 '가로지르는' 선분은 포함 (선분 bbox 교차 판정)
+          const l1 = Math.min(pla, la), l2 = Math.max(pla, la);
+          const g1 = Math.min(plo, lo), g2 = Math.max(plo, lo);
+          segIn = !(l2 < s || l1 > n || g2 < w || g1 > e);
+        }
+        if (segIn) {
+          if (!run) { run = [part[i - 1]]; run._la = pla; run._lo = plo; parts.push(run); }
+          // 단순화: 마지막 채택점과 eps 이상 떨어졌거나 / 구간 끝 / 화면 이탈점이면 채택
+          if (Math.abs(la - run._la) > eps || Math.abs(lo - run._lo) > eps ||
+              i === num.length - 1 || !pin) {
+            run.push(part[i]); run._la = la; run._lo = lo;
+          }
+          if (!pin) run = null;   // 화면 밖으로 나감 → 다음 교차 구간은 새 run
+        } else run = null;
+        pla = la; plo = lo; prevIn = pin;
+      }
+    }
+    const vis = parts.filter(r => r.length >= 2);
+    if (vis.length) {
+      pl.setPath(vis.length === 1 ? vis[0] : vis);
+      pl._viewCulled = false;
+      if (!pl.getMap()) pl.setMap(map);
+    } else {
+      pl._viewCulled = true;   // 화면 밖 컬링일 뿐 — 내보내기에선 표시 중으로 취급
+      if (pl.getMap()) pl.setMap(null);
+    }
+  }
+}
+
+// ─── 트랙 → KML Placemark 직렬화 (내보내기/자동저장 공용) ──
+// 묶음선(entry.parts)은 MultiGeometry 한 개로, 색·굵기는 공유 <Style id="ln_RRGGBB_W">로.
+// map.html _lineKmlPlacemarks 대응 — 다시 열어도 색·굵기 유지.
+function _lineKmlPlacemark(en, styles) {
+  const parts = (en.parts && en.parts.length) ? en.parts : [en.path];
+  const segs = [];
+  for (const cs of parts) {
+    if (!cs || cs.length < 2) continue;
+    const coords = cs.map(p => `${p.getLng()},${p.getLat()},0`).join(' ');
+    segs.push(`<LineString><coordinates>${coords}</coordinates></LineString>`);
+  }
+  if (!segs.length) return '';
+  const safeName = (en.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let su = '';
+  if (styles) {
+    const hex = ((en.color || '#FF5733') + '').replace('#','');
+    const w = en.width || 4;
+    const key = hex + '_' + w;
+    if (!styles.has(key)) styles.set(key, 'ln_' + key);
+    su = `<styleUrl>#${styles.get(key)}</styleUrl>`;
+  }
+  const geom = segs.length === 1 ? segs[0] : `<MultiGeometry>${segs.join('')}</MultiGeometry>`;
+  return `\n  <Placemark>\n    <name>${safeName}</name>${su}\n    ${geom}\n  </Placemark>`;
+}
+// styles(Map: 'RRGGBB_w' -> id) -> KML <Style> 정의 (KML 색은 aabbggrr)
+function _lineKmlStyleDefs(styles) {
+  let out = '';
+  for (const [key, id] of styles) {
+    const [hex, w] = key.split('_');
+    out += `\n  <Style id="${id}"><LineStyle><color>ff${hex.slice(4,6)}${hex.slice(2,4)}${hex.slice(0,2)}</color><width>${w}</width></LineStyle></Style>`;
+  }
+  return out;
+}
+// 텍스트 라벨 → KML Placemark (kind=text — 자동저장/내보내기 복원용)
+function _textKmlPlacemark(t) {
+  const safeName = (t.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>${t.rot}</value></Data><Data name="color"><value>${t.color}</value></Data></ExtendedData>\n    <Point><coordinates>${t.pos.getLng()},${t.pos.getLat()},0</coordinates></Point>\n  </Placemark>`;
+}
+
 // ─── KMZ 불러오기 ─────────────────────────────────────
 async function loadKMZ(file, silent = false) {
-  // .zip 확장자도 KMZ(ZIP 기반)이므로 동일하게 처리
-  const isZipOrKMZ = /\.(kmz|zip)$/i.test(file.name) || file.type === 'application/vnd.google-earth.kmz' || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
-  if (!isZipOrKMZ) { alert('KMZ 또는 ZIP 파일만 불러올 수 있습니다.'); return; }
   if (!silent) showLoading('KMZ 압축 해제 중...');
   else showLoading('이전 데이터 복원 중...');
 
@@ -1611,16 +1926,28 @@ async function loadKMZ(file, silent = false) {
     markers = [];
     polylines.forEach(p => p.poly.setMap(null));
     polylines = [];
+    clearTextLabels();
     hasData = false;
     document.getElementById('saveBtn').disabled = true;
   }
 
+  // 선은 파싱 중엔 지도에 안 붙이고 모아뒀다가 setBounds 후 한 번에 붙인다.
+  // (파싱 중 map 에 붙이면 현재 줌에서 그리고, setBounds 로 화면이 바뀌며 전부
+  //  다시 그려 이중 렌더 → 대형 KMZ 로딩이 느렸음. map.html 과 동일 방식)
+  const _deferPolys = [];
   try {
-    const zip = await JSZip.loadAsync(file);
-    const zipFiles = Object.keys(zip.files);
+    // KMZ(zip)는 'PK'(0x50 0x4B)로 시작. 평문 .kml 은 zip 이 아니므로 헤더로 판별.
+    let zip = null, zipFiles = [], kmlText = null;
+    const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    const isZip = head[0] === 0x50 && head[1] === 0x4B;
+    if (!isZip) {
+      if (!/\.kml$/i.test(file.name)) { alert('KMZ / ZIP / KML 파일만 불러올 수 있습니다.'); hideLoading(); return; }
+      kmlText = await file.text();   // 평문 KML (내부 임베드 사진 없음 — 마커/트랙만)
+    } else {
+    zip = await JSZip.loadAsync(file);
+    zipFiles = Object.keys(zip.files);
 
     // 파일명에 널문자(\u0000)가 포함된 경우 제거 후 탐색
-    let kmlText = null;
     for (const name of zipFiles) {
       const cleanName = name.replace(/\0/g, '');
       if (/\.kml$/i.test(cleanName)) {
@@ -1631,12 +1958,25 @@ async function loadKMZ(file, silent = false) {
       }
     }
     if (!kmlText) { alert('.kml 파일을 읽을 수 없습니다.\n포함된 파일:\n' + zipFiles.map(n=>n.replace(/\0/g,'')).join('\n')); hideLoading(); return; }
+    }
 
     showLoading('데이터 읽는 중...');
     const xml = new DOMParser().parseFromString(kmlText, 'application/xml');
     // Folder 안에 있는 Placemark도 모두 포함
     const placemarks = Array.from(xml.getElementsByTagName('Placemark'));
     const bounds = new kakao.maps.LatLngBounds();
+
+    // KML 스타일 맵 (styleUrl -> 색·굵기). KML 색은 aabbggrr 순서. (map.html 이식)
+    const styleColors = {}, styleWidths = {};
+    const kmlC2Hex = c => { c = (c||'').trim(); if (c.length < 8) return null; return '#' + c.slice(6,8) + c.slice(4,6) + c.slice(2,4); };
+    for (const st of Array.from(xml.getElementsByTagName('Style'))) {
+      const id = st.getAttribute('id'); if (!id) continue;
+      const cs = (st.getElementsByTagName('LineStyle')[0] || st.getElementsByTagName('PolyStyle')[0]);
+      const h = kmlC2Hex(cs?.getElementsByTagName('color')[0]?.textContent);
+      if (h) styleColors['#'+id] = h;
+      const w = parseFloat(cs?.getElementsByTagName('width')[0]?.textContent);
+      if (!isNaN(w)) styleWidths['#'+id] = w;
+    }
 
     for (let i = 0; i < placemarks.length; i++) {
       const pm = placemarks[i];
@@ -1669,22 +2009,61 @@ async function loadKMZ(file, silent = false) {
         }
       }
 
-      const lineString = pm.getElementsByTagName('LineString')[0];
+      // ── 선/폴리곤 도형 전부 수집 (MultiGeometry 안의 모든 LineString + Polygon 링) ──
+      const coordEls = [];
+      for (const ls of Array.from(pm.getElementsByTagName('LineString')))
+        coordEls.push(ls.getElementsByTagName('coordinates')[0]);
+      for (const pg of Array.from(pm.getElementsByTagName('Polygon')))
+        for (const lr of Array.from(pg.getElementsByTagName('LinearRing')))
+          coordEls.push(lr.getElementsByTagName('coordinates')[0]);
+
       const point = pm.getElementsByTagName('Point')[0];
 
-      if (lineString) {
-        const coordsText = lineString.getElementsByTagName('coordinates')[0]?.textContent || '';
-        const pts = coordsText.trim().split(/\s+/).map(c => {
-          const [lng, lat] = c.split(',').map(Number);
-          return new kakao.maps.LatLng(lat, lng);
-        }).filter(ll => !isNaN(ll.getLat()) && !isNaN(ll.getLng()));
-        if (pts.length) {
-          const entry = { poly: null, name: pmName, path: pts };
-          const poly = new kakao.maps.Polyline({ map, path: pts, strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9 });
-          entry.poly = poly;
+      if (coordEls.length) {
+        const su = pm.getElementsByTagName('styleUrl')[0]?.textContent?.trim();
+        const color = (su && styleColors[su]) || randColor();
+        // Kakao는 선 굵기를 정수 px로 렌더 → 소수 굵기(0.6 등)는 올림(ceil)으로 구분
+        const sw = (su && styleWidths[su] != null) ? Math.max(1, Math.ceil(styleWidths[su])) : 4;
+        // Placemark 하나(MultiGeometry 포함)의 모든 선을 멀티파트 Polyline 1개로 —
+        // 선별 개별 Polyline 은 수천 개 KMZ 에서 pan/zoom 버벅임 (map.html 과 동일 경량화).
+        // 원본 경로는 _parts/entry.parts 에 보관(getPath()가 멀티파트를 유실하므로 저장용).
+        const parts = [];
+        for (const ce of coordEls) {
+          const coordsText = ce?.textContent || '';
+          const pts = coordsText.trim().split(/\s+/).map(c => {
+            const [lng, lat] = c.split(',').map(Number);
+            return new kakao.maps.LatLng(lat, lng);
+          }).filter(ll => !isNaN(ll.getLat()) && !isNaN(ll.getLng()));
+          if (pts.length < 2) continue;
           pts.forEach(p => bounds.extend(p));
+          parts.push(pts);
+        }
+        if (parts.length) {
+          const poly = new kakao.maps.Polyline({ path: parts.length === 1 ? parts[0] : parts, strokeWeight: sw, strokeColor: color, strokeOpacity: 1 });
+          if (parts.length > 1) poly._parts = parts;   // 단일 경로는 점 편집 가능 — getPath()로 최신 경로 사용
+          _deferPolys.push(poly);   // setBounds 후 한 번에 setMap
+          const entry = { poly, name: pmName, path: parts.length === 1 ? parts[0] : parts.flat(), parts: parts.length > 1 ? parts : null, color, width: sw };
           attachPolylineDelete(poly, entry);
           polylines.push(entry);
+        }
+      } else if (point && (() => {
+        // ── CAD 문자(kind=text): 마커 대신 회전 텍스트 라벨만 그림 ──
+        for (const d of Array.from(pm.getElementsByTagName('Data'))) {
+          if (d.getAttribute('name') === 'kind')
+            return (d.getElementsByTagName('value')[0]?.textContent || '').trim() === 'text';
+        }
+        return false;
+      })()) {
+        const ct = point.getElementsByTagName('coordinates')[0]?.textContent || '';
+        const [lng, lat] = ct.trim().split(',').map(Number);
+        if (!isNaN(lat) && !isNaN(lng)) {
+          let _rot = 0, _col = '';
+          for (const d of Array.from(pm.getElementsByTagName('Data'))) {
+            const nm = d.getAttribute('name'); const v = d.getElementsByTagName('value')[0]?.textContent || '';
+            if (nm === 'rot') _rot = parseFloat(v) || 0; else if (nm === 'color') _col = v.trim();
+          }
+          const ll = new kakao.maps.LatLng(lat, lng); bounds.extend(ll);
+          addTextLabel(ll, pmName, _rot, _col);
         }
       } else if (point) {
         const coordsText = point.getElementsByTagName('coordinates')[0]?.textContent || '';
@@ -1729,11 +2108,16 @@ async function loadKMZ(file, silent = false) {
     }
 
     if (!bounds.isEmpty()) map.setBounds(bounds);
+    // 화면(줌) 확정 후 한 번만 그림. 묶음선(_parts)은 컬링이 화면 교차 구간만 붙임.
+    _deferPolys.forEach(p => { if (!p._parts) p.setMap(map); });
+    cullBundlePolys();
     hasData = true;
     document.getElementById('saveBtn').disabled = false;
     hideLoading();
   } catch (err) {
     hideLoading();
+    // 오류 전까지 파싱된 선은 그대로 표시 (숨은 채 남지 않게)
+    try { _deferPolys.forEach(p => { if (!p._parts && !p.getMap()) p.setMap(map); }); cullBundlePolys(); } catch(e) {}
     alert('오류: ' + err.message);
   }
 }

@@ -1,4 +1,5 @@
-const CACHE_NAME = 'kmz-viewer-v13';
+const CACHE_NAME = 'kmz-viewer-v14';
+const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const STATIC_ASSETS = [
   './index.html',
   './manifest.json',
@@ -17,12 +18,29 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+      Promise.all(keys.filter(k => k !== CACHE_NAME && k !== SHARE_CACHE).map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('fetch', e => {
+  // ── Web Share Target: 파일 앱/갤러리에서 '공유 → KMZ 뷰어'로 보낸 파일 수신 ──
+  // (POST 도 navigate 모드라 navigate 조기 return 보다 먼저 처리해야 함)
+  const url = new URL(e.request.url);
+  if (e.request.method === 'POST' && url.pathname.endsWith('/share-target')) {
+    e.respondWith((async () => {
+      try {
+        const form = await e.request.formData();
+        const files = form.getAll('file').filter(f => f && f.name);
+        const cache = await caches.open(SHARE_CACHE);
+        await cache.put('./shared-manifest', new Response(JSON.stringify(files.map(f => f.name))));
+        await Promise.all(files.map((f, i) => cache.put('./shared-file-' + i, new Response(f))));
+      } catch (err) { /* 파일 없이 열려도 앱은 뜨게 */ }
+      return Response.redirect('./?shared=1', 303);
+    })());
+    return;
+  }
+
   if (e.request.mode === 'navigate') {
     return; // 🔥 중요
   }

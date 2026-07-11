@@ -28,6 +28,8 @@
   <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=94bf4516825c146467eb2318cd55b782&autoload=false&libraries=services"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/piexifjs"></script>
+  <!-- exifr: 삼성 등 일부 폰 카메라 JPEG/HEIC 은 piexif 가 못 읽음 — 읽기 폴백 (데스크톱 map.html 과 동일) -->
+  <script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
   <style>
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { height: 100%; margin: 0; overflow: hidden; }
@@ -441,7 +443,7 @@
 <!-- 사진 정보/메타 수정 모달 -->
 <div id="photoInfoModal">
   <div id="photoInfoBox">
-    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v7</span></h3>
+    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v8</span></h3>
     <label>제목</label>
     <input type="text" id="piTitle" maxlength="80">
     <label>설명</label>
@@ -449,9 +451,10 @@
     <div class="pi-row" id="piTaken"></div>
     <div class="pi-row" id="piCoord"></div>
     <div class="pi-row" id="piAddr"></div>
+    <div class="pi-row" style="color:#999">· 저장: 앱(지도·KMZ)에 반영 &nbsp;· 파일로 저장: 메타를 넣은 사진을 새 파일로 기기에 저장</div>
     <div class="pi-btns">
       <button id="piSaveBtn">저장</button>
-      <button id="piDownloadBtn">📥 사진저장</button>
+      <button id="piDownloadBtn">📥 파일로 저장</button>
       <button id="piCloseBtn">닫기</button>
     </div>
   </div>
@@ -1642,8 +1645,15 @@ document.getElementById('piSaveBtn').onclick = () => {
   const desc = document.getElementById('piDesc').value.trim();
   if (title) piTarget.name = title;
   piTarget.desc = desc;
+  // 촬영 직후 저장: 메타 기록 '전'의 원본 바이트를 먼저 기기에 저장 —
+  // piexif 로 다시 쓴 EXIF 는 일부 갤러리(삼성)가 위치를 무시하므로 카메라 원본 구조를 유지한다.
+  // (제목/설명은 앱·KMZ에 반영되고, 파일에도 넣으려면 '📥 파일로 저장' 사용)
+  if (piTarget._pendingCapture) {
+    piTarget._pendingCapture = false;
+    downloadPhoto(piTarget.imgSrc, piTarget.name);
+  }
   piTarget.imgSrc = writePhotoMeta(piTarget.imgSrc, { title: piTarget.name, desc });
-  // 보관 중인 원본에도 바로 기록 (사진저장 시 전체 EXIF + 최신 메타 유지)
+  // 보관 중인 원본에도 바로 기록 (파일로 저장 시 전체 EXIF + 최신 메타 유지)
   if (piTarget.origKey) {
     const t = piTarget;
     getOrig(t.origKey).then(o => { if (o) saveOrig(t.origKey, writePhotoMeta(o, { title: t.name, desc: t.desc })); });
@@ -1651,11 +1661,6 @@ document.getElementById('piSaveBtn').onclick = () => {
   const c = piTarget.iw.getContent();
   const sp = c.querySelector('.photo-iw-header span'); if (sp) sp.textContent = piTarget.name;
   const im = c.querySelector('img'); if (im) im.src = piTarget.imgSrc;
-  // 촬영 직후라면 메타가 들어간 파일을 지금 1번만 기기에 저장
-  if (piTarget._pendingCapture) {
-    piTarget._pendingCapture = false;
-    downloadPhoto(piTarget.imgSrc, piTarget.name);
-  }
   autoSaveToDB();
   closePhotoInfo();
 };
@@ -1678,29 +1683,40 @@ async function loadImageAsMarker(imgFile) {
       let imgSrc = ev.target.result;
       let name = imgFile.name.replace(/\.[^.]+$/, '');
       const meta = readPhotoMeta(imgSrc);
+      // exifr 폴백: 삼성 등 일부 폰 카메라 JPEG(HEIC 포함)은 piexif 가 GPS 를 못 읽음
+      if (meta.lat == null && window.exifr) {
+        try {
+          const g = await exifr.gps(imgFile);
+          if (g && g.latitude != null && (g.latitude !== 0 || g.longitude !== 0)) { meta.lat = g.latitude; meta.lng = g.longitude; }
+        } catch(e) {}
+      }
+      if (!meta.taken && window.exifr) {
+        try { const p = await exifr.parse(imgFile, ['DateTimeOriginal']); if (p && p.DateTimeOriginal) meta.taken = exifNow(new Date(p.DateTimeOriginal)); } catch(e) {}
+      }
       let latlng = (meta.lat != null) ? new kakao.maps.LatLng(meta.lat, meta.lng) : null;
 
       // 방금 촬영한 사진 판별: 파일 시각이 1분 이내 (📂 → 카메라 촬영).
       // 촬영본은 임시파일이라 갤러리에 안 남음 → GPS 유무와 무관하게 기기에 저장한다.
-      // (과거엔 'GPS 없음' 조건이 있어서 카메라가 GPS 를 넣어주는 폰은 저장이 통째로 건너뛰어졌음)
       const justCaptured = (Date.now() - imgFile.lastModified < 60000);
       if (justCaptured) {
-        let lat = meta.lat, lng = meta.lng;
-        if (lat == null) {
-          // GPS 없으면 현재 위치(실패 시 지도 중심)를 EXIF 에 기록
+        const taken = meta.taken || exifNow(new Date(imgFile.lastModified));
+        name = 'IMG_' + taken.replace(/[: ]/g, '').slice(0, 15);
+        if (meta.lat == null) {
+          // GPS 없을 때만 현재 위치(실패 시 지도 중심)를 EXIF 에 기록.
+          // 카메라가 GPS 를 넣어준 경우엔 EXIF 를 절대 건드리지 않는다 —
+          // 카메라가 쓴 원본 바이트 그대로 저장해야 삼성 갤러리 등에서 위치가 100% 인식됨
           const pos = await new Promise(res => navigator.geolocation
             ? navigator.geolocation.getCurrentPosition(p => res(p), () => res(null), { enableHighAccuracy: true, timeout: 5000 })
             : res(null));
+          let lat, lng;
           if (pos) { lat = pos.coords.latitude; lng = pos.coords.longitude; }
           else { const c = map.getCenter(); lat = c.getLat(); lng = c.getLng(); }
+          imgSrc = writePhotoMeta(imgSrc, { lat, lng, taken });
+          meta.lat = lat; meta.lng = lng;
+          latlng = new kakao.maps.LatLng(lat, lng);
         }
-        const taken = meta.taken || exifNow(new Date(imgFile.lastModified));
-        name = 'IMG_' + taken.replace(/[: ]/g, '').slice(0, 15);
-        imgSrc = writePhotoMeta(imgSrc, { lat, lng, taken });
         // 파일 저장은 여기서 하지 않음 — 사진 정보 입력창에서 저장/닫기할 때 1번만
-        // (촬영 직후 저장 + 메타 저장으로 파일이 2장 생기던 문제)
         meta.taken = taken;
-        latlng = new kakao.maps.LatLng(lat, lng);
       }
 
       if (latlng) {

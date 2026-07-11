@@ -593,6 +593,7 @@ document.getElementById('editDeleteBtn').onclick = () => {
   const t = editTarget;
   t.iw.close();
   t.marker.setMap(null);
+  if (t.origKey) delOrig(t.origKey);   // 보관 원본도 정리
   markers = markers.filter(m => m.marker !== t.marker);
   if (markers.length === 0 && polylines.length === 0) document.getElementById('saveBtn').disabled = true;
   closeMarkerEditModal();
@@ -702,16 +703,44 @@ function undoLastPoint() {
     if (distanceOverlay) { distanceOverlay.setMap(null); distanceOverlay = null; }
   }
 }
-// ─── IndexedDB: KMZ 파일 저장/복원 ───────────────────
-const DB_NAME = 'kmz-viewer', DB_VER = 1, STORE = 'kmz';
+// ─── IndexedDB: KMZ 파일 저장/복원 + 사진 원본 보관 ──
+// 'orig' 스토어: 불러온/촬영한 사진의 원본(dataURL, 전체 EXIF 포함)을 보관.
+// 지도 표시·KMZ 는 압축본을 쓰지만, 메타 수정·사진저장은 항상 원본 기준 → EXIF 유실 방지.
+const DB_NAME = 'kmz-viewer', DB_VER = 2, STORE = 'kmz', ORIG_STORE = 'orig';
 
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains(ORIG_STORE)) db.createObjectStore(ORIG_STORE);
+    };
     req.onsuccess = e => resolve(e.target.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+async function saveOrig(key, dataUrl) {
+  try { const db = await openDB(); db.transaction(ORIG_STORE, 'readwrite').objectStore(ORIG_STORE).put(dataUrl, key); } catch(e) {}
+}
+async function getOrig(key) {
+  if (!key) return null;
+  try {
+    const db = await openDB();
+    return await new Promise(res => {
+      const r = db.transaction(ORIG_STORE).objectStore(ORIG_STORE).get(key);
+      r.onsuccess = () => res(r.result || null);
+      r.onerror = () => res(null);
+    });
+  } catch(e) { return null; }
+}
+async function delOrig(key) {
+  if (!key) return;
+  try { const db = await openDB(); db.transaction(ORIG_STORE, 'readwrite').objectStore(ORIG_STORE).delete(key); } catch(e) {}
+}
+async function clearOrigs() {
+  try { const db = await openDB(); db.transaction(ORIG_STORE, 'readwrite').objectStore(ORIG_STORE).clear(); } catch(e) {}
 }
 
 async function saveKMZtoDB(fileOrBlob, fileName = 'last_state.kmz') {
@@ -1241,6 +1270,7 @@ document.getElementById('clearBtn').onclick = () => {
   polylines.forEach(p => p.poly.setMap(null));
   polylines = [];
   clearTextLabels();
+  clearOrigs();   // 보관 원본 전체 정리
   if (drawingMode) stopDrawing();
   hasData = false;
   document.getElementById('saveBtn').disabled = true;
@@ -1525,21 +1555,26 @@ document.getElementById('piSaveBtn').onclick = () => {
   if (title) piTarget.name = title;
   piTarget.desc = desc;
   piTarget.imgSrc = writePhotoMeta(piTarget.imgSrc, { title: piTarget.name, desc });
+  // 보관 중인 원본에도 바로 기록 (사진저장 시 전체 EXIF + 최신 메타 유지)
+  if (piTarget.origKey) {
+    const t = piTarget;
+    getOrig(t.origKey).then(o => { if (o) saveOrig(t.origKey, writePhotoMeta(o, { title: t.name, desc: t.desc })); });
+  }
   const c = piTarget.iw.getContent();
   const sp = c.querySelector('.photo-iw-header span'); if (sp) sp.textContent = piTarget.name;
   const im = c.querySelector('img'); if (im) im.src = piTarget.imgSrc;
   autoSaveToDB();
   closePhotoInfo();
 };
-// 사진저장: 현재 메타(제목/설명/GPS/촬영일시)를 EXIF 에 넣어 기기에 저장
-document.getElementById('piDownloadBtn').onclick = () => {
+// 사진저장: 보관된 원본(전체 EXIF)에 현재 메타를 넣어 기기에 저장. 원본 없으면 표시본으로.
+document.getElementById('piDownloadBtn').onclick = async () => {
   if (!piTarget) return;
-  const pos = piTarget.marker.getPosition();
-  const out = writePhotoMeta(piTarget.imgSrc, {
-    title: piTarget.name, desc: piTarget.desc || '',
-    lat: pos.getLat(), lng: pos.getLng(), taken: piTarget.taken || ''
-  });
-  downloadPhoto(out, piTarget.name);
+  const t = piTarget;
+  const pos = t.marker.getPosition();
+  const args = { title: t.name, desc: t.desc || '', lat: pos.getLat(), lng: pos.getLng() };
+  if (t.taken) args.taken = t.taken;
+  const orig = await getOrig(t.origKey);
+  downloadPhoto(writePhotoMeta(orig || t.imgSrc, args), t.name);
 };
 
 // ─── 이미지 파일을 사진 마커로 추가 (EXIF GPS 우선) ──
@@ -1578,7 +1613,12 @@ async function loadImageAsMarker(imgFile) {
         addPhotoMarker(map.getCenter(), imgSrc, name);
       }
       const en = markers[markers.length - 1];
-      if (en) { en.taken = meta.taken || ''; en.desc = meta.desc || ''; }
+      if (en) {
+        en.taken = meta.taken || ''; en.desc = meta.desc || '';
+        // 원본(전체 EXIF) 보관 — 메타 수정·사진저장은 이 원본 기준 (압축본은 EXIF 유실 가능)
+        en.origKey = 'p' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+        saveOrig(en.origKey, imgSrc);
+      }
       document.getElementById('saveBtn').disabled = false;
       autoSaveToDB();
       resolve();
@@ -2075,6 +2115,7 @@ function _photoMetaXml(m) {
   let s = '';
   if (m.desc) s += `<Data name="desc"><value>${_escXml(m.desc)}</value></Data>`;
   if (m.taken) s += `<Data name="taken"><value>${_escXml(m.taken)}</value></Data>`;
+  if (m.origKey) s += `<Data name="orig"><value>${_escXml(m.origKey)}</value></Data>`;   // 원본 보관소 키
   return s;
 }
 // 텍스트 라벨 → KML Placemark (kind=text — 자동저장/내보내기 복원용)
@@ -2268,6 +2309,7 @@ async function loadKMZ(file, silent = false) {
               for (const d of Array.from(pm.getElementsByTagName('Data'))) {
                 const nm = d.getAttribute('name'); const v = d.getElementsByTagName('value')[0]?.textContent || '';
                 if (nm === 'desc') _en.desc = v; else if (nm === 'taken') _en.taken = v;
+                else if (nm === 'orig') _en.origKey = v;   // 원본 보관소 키 (이 기기 DB에 있을 때만 유효)
               }
             }
           } else {

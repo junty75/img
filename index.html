@@ -441,7 +441,7 @@
 <!-- 사진 정보/메타 수정 모달 -->
 <div id="photoInfoModal">
   <div id="photoInfoBox">
-    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v5</span></h3>
+    <h3>📷 사진 정보 <span style="font-size:11px;color:#bbb;font-weight:400">v6</span></h3>
     <label>제목</label>
     <input type="text" id="piTitle" maxlength="80">
     <label>설명</label>
@@ -1538,12 +1538,21 @@ function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
     if (desc != null) ex['0th'][piexif.ImageIFD.XPComment] = _xpBytes(desc);
     if (taken) { ex['Exif'][piexif.ExifIFD.DateTimeOriginal] = taken; ex['0th'][piexif.ImageIFD.DateTime] = taken; }
     if (lat != null && lng != null) {
-      // GPSVersionID 필수 — 없으면 삼성 갤러리 등 일부 뷰어가 GPS 블록을 무시함
+      // 카메라 앱과 동일한 GPS 블록 구성 — VersionID·고도·날짜/시간스탬프까지 있어야
+      // 삼성 갤러리 등 일부 뷰어가 위치를 표시함
       ex['GPS'][piexif.GPSIFD.GPSVersionID]    = ex['GPS'][piexif.GPSIFD.GPSVersionID] || [2, 3, 0, 0];
       ex['GPS'][piexif.GPSIFD.GPSLatitudeRef]  = lat >= 0 ? 'N' : 'S';
       ex['GPS'][piexif.GPSIFD.GPSLatitude]     = _gpsRat(lat);
       ex['GPS'][piexif.GPSIFD.GPSLongitudeRef] = lng >= 0 ? 'E' : 'W';
       ex['GPS'][piexif.GPSIFD.GPSLongitude]    = _gpsRat(lng);
+      ex['GPS'][piexif.GPSIFD.GPSAltitudeRef]  = ex['GPS'][piexif.GPSIFD.GPSAltitudeRef] || 0;
+      ex['GPS'][piexif.GPSIFD.GPSAltitude]     = ex['GPS'][piexif.GPSIFD.GPSAltitude] || [0, 1];
+      const _ts = taken || ex['Exif'][piexif.ExifIFD.DateTimeOriginal] || exifNow();
+      const _md = String(_ts).match(/^(\d{4}:\d{2}:\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+      if (_md && !ex['GPS'][piexif.GPSIFD.GPSDateStamp]) {
+        ex['GPS'][piexif.GPSIFD.GPSDateStamp] = _md[1];
+        ex['GPS'][piexif.GPSIFD.GPSTimeStamp] = [[+_md[2], 1], [+_md[3], 1], [+_md[4], 1]];
+      }
     }
     return _exifSafeCarry(ex, imgSrc);
   } catch(e) { console.warn('EXIF 기록 실패', e); return imgSrc; }
@@ -1587,6 +1596,11 @@ function openPhotoInfo(entry) {
   document.getElementById('photoInfoModal').classList.add('show');
 }
 function closePhotoInfo() {
+  // 촬영 직후 입력창을 그냥 닫아도 파일은 1번 저장 (메타 미입력 상태)
+  if (piTarget && piTarget._pendingCapture) {
+    piTarget._pendingCapture = false;
+    downloadPhoto(piTarget.imgSrc, piTarget.name);
+  }
   document.getElementById('photoInfoModal').classList.remove('show');
   piTarget = null;
 }
@@ -1610,6 +1624,11 @@ document.getElementById('piSaveBtn').onclick = () => {
   const c = piTarget.iw.getContent();
   const sp = c.querySelector('.photo-iw-header span'); if (sp) sp.textContent = piTarget.name;
   const im = c.querySelector('img'); if (im) im.src = piTarget.imgSrc;
+  // 촬영 직후라면 메타가 들어간 파일을 지금 1번만 기기에 저장
+  if (piTarget._pendingCapture) {
+    piTarget._pendingCapture = false;
+    downloadPhoto(piTarget.imgSrc, piTarget.name);
+  }
   autoSaveToDB();
   closePhotoInfo();
 };
@@ -1621,15 +1640,7 @@ document.getElementById('piDownloadBtn').onclick = async () => {
   const args = { title: t.name, desc: t.desc || '', lat: pos.getLat(), lng: pos.getLng() };
   if (t.taken) args.taken = t.taken;
   const orig = await getOrig(t.origKey);
-  const out = writePhotoMeta(orig || t.imgSrc, args);
-  downloadPhoto(out, t.name);
-  // 저장한 파일의 메타를 다시 읽어 확인 표시 (어디서 유실되는지 진단)
-  const chk = readPhotoMeta(out);
-  const fmt = out.slice(5, out.indexOf(';'));
-  alert('저장된 사진 메타 확인\n형식: ' + fmt + (orig ? ' (원본 기준)' : ' (원본 없음 → 압축본 기준)')
-    + '\n제목: ' + (chk.title || '-')
-    + '\n촬영일시: ' + (chk.taken || '-')
-    + '\n위치: ' + (chk.lat != null ? chk.lat.toFixed(5) + ', ' + chk.lng.toFixed(5) : '-'));
+  downloadPhoto(writePhotoMeta(orig || t.imgSrc, args), t.name);
 };
 
 // ─── 이미지 파일을 사진 마커로 추가 (EXIF GPS 우선) ──
@@ -1659,7 +1670,8 @@ async function loadImageAsMarker(imgFile) {
         const taken = meta.taken || exifNow(new Date(imgFile.lastModified));
         name = 'IMG_' + taken.replace(/[: ]/g, '').slice(0, 15);
         imgSrc = writePhotoMeta(imgSrc, { lat, lng, taken });
-        downloadPhoto(imgSrc, name);   // 다운로드 폴더에 저장 → 갤러리에서 보임
+        // 파일 저장은 여기서 하지 않음 — 사진 정보 입력창에서 저장/닫기할 때 1번만
+        // (촬영 직후 저장 + 메타 저장으로 파일이 2장 생기던 문제)
         meta.taken = taken;
         latlng = new kakao.maps.LatLng(lat, lng);
       }
@@ -1676,6 +1688,11 @@ async function loadImageAsMarker(imgFile) {
         // 원본(전체 EXIF) 보관 — 메타 수정·사진저장은 이 원본 기준 (압축본은 EXIF 유실 가능)
         en.origKey = 'p' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
         saveOrig(en.origKey, imgSrc);
+        if (justCaptured) {
+          // 촬영본: 정보 입력창을 바로 열고, 저장/닫기 시 메타 포함 파일을 1번만 기기에 저장
+          en._pendingCapture = true;
+          openPhotoInfo(en);
+        }
       }
       document.getElementById('saveBtn').disabled = false;
       autoSaveToDB();

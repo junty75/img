@@ -877,8 +877,14 @@ function initMap(center) {
     startX = t.clientX; startY = t.clientY;
     clearTimeout(mapLongPressTimer);
     if (!drawingMode) {
-      const ll = cssScale > 1 ? getScaledLatLng(t.clientX, t.clientY) : e.latLng;
-      if (ll) mapLongPressTimer = setTimeout(() => openShareLocation(ll.getLat(), ll.getLng()), 600);
+      // touchstart 는 e.latLng 가 안 넘어오는 경우가 있어 화면 좌표에서 직접 계산
+      const cx = t.clientX, cy = t.clientY;
+      mapLongPressTimer = setTimeout(() => {
+        try {
+          const ll = getScaledLatLng(cx, cy);
+          if (ll) openShareLocation(ll.getLat(), ll.getLng());
+        } catch(err) {}
+      }, 600);
     }
   });
   kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
@@ -1430,8 +1436,11 @@ function openShareLocation(lat, lng) {
   bg.addEventListener('click', e => { if (e.target === bg) bg.remove(); });
   bg.querySelector('.share-cancel').onclick = () => bg.remove();
   bg.querySelector('.share-ok').onclick = async () => {
-    const url = 'https://map.kakao.com/link/map/' + encodeURIComponent(addr || '공유 위치') + ',' + lat + ',' + lng;
-    const text = '📍 ' + (addr || coordTxt);
+    // 링크는 좌표만 사용 — 이름(주소)을 넣으면 URL 인코딩된 긴 링크가 그대로 보임.
+    // 문구의 주소도 짧게(읍면동 이하 3마디)만 표시.
+    const shortAddr = addr ? addr.split(' ').slice(-3).join(' ') : '';
+    const url = 'https://map.kakao.com/link/map/' + lat.toFixed(6) + ',' + lng.toFixed(6);
+    const text = '📍 ' + (shortAddr || coordTxt);
     bg.remove();
     if (navigator.share) {
       try { await navigator.share({ title: '위치 공유', text, url }); } catch(e) {}   // 사용자가 공유 취소해도 무시

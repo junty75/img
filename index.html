@@ -321,7 +321,7 @@
 <div id="address-display" onclick="copyAddr()" title="탭하면 주소 복사">위치 확인 중...</div>
 
 <button class="btn" id="saveBtn" title="KMZ로 저장" disabled>💾</button>
-<button class="btn" id="loadBtn" title="KMZ / 사진 불러오기">📂</button>
+<button class="btn" id="loadBtn" title="KMZ 불러오기">📂</button>
 <button class="btn" id="myLocationBtn" title="현재 위치">
   <svg viewBox="0 0 24 24" fill="none">
     <circle cx="12" cy="12" r="4" stroke="#1a73e8" stroke-width="2"/>
@@ -346,7 +346,7 @@
     <option value="USE_DISTRICT">🗺️ 지적도</option>
   </select>
 </div>
-<input type="file" id="fileInput" accept=".kmz,.zip,.kml,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
+<input type="file" id="fileInput" accept="application/vnd.google-earth.kmz,application/vnd.google-earth.kml+xml,application/zip,.kmz,.kml,.zip" multiple>
 
 <!-- 마커 조준원 -->
 <div id="crosshair"></div>

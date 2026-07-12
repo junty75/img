@@ -28,6 +28,8 @@
   <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=94bf4516825c146467eb2318cd55b782&autoload=false&libraries=services"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/piexifjs"></script>
+  <!-- exifr: 삼성 등 일부 폰 카메라 JPEG 은 piexif 가 GPS 를 못 읽음 — 읽기 폴백 -->
+  <script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
   <style>
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { height: 100%; margin: 0; overflow: hidden; }
@@ -62,6 +64,10 @@
     #myLocationBtn.loc-follow svg path, #myLocationBtn.loc-follow svg circle { stroke: white; }
     #drawBtn { top: 128px; right: 16px; padding: 0; transition: background 0.2s; font-size: 18px; }
     #drawBtn.active { background: #e53935; box-shadow: 0 2px 8px rgba(219,68,55,0.6); }
+    /* 선그리기 색/굵기 버튼 (그리기 중에만 표시) */
+    #drawStyleBtn { top: 128px; right: 72px; display: none; font-size: 18px; }
+    #drawStyleBtn.show { display: flex; }
+    #drawStyleBtn .dsb-line { width: 26px; border-radius: 3px; background: #FF5733; height: 4px; }
     #markerBtn { top: 184px; right: 16px; padding: 0; transition: background 0.2s; font-size: 20px; }
     #markerBtn.active { background: #43a047; box-shadow: 0 2px 8px rgba(67,160,71,0.6); }
     #clearBtn { top: 240px; right: 16px; padding: 0; transition: background 0.2s; }
@@ -136,6 +142,39 @@
       width: 48px; padding: 5px 1px; border: none; border-radius: 8px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 11px;
       background: white; cursor: pointer; text-align: center;
+    }
+
+    /* ── 선 스타일 피커 (색상/굵기) ── */
+    #stylePicker {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45); z-index: 9500;
+      align-items: center; justify-content: center;
+    }
+    #stylePicker.show { display: flex; }
+    #stylePickerBox {
+      background: white; border-radius: 14px;
+      padding: 18px 18px 16px; width: 300px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+    }
+    #stylePickerBox h3 { margin: 0 0 12px; font-size: 15px; color: #333; }
+    .sp-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 9px; margin-bottom: 14px; }
+    .sp-swatch {
+      width: 100%; aspect-ratio: 1; border-radius: 50%;
+      border: 1.5px solid rgba(0,0,0,0.18); cursor: pointer; padding: 0;
+    }
+    .sp-swatch.sel { outline: 3px solid #1a73e8; outline-offset: 2px; }
+    .sp-widths { display: flex; gap: 6px; margin-bottom: 14px; }
+    .sp-w {
+      flex: 1; height: 38px; border: 1.5px solid #ddd; border-radius: 8px;
+      background: white; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; padding: 0 4px;
+    }
+    .sp-w.sel { border-color: #1a73e8; background: #e8f0fe; }
+    .sp-w span { display: block; width: 100%; border-radius: 2px; background: #444; }
+    #spCloseBtn {
+      width: 100%; padding: 11px; border: none; border-radius: 10px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      background: #f1f3f4; color: #555;
     }
 
     /* 선 컨텍스트 메뉴 */
@@ -294,6 +333,7 @@
   </svg>
 </button>
 <button class="btn" id="drawBtn" title="선 그리기">✏️</button>
+<button class="btn" id="drawStyleBtn" title="선 색상/굵기"><span class="dsb-line"></span></button>
 <button class="btn" id="markerBtn" title="마커 추가">📍</button>
 <button class="btn" id="clearBtn" title="화면 초기화">🧹</button>
 <!-- 지도종류 선택 -->
@@ -306,7 +346,7 @@
     <option value="USE_DISTRICT">🗺️ 지적도</option>
   </select>
 </div>
-<input type="file" id="fileInput" accept=".kmz,.zip,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
+<input type="file" id="fileInput" accept=".kmz,.zip,.kml,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
 
 <!-- 마커 조준원 -->
 <div id="crosshair"></div>
@@ -314,8 +354,19 @@
 <!-- 선 컨텍스트 메뉴 -->
 <div id="polyMenu">
   <button id="polyEditBtn">✏️ 수정</button>
+  <button id="polyStyleBtn">🎨 색상/굵기</button>
   <button id="polyDeleteBtn" class="danger">🗑️ 삭제</button>
   <button id="polyMenuCancelBtn">✕ 취소</button>
+</div>
+
+<!-- 선 스타일 피커 (색상/굵기) -->
+<div id="stylePicker">
+  <div id="stylePickerBox">
+    <h3>🎨 선 색상 / 굵기</h3>
+    <div class="sp-grid" id="spGrid"></div>
+    <div class="sp-widths" id="spWidths"></div>
+    <button id="spCloseBtn">닫기</button>
+  </div>
 </div>
 
 <!-- CSS scale 줌 버튼 -->
@@ -495,6 +546,7 @@ document.getElementById('editDeleteBtn').onclick = () => {
   const t = editTarget;
   t.iw.close();
   t.marker.setMap(null);
+  if (t.origKey) delOrig(t.origKey);   // 보관 원본도 정리
   markers = markers.filter(m => m.marker !== t.marker);
   if (markers.length === 0 && polylines.length === 0) document.getElementById('saveBtn').disabled = true;
   closeMarkerEditModal();
@@ -604,16 +656,44 @@ function undoLastPoint() {
     if (distanceOverlay) { distanceOverlay.setMap(null); distanceOverlay = null; }
   }
 }
-// ─── IndexedDB: KMZ 파일 저장/복원 ───────────────────
-const DB_NAME = 'kmz-viewer', DB_VER = 1, STORE = 'kmz';
+// ─── IndexedDB: KMZ 파일 저장/복원 + 사진 원본 보관 ──
+// 'orig' 스토어: 불러온/촬영한 사진의 원본(dataURL, 전체 EXIF 포함)을 보관.
+// 지도 표시·KMZ 는 압축본을 쓰지만, 메타 수정·사진저장은 항상 원본 기준 → EXIF 유실 방지.
+const DB_NAME = 'kmz-viewer', DB_VER = 2, STORE = 'kmz', ORIG_STORE = 'orig';
 
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains(ORIG_STORE)) db.createObjectStore(ORIG_STORE);
+    };
     req.onsuccess = e => resolve(e.target.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+async function saveOrig(key, dataUrl) {
+  try { const db = await openDB(); db.transaction(ORIG_STORE, 'readwrite').objectStore(ORIG_STORE).put(dataUrl, key); } catch(e) {}
+}
+async function getOrig(key) {
+  if (!key) return null;
+  try {
+    const db = await openDB();
+    return await new Promise(res => {
+      const r = db.transaction(ORIG_STORE).objectStore(ORIG_STORE).get(key);
+      r.onsuccess = () => res(r.result || null);
+      r.onerror = () => res(null);
+    });
+  } catch(e) { return null; }
+}
+async function delOrig(key) {
+  if (!key) return;
+  try { const db = await openDB(); db.transaction(ORIG_STORE, 'readwrite').objectStore(ORIG_STORE).delete(key); } catch(e) {}
+}
+async function clearOrigs() {
+  try { const db = await openDB(); db.transaction(ORIG_STORE, 'readwrite').objectStore(ORIG_STORE).clear(); } catch(e) {}
 }
 
 async function saveKMZtoDB(fileOrBlob, fileName = 'last_state.kmz') {
@@ -829,6 +909,9 @@ function initMap(center) {
     if (map.getLevel() > 1) applyScale(1);
   });
 
+  // 묶음선(KMZ MultiGeometry) 뷰포트 컬링 — 이동/줌 멈출 때마다 화면 교차 구간만 다시 그림
+  kakao.maps.event.addListener(map, 'idle', scheduleBundleCull);
+
   // CSS scale +/- 버튼
   document.getElementById('cssZoomIn').onclick = () => {
     if (map.getLevel() > 1) {
@@ -846,26 +929,140 @@ function initMap(center) {
   };
 }
 
+// ─── Web Share Target: '공유 → KMZ 뷰어'로 받은 파일 소비 ─────
+// sw.js 가 공유 POST 를 받아 'shared-files' 캐시에 넣고 './?shared=1' 로 리다이렉트한다.
+async function consumeSharedFiles() {
+  if (!/[?&]shared=1/.test(location.search)) return;
+  history.replaceState(history.state, '', location.pathname);   // URL 정리 (새로고침 시 재소비 방지)
+  try {
+    const cache = await caches.open('shared-files');
+    const mRes = await cache.match('./shared-manifest');
+    if (!mRes) return;
+    const names = await mRes.json();
+    for (let i = 0; i < names.length; i++) {
+      const r = await cache.match('./shared-file-' + i);
+      if (!r) continue;
+      const blob = await r.blob();
+      const file = new File([blob], names[i]);
+      if (/\.(jpe?g|png)$/i.test(names[i])) await loadImageAsMarker(file);
+      else { await loadKMZ(file); autoSaveToDB(); }   // kmz/kml/zip (확장자 불명이어도 PK 헤더로 판별)
+    }
+    await caches.delete('shared-files');
+  } catch (e) { console.warn('공유 파일 처리 실패', e); }
+}
+
 kakao.maps.load(() => {
   initMap(new kakao.maps.LatLng(35.6478, 127.5213));
 
-  loadKMZfromDB().then(file => {
-    if (file) loadKMZ(file, true); 
+  // 이전 데이터 복원 후 공유파일 소비 (동시에 돌면 silent 복원의 초기화가 공유 로드를 지움)
+  loadKMZfromDB().then(async file => {
+    if (file) await loadKMZ(file, true);
+    consumeSharedFiles();
   });
 
-  // ─── File Handling API: KMZ 파일로 앱 실행됐을 때 ─────
+  // ─── File Handling API: KMZ 파일로 앱 실행됐을 때 (데스크톱 Chrome/Edge) ─────
   if ('launchQueue' in window) {
     window.launchQueue.setConsumer(async (launchParams) => {
       if (!launchParams.files || launchParams.files.length === 0) return;
       const fileHandle = launchParams.files[0];
       const file = await fileHandle.getFile();
-      if (file.name.toLowerCase().endsWith('.kmz')) {
+      if (/\.(kmz|zip|kml)$/i.test(file.name)) {
         await saveKMZtoDB(file);
         loadKMZ(file);
       }
     });
   }
 });
+
+// ─── 선 색상/굵기 선택 (map.html 팔레트 이식) ─────────
+const PALETTE_COLORS = [
+  '#000000','#404040','#808080','#BFBFBF','#FFFFFF','#C00000','#FF0000','#FFC000','#FFFF00','#92D050',
+  '#00B050','#00B0F0','#0070C0','#002060','#7030A0','#FF6600','#00B0A0','#E91E63','#795548','#2E86C1'
+];
+const LINE_WIDTHS = [2, 3, 4, 6, 8, 10];
+let currentDrawColor = '#FF5733', currentDrawWidth = 4;
+let _styleTarget = null;   // null=그리기 기본값(그리는 중이면 현재 선), 아니면 polylines entry
+
+function _updateDrawStyleBtn() {
+  const el = document.querySelector('#drawStyleBtn .dsb-line');
+  if (el) { el.style.background = currentDrawColor; el.style.height = Math.min(10, Math.max(3, currentDrawWidth)) + 'px'; }
+}
+
+(function buildStylePicker(){
+  const grid = document.getElementById('spGrid');
+  PALETTE_COLORS.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'sp-swatch'; b.style.background = c; b.dataset.color = c;
+    b.onclick = () => applyPickedStyle(c, null);
+    grid.appendChild(b);
+  });
+  const ws = document.getElementById('spWidths');
+  LINE_WIDTHS.forEach(w => {
+    const b = document.createElement('button');
+    b.className = 'sp-w'; b.dataset.width = w; b.title = w + 'px';
+    b.innerHTML = `<span style="height:${Math.min(w, 12)}px"></span>`;
+    b.onclick = () => applyPickedStyle(null, w);
+    ws.appendChild(b);
+  });
+  document.getElementById('spCloseBtn').onclick = closeStylePicker;
+  document.getElementById('stylePicker').addEventListener('click', e => {
+    if (e.target === document.getElementById('stylePicker')) closeStylePicker();
+  });
+})();
+
+function _spMarkSelected(color, width) {
+  document.querySelectorAll('#spGrid .sp-swatch').forEach(b =>
+    b.classList.toggle('sel', b.dataset.color.toUpperCase() === String(color || '').toUpperCase()));
+  document.querySelectorAll('#spWidths .sp-w').forEach(b =>
+    b.classList.toggle('sel', +b.dataset.width === +width));
+}
+function openStylePicker(target) {
+  _styleTarget = target || null;
+  const c = _styleTarget ? (_styleTarget.color || '#FF5733') : currentDrawColor;
+  const w = _styleTarget ? (_styleTarget.width || 4) : currentDrawWidth;
+  _spMarkSelected(c, w);
+  document.getElementById('stylePicker').classList.add('show');
+}
+function closeStylePicker() {
+  document.getElementById('stylePicker').classList.remove('show');
+  _styleTarget = null;
+}
+// 색 또는 굵기 하나를 고르면 즉시 반영 (모달은 닫기 전까지 유지 — 색·굵기 연속 선택 가능)
+function applyPickedStyle(color, width) {
+  if (_styleTarget) {
+    const en = _styleTarget;
+    restylePolyline(en, color || en.color || '#FF5733', width || en.width || 4);
+    _spMarkSelected(en.color, en.width);
+    autoSaveToDB();
+  } else {
+    if (color) currentDrawColor = color;
+    if (width) currentDrawWidth = width;
+    _updateDrawStyleBtn();
+    _spMarkSelected(currentDrawColor, currentDrawWidth);
+    // 그리는 중이면 현재 그리는 선에도 즉시 반영
+    if (drawingMode && currentPolyline) {
+      const en = polylines.find(p => p.poly === currentPolyline);
+      if (en) currentPolyline = restylePolyline(en, currentDrawColor, currentDrawWidth);
+    }
+  }
+}
+// Kakao Polyline 은 색/굵기 변경 API가 없어 같은 경로로 재생성 후 참조 교체 (map.html _recreatePoly 방식)
+function restylePolyline(entry, color, width) {
+  const old = entry.poly;
+  const parts = old._parts;
+  const poly = new kakao.maps.Polyline({
+    path: parts ? (parts.length === 1 ? parts[0] : parts) : old.getPath(),
+    strokeWeight: width, strokeColor: color, strokeOpacity: 1
+  });
+  if (parts) { poly._parts = parts; poly._pnum = old._pnum; poly._viewCulled = old._viewCulled; }
+  if (old.getMap()) poly.setMap(map);
+  old.setMap(null);
+  entry.poly = poly; entry.color = color; entry.width = width;
+  attachPolylineDelete(poly, entry);
+  if (parts) scheduleBundleCull();   // 묶음선은 화면 교차 구간만 다시 반영
+  return poly;
+}
+document.getElementById('drawStyleBtn').onclick = () => openStylePicker(null);
 
 // ─── 선 그리기 ───────────────────────────────────────
 // ─── 선 컨텍스트 메뉴 ────────────────────────────────
@@ -889,6 +1086,15 @@ document.addEventListener('click', e => {
 
 document.getElementById('polyMenuCancelBtn').onclick = hidePolyMenu;
 
+// 선 색상/굵기 변경 (묶음선 포함 — 재생성 방식이라 전부 가능)
+document.getElementById('polyStyleBtn').onclick = () => {
+  if (!polyMenuTarget) return;
+  const t = polyMenuTarget;
+  const en = t.entry || polylines.find(p => p.poly === t.poly);
+  hidePolyMenu();
+  if (en) openStylePicker(en);
+};
+
 document.getElementById('polyDeleteBtn').onclick = () => {
   if (!polyMenuTarget) return;
   const t = polyMenuTarget;
@@ -902,6 +1108,12 @@ document.getElementById('polyDeleteBtn').onclick = () => {
 document.getElementById('polyEditBtn').onclick = () => {
   if (!polyMenuTarget) return;
   const { poly, entry } = polyMenuTarget;
+  // 묶음선(KMZ MultiGeometry 멀티파트)은 점 편집 불가 (map.html 과 동일 정책)
+  if (poly._parts || (entry && entry.parts && entry.parts.length > 1)) {
+    alert('여러 선이 묶인 객체는 수정할 수 없습니다.');
+    hidePolyMenu();
+    return;
+  }
   hidePolyMenu();
 
   // 기존 선 제거 후 그리기 모드로 복원
@@ -909,18 +1121,22 @@ document.getElementById('polyEditBtn').onclick = () => {
   poly.setMap(null);
   polylines = polylines.filter(p => p.poly !== poly);
 
-  // 기존 path로 새 폴리라인 생성 후 그리기 모드 진입
+  // 기존 path로 새 폴리라인 생성 후 그리기 모드 진입 (원래 색·굵기 유지)
   drawingMode = true;
   setMarkersClickThrough(true);
   currentPath = [...(entry.path || poly.getPath())];
+  currentDrawColor = (entry && entry.color) || currentDrawColor;
+  currentDrawWidth = (entry && entry.width) || currentDrawWidth;
   currentPolyline = new kakao.maps.Polyline({
     map, path: currentPath,
-    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
+    strokeWeight: currentDrawWidth, strokeColor: currentDrawColor, strokeOpacity: 1
   });
   attachPolylineDelete(currentPolyline);
-  polylines.push({ poly: currentPolyline, name: entry.name || '선', path: currentPath });
+  polylines.push({ poly: currentPolyline, name: entry.name || '선', path: currentPath, color: currentDrawColor, width: currentDrawWidth });
   document.getElementById('drawBtn').classList.add('active');
   document.getElementById('drawBtn').title = '선 그리기 종료';
+  document.getElementById('drawStyleBtn').classList.add('show');
+  _updateDrawStyleBtn();
 
   // 거리 오버레이 표시
   if (currentPath.length > 0) {
@@ -961,12 +1177,14 @@ function startDrawing() {
   currentPath = [];
   currentPolyline = new kakao.maps.Polyline({
     map, path: currentPath,
-    strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9
+    strokeWeight: currentDrawWidth, strokeColor: currentDrawColor, strokeOpacity: 1
   });
   attachPolylineDelete(currentPolyline);
-  polylines.push({ poly: currentPolyline, name: '선', path: currentPath });
+  polylines.push({ poly: currentPolyline, name: '선', path: currentPath, color: currentDrawColor, width: currentDrawWidth });
   document.getElementById('drawBtn').classList.add('active');
   document.getElementById('drawBtn').title = '선 그리기 종료';
+  document.getElementById('drawStyleBtn').classList.add('show');
+  _updateDrawStyleBtn();
 }
 
 function stopDrawing() {
@@ -989,6 +1207,7 @@ function stopDrawing() {
   currentPath = [];
   document.getElementById('drawBtn').classList.remove('active');
   document.getElementById('drawBtn').title = '선 그리기';
+  document.getElementById('drawStyleBtn').classList.remove('show');
 }
 
 document.getElementById('drawBtn').onclick = () => {
@@ -1003,6 +1222,8 @@ document.getElementById('clearBtn').onclick = () => {
   markers = [];
   polylines.forEach(p => p.poly.setMap(null));
   polylines = [];
+  clearTextLabels();
+  clearOrigs();   // 보관 원본 전체 정리
   if (drawingMode) stopDrawing();
   hasData = false;
   document.getElementById('saveBtn').disabled = true;
@@ -1035,24 +1256,25 @@ async function _autoSaveNow() {
         const base64Data = compressed.split(',')[1];
         const filename = `photo_${String(photoIndex++).padStart(4,'0')}.jpg`;
         filesFolder.file(filename, base64Data, { base64: true });
-        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data></ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data>${_photoMetaXml(m)}</ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       } else {
         placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       }
     }
+    const styles = new Map();
     for (const pl of polylines) {
-      if (!pl.poly.getMap()) continue;
-      const safeName = (pl.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      const coords = pl.path.map(p => `${p.getLng()},${p.getLat()},0`).join('\n      ');
-      placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <LineString><coordinates>${coords}</coordinates></LineString>\n  </Placemark>`;
+      // 뷰포트 컬링으로 지도에서 뗀 선(_viewCulled)도 데이터는 살아있음 — 저장 포함
+      if (!pl.poly.getMap() && !pl.poly._viewCulled) continue;
+      placemarkXml += _lineKmlPlacemark(pl, styles);
     }
+    for (const t of textLabels) placemarkXml += _textKmlPlacemark(t);
 
-    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
+    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${_lineKmlStyleDefs(styles)}${placemarkXml}\n</Document>\n</kml>`);
 
-    const blob = await zip.generateAsync({ 
-          type: 'blob', 
+    const blob = await zip.generateAsync({
+          type: 'blob',
           compression: 'DEFLATE',
-          mimeType: 'application/vnd.google-earth.kmz' 
+          mimeType: 'application/vnd.google-earth.kmz'
         });
 
     await saveKMZtoDB(blob);
@@ -1182,57 +1404,329 @@ document.getElementById('fileInput').onchange = async e => {
 
   // 이미지 파일과 지도 파일 분리
   const imageFiles = files.filter(f => /\.(jpe?g|png)$/i.test(f.name) || f.type.startsWith('image/'));
-  const mapFiles = files.filter(f => /\.(kmz|zip)$/i.test(f.name));
+  const mapFiles = files.filter(f => /\.(kmz|zip|kml)$/i.test(f.name));
 
-  // 지도 파일 처리 (여러 개 모두)
   for (const file of mapFiles) {
     await loadKMZ(file);
   }
   if (mapFiles.length > 0) autoSaveToDB();
 
-  // 이미지 파일 처리 - 현재 지도 중심에 사진 마커 추가
-  for (const imgFile of imageFiles) {
-    await loadImageAsMarker(imgFile);
+  // 이미지 파일 처리 - EXIF 위치 우선, 없으면 지도 중심
+  let noGpsCnt = 0, imgDone = 0;
+  if (imageFiles.length > 1) showLoading('사진 불러오는 중... (0/' + imageFiles.length + ')');
+  try {
+    for (const imgFile of imageFiles) {
+      const hadGps = await loadImageAsMarker(imgFile);
+      if (hadGps === false) noGpsCnt++;
+      imgDone++;
+      if (imageFiles.length > 1) showLoading('사진 불러오는 중... (' + imgDone + '/' + imageFiles.length + ')');
+    }
+  } finally { if (imageFiles.length > 1) hideLoading(); }
+  // 안드로이드 갤러리(포토) 선택창은 사진의 위치정보를 제거해서 전달할 수 있음 → 안내
+  if (noGpsCnt > 0) {
+    alert('위치정보를 읽지 못한 사진 ' + noGpsCnt + '장은 지도 중심에 추가했습니다.\n\n' +
+      '※ 갤러리(포토) 선택창은 안드로이드가 위치정보를 제거해서 전달할 수 있습니다.\n' +
+      "사진의 원래 위치를 쓰려면 선택창에서 '파일(내 파일)' 앱으로 선택해 보세요.");
   }
 };
+
+// ─── EXIF 메타 유틸 (piexif) ─────────────────────────
+// XPTitle/XPComment 는 UTF-16LE 바이트 배열 (한글 안전 — 탐색기/데스크톱 뷰어와 동일 필드)
+function _xpBytes(str) { const a = []; for (const ch of String(str)) { const c = ch.charCodeAt(0); a.push(c & 0xFF, (c >> 8) & 0xFF); } a.push(0, 0); return a; }
+function _xpStr(bytes) { if (!bytes || !bytes.length) return ''; let s = ''; for (let i = 0; i + 1 < bytes.length; i += 2) { const c = bytes[i] | (bytes[i+1] << 8); if (!c) break; s += String.fromCharCode(c); } return s; }
+function _gpsRat(v) { v = Math.abs(v); const d = Math.floor(v), mF = (v - d) * 60, m = Math.floor(mF), s = Math.round((mF - m) * 60 * 10000); return [[d,1],[m,1],[s,10000]]; }
+function exifNow(d = new Date()) { const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}:${p(d.getMonth()+1)}:${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+function _escXml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// piexif.dump() 출력의 TIFF 사양 위반을 표준 구조로 재조립:
+//  - IFD 엔트리 태그 오름차순 정렬 (piexif 는 Exif/GPS 포인터를 맨 뒤에 붙여 미정렬 —
+//    안드로이드 등 엄격한 파서는 정렬을 가정해 GPS 포인터를 못 찾을 수 있음)
+//  - 모든 IFD 뒤에 next-IFD 오프셋 기록 (piexif 는 서브 IFD 종결자 누락 → 뒤 4바이트가
+//    쓰레기 오프셋으로 읽혀 체인 파서가 EXIF 전체를 버림) — 폰 갤러리 위치 미인식의 원인
+// 실패 시 원본 그대로 반환 (안전).
+function _fixExif(exifStr) {
+  try {
+    if (exifStr.slice(0, 6) !== 'Exif\x00\x00') return exifStr;
+    const t = exifStr.slice(6);
+    const le = t.slice(0, 2) === 'II';
+    if (!le && t.slice(0, 2) !== 'MM') return exifStr;
+    const b = o => t.charCodeAt(o) & 0xFF;
+    const u16 = o => le ? b(o) | (b(o+1) << 8) : (b(o) << 8) | b(o+1);
+    const u32 = o => le ? (u16(o) | (u16(o+2) * 0x10000)) : (u16(o) * 0x10000 + u16(o+2));
+    const SZ = { 1:1, 2:1, 3:2, 4:4, 5:8, 6:1, 7:1, 8:2, 9:4, 10:8, 11:4, 12:8 };
+    const valU32 = s => { const c = i => s.charCodeAt(i) & 0xFF; return le ? c(0) + c(1)*0x100 + c(2)*0x10000 + c(3)*0x1000000 : c(0)*0x1000000 + c(1)*0x10000 + c(2)*0x100 + c(3); };
+
+    function readIFD(off) {
+      if (off <= 0 || off + 2 > t.length) return null;
+      const n = u16(off), entries = [];
+      if (off + 2 + 12*n > t.length) return null;
+      for (let k = 0; k < n; k++) {
+        const p = off + 2 + 12*k, tag = u16(p), typ = u16(p+2), cnt = u32(p+4);
+        if (!SZ[typ]) continue;
+        const size = SZ[typ] * cnt;
+        let val;
+        if (size <= 4) val = t.slice(p+8, p+12);
+        else { const vo = u32(p+8); if (vo + size > t.length) continue; val = t.slice(vo, vo + size); }
+        entries.push({ tag, typ, cnt, val });
+      }
+      const nx = off + 2 + 12*n + 4 <= t.length ? u32(off + 2 + 12*n) : 0;
+      return { entries, next: nx };
+    }
+    const take = (list, tag) => { const i = list.findIndex(e => e.tag === tag); return i < 0 ? null : list.splice(i, 1)[0]; };
+
+    const ifd0 = readIFD(u32(4));
+    if (!ifd0) return exifStr;
+    const pExif = take(ifd0.entries, 0x8769), pGPS = take(ifd0.entries, 0x8825);
+    const exifIFD = pExif ? readIFD(valU32(pExif.val)) : null;
+    let interopIFD = null;
+    if (exifIFD) { const pI = take(exifIFD.entries, 0xA005); interopIFD = pI ? readIFD(valU32(pI.val)) : null; }
+    const gpsIFD = pGPS ? readIFD(valU32(pGPS.val)) : null;
+    let ifd1 = ifd0.next ? readIFD(ifd0.next) : null, thumb = '';
+    if (ifd1) {
+      const pT = take(ifd1.entries, 0x0201), pL = take(ifd1.entries, 0x0202);
+      if (pT && pL) {
+        const to = valU32(pT.val), tl = valU32(pL.val);
+        if (to + tl <= t.length) thumb = t.slice(to, to + tl);
+      }
+      if (!thumb) ifd1 = null;   // 썸네일 없는 IFD1 은 버림
+    }
+
+    // ── 재조립 ──
+    const chr = String.fromCharCode;
+    const p16 = v => le ? chr(v & 255) + chr((v >> 8) & 255) : chr((v >> 8) & 255) + chr(v & 255);
+    const p32 = v => le ? p16(v & 0xFFFF) + p16((v / 0x10000) & 0xFFFF) : p16((v / 0x10000) & 0xFFFF) + p16(v & 0xFFFF);
+    function prep(ifd) {   // 정렬 + 중복 제거 + 크기 계산
+      const seen = {};
+      ifd.entries = ifd.entries.filter(e => seen[e.tag] ? false : (seen[e.tag] = 1)).sort((a, b) => a.tag - b.tag);
+      ifd.valSize = ifd.entries.reduce((s, e) => s + (e.val.length > 4 ? e.val.length + (e.val.length & 1) : 0), 0);
+      ifd.tblSize = 2 + 12 * ifd.entries.length + 4;
+      return ifd;
+    }
+    function serIFD(ifd, tblOff, next) {
+      let vo = tblOff + ifd.tblSize, tbl = p16(ifd.entries.length), vals = '';
+      for (const e of ifd.entries) {
+        tbl += p16(e.tag) + p16(e.typ) + p32(e.cnt);
+        if (e.val.length <= 4) tbl += (e.val + '\x00\x00\x00\x00').slice(0, 4);
+        else { tbl += p32(vo); vals += e.val + (e.val.length & 1 ? '\x00' : ''); vo += e.val.length + (e.val.length & 1); }
+      }
+      return tbl + p32(next) + vals;
+    }
+
+    const mkPtr = tag => ({ tag, typ: 4, cnt: 1, val: '\x00\x00\x00\x00' });
+    if (exifIFD) ifd0.entries.push(mkPtr(0x8769));
+    if (gpsIFD) ifd0.entries.push(mkPtr(0x8825));
+    if (exifIFD && interopIFD) exifIFD.entries.push(mkPtr(0xA005));
+    if (ifd1) { ifd1.entries.push(mkPtr(0x0201)); ifd1.entries.push({ tag: 0x0202, typ: 4, cnt: 1, val: p32(thumb.length) }); }
+
+    [ifd0, exifIFD, interopIFD, gpsIFD, ifd1].forEach(f => f && prep(f));
+
+    // 순차 배치: IFD0 → Exif → Interop → GPS → IFD1 → 썸네일
+    let cur = 8 + ifd0.tblSize + ifd0.valSize;
+    const at = {};
+    if (exifIFD) { at.exif = cur; cur += exifIFD.tblSize + exifIFD.valSize; }
+    if (interopIFD) { at.interop = cur; cur += interopIFD.tblSize + interopIFD.valSize; }
+    if (gpsIFD) { at.gps = cur; cur += gpsIFD.tblSize + gpsIFD.valSize; }
+    if (ifd1) { at.ifd1 = cur; cur += ifd1.tblSize + ifd1.valSize; at.thumb = cur; }
+
+    const setPtr = (ifd, tag, v) => { const e = ifd.entries.find(x => x.tag === tag); if (e) e.val = p32(v); };
+    setPtr(ifd0, 0x8769, at.exif || 0); setPtr(ifd0, 0x8825, at.gps || 0);
+    if (exifIFD) setPtr(exifIFD, 0xA005, at.interop || 0);
+    if (ifd1) setPtr(ifd1, 0x0201, at.thumb || 0);
+
+    let out = (le ? 'II' : 'MM') + p16(42) + p32(8);
+    out += serIFD(ifd0, 8, at.ifd1 || 0);
+    if (exifIFD) out += serIFD(exifIFD, at.exif, 0);
+    if (interopIFD) out += serIFD(interopIFD, at.interop, 0);
+    if (gpsIFD) out += serIFD(gpsIFD, at.gps, 0);
+    if (ifd1) out += serIFD(ifd1, at.ifd1, 0) + thumb;
+    return 'Exif\x00\x00' + out;
+  } catch (e) { console.warn('EXIF 정규화 실패', e); return exifStr; }
+}
+
+// EXIF 를 통째로 재직렬화(dump)하다 실패하면(일부 폰 MakerNote 등)
+// 핵심 필드(날짜·GPS·제목·설명)만이라도 옮겨서 기록한다 — 실패 시 메타가 통째로 사라지던 문제 방지.
+function _exifSafeCarry(exif, jpegDataUrl) {
+  try { return piexif.insert(_fixExif(piexif.dump(exif)), jpegDataUrl); }
+  catch(e) {
+    try {
+      const fresh = { '0th':{}, 'Exif':{}, 'GPS':{}, '1st':{}, 'thumbnail':null };
+      const o = exif['0th'] || {}, x = exif['Exif'] || {}, g = exif['GPS'] || {};
+      const dt = x[piexif.ExifIFD.DateTimeOriginal] || o[piexif.ImageIFD.DateTime];
+      if (dt) { fresh['Exif'][piexif.ExifIFD.DateTimeOriginal] = dt; fresh['0th'][piexif.ImageIFD.DateTime] = dt; }
+      if (g[piexif.GPSIFD.GPSLatitude]) {
+        fresh['GPS'][piexif.GPSIFD.GPSVersionID]    = g[piexif.GPSIFD.GPSVersionID]    || [2, 3, 0, 0];
+        fresh['GPS'][piexif.GPSIFD.GPSLatitudeRef]  = g[piexif.GPSIFD.GPSLatitudeRef]  || 'N';
+        fresh['GPS'][piexif.GPSIFD.GPSLatitude]     = g[piexif.GPSIFD.GPSLatitude];
+        fresh['GPS'][piexif.GPSIFD.GPSLongitudeRef] = g[piexif.GPSIFD.GPSLongitudeRef] || 'E';
+        fresh['GPS'][piexif.GPSIFD.GPSLongitude]    = g[piexif.GPSIFD.GPSLongitude];
+      }
+      if (o[piexif.ImageIFD.XPTitle])   fresh['0th'][piexif.ImageIFD.XPTitle]   = o[piexif.ImageIFD.XPTitle];
+      if (o[piexif.ImageIFD.XPComment]) fresh['0th'][piexif.ImageIFD.XPComment] = o[piexif.ImageIFD.XPComment];
+      if (o[piexif.ImageIFD.ImageDescription]) fresh['0th'][piexif.ImageIFD.ImageDescription] = o[piexif.ImageIFD.ImageDescription];
+      return piexif.insert(_fixExif(piexif.dump(fresh)), jpegDataUrl);
+    } catch(e2) { console.warn('EXIF 기록 실패', e2); return jpegDataUrl; }
+  }
+}
+
+// 사진 dataURL 에서 제목/설명/촬영일시/GPS 읽기
+function readPhotoMeta(imgSrc) {
+  const out = { title:'', desc:'', taken:'', lat:null, lng:null };
+  try {
+    const ex = piexif.load(imgSrc);
+    out.title = _xpStr(ex['0th'][piexif.ImageIFD.XPTitle]);
+    out.desc  = _xpStr(ex['0th'][piexif.ImageIFD.XPComment]);
+    out.taken = (ex['Exif'] && ex['Exif'][piexif.ExifIFD.DateTimeOriginal]) || ex['0th'][piexif.ImageIFD.DateTime] || '';
+    const gps = ex['GPS'];
+    if (gps && gps[piexif.GPSIFD.GPSLatitude] && gps[piexif.GPSIFD.GPSLongitude]) {
+      const toDec = (dms, ref) => { const d = dms[0][0]/dms[0][1], m = dms[1][0]/dms[1][1], s = dms[2][0]/dms[2][1]; return (d + m/60 + s/3600) * ((ref === 'S' || ref === 'W') ? -1 : 1); };
+      const la = toDec(gps[piexif.GPSIFD.GPSLatitude],  gps[piexif.GPSIFD.GPSLatitudeRef]  || 'N');
+      const lo = toDec(gps[piexif.GPSIFD.GPSLongitude], gps[piexif.GPSIFD.GPSLongitudeRef] || 'E');
+      if (!isNaN(la) && !isNaN(lo) && (la !== 0 || lo !== 0)) { out.lat = la; out.lng = lo; }
+    }
+  } catch(e) {}
+  return out;
+}
+// GPS/촬영일시 등을 JPEG dataURL 의 EXIF 에 기록 (전달 안 한 항목은 유지)
+function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
+  try {
+    let ex; try { ex = piexif.load(imgSrc); } catch(e) { ex = { '0th':{}, 'Exif':{}, 'GPS':{}, '1st':{}, 'thumbnail':null }; }
+    ex['0th'] = ex['0th'] || {}; ex['Exif'] = ex['Exif'] || {}; ex['GPS'] = ex['GPS'] || {};
+    if (title != null) {
+      ex['0th'][piexif.ImageIFD.XPTitle] = _xpBytes(title);
+      // ImageDescription 은 ASCII 필드 — 한글이면 기록 안 함 (외부 뷰어 인코딩 깨짐 방지)
+      if (/^[\x00-\x7F]*$/.test(title)) ex['0th'][piexif.ImageIFD.ImageDescription] = title;
+      else delete ex['0th'][piexif.ImageIFD.ImageDescription];
+    }
+    if (desc != null) ex['0th'][piexif.ImageIFD.XPComment] = _xpBytes(desc);
+    if (taken) { ex['Exif'][piexif.ExifIFD.DateTimeOriginal] = taken; ex['0th'][piexif.ImageIFD.DateTime] = taken; }
+    // 카메라 파일과 유사하게 기본 태그 보강 (없을 때만)
+    ex['0th'][piexif.ImageIFD.Orientation] = ex['0th'][piexif.ImageIFD.Orientation] || 1;
+    ex['Exif'][piexif.ExifIFD.ExifVersion] = ex['Exif'][piexif.ExifIFD.ExifVersion] || '0231';
+    if (lat != null && lng != null) {
+      // 카메라 앱과 동일한 GPS 블록 구성 (VersionID·고도·날짜/시간스탬프 포함)
+      ex['GPS'][piexif.GPSIFD.GPSVersionID]    = ex['GPS'][piexif.GPSIFD.GPSVersionID] || [2, 3, 0, 0];
+      ex['GPS'][piexif.GPSIFD.GPSLatitudeRef]  = lat >= 0 ? 'N' : 'S';
+      ex['GPS'][piexif.GPSIFD.GPSLatitude]     = _gpsRat(lat);
+      ex['GPS'][piexif.GPSIFD.GPSLongitudeRef] = lng >= 0 ? 'E' : 'W';
+      ex['GPS'][piexif.GPSIFD.GPSLongitude]    = _gpsRat(lng);
+      ex['GPS'][piexif.GPSIFD.GPSAltitudeRef]  = ex['GPS'][piexif.GPSIFD.GPSAltitudeRef] || 0;
+      ex['GPS'][piexif.GPSIFD.GPSAltitude]     = ex['GPS'][piexif.GPSIFD.GPSAltitude] || [0, 1];
+      const _ts = taken || ex['Exif'][piexif.ExifIFD.DateTimeOriginal] || exifNow();
+      const _md = String(_ts).match(/^(\d{4}:\d{2}:\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+      if (_md && !ex['GPS'][piexif.GPSIFD.GPSDateStamp]) {
+        ex['GPS'][piexif.GPSIFD.GPSDateStamp] = _md[1];
+        ex['GPS'][piexif.GPSIFD.GPSTimeStamp] = [[+_md[2], 1], [+_md[3], 1], [+_md[4], 1]];
+      }
+    }
+    return _exifSafeCarry(ex, imgSrc);
+  } catch(e) { console.warn('EXIF 기록 실패', e); return imgSrc; }
+}
+// JFIF(APP0) 세그먼트 제거 — 카메라 파일과 동일한 'SOI + APP1' 구조로 정리
+function _stripApp0(u8) {
+  try {
+    if (u8[0] !== 0xFF || u8[1] !== 0xD8) return u8;
+    let i = 2, app0 = null, hasExif = false;
+    while (i + 3 < u8.length && u8[i] === 0xFF) {
+      const m = u8[i + 1];
+      if (m === 0xDA) break;
+      const len = (u8[i + 2] << 8) | u8[i + 3];
+      if (m === 0xE0) app0 = [i, i + 2 + len];
+      if (m === 0xE1 && u8[i + 4] === 0x45 && u8[i + 5] === 0x78) hasExif = true;   // 'Ex'if
+      i += 2 + len;
+    }
+    if (app0 && hasExif) {
+      const o = new Uint8Array(u8.length - (app0[1] - app0[0]));
+      o.set(u8.subarray(0, app0[0]), 0);
+      o.set(u8.subarray(app0[1]), app0[0]);
+      return o;
+    }
+  } catch(e) {}
+  return u8;
+}
+// 사진을 기기에 저장 (안드로이드: 다운로드 폴더 → 갤러리에 표시됨)
+// data: URL 은 용량이 크면 안드로이드 크롬에서 다운로드가 '조용히' 실패 → Blob 으로 변환해 저장.
+function downloadPhoto(imgSrc, name) {
+  const nm0 = (name || 'photo').replace(/[\\/:*?"<>|]/g, '_');
+  const nm = /\.jpe?g$/i.test(nm0) ? nm0 : nm0 + '.jpg';
+  let href = imgSrc, revoke = null;
+  try {
+    const i = imgSrc.indexOf(',');
+    const bin = atob(imgSrc.slice(i + 1));
+    let u8 = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
+    const mime = imgSrc.slice(5, i).split(';')[0] || 'image/jpeg';
+    if (/jpe?g$/i.test(mime)) u8 = _stripApp0(u8);
+    href = URL.createObjectURL(new Blob([u8], { type: mime }));
+    revoke = href;
+  } catch(e) {}
+  const a = document.createElement('a');
+  a.href = href; a.download = nm;
+  document.body.appendChild(a); a.click(); a.remove();
+  if (revoke) setTimeout(() => URL.revokeObjectURL(revoke), 10000);
+}
 
 // ─── 이미지 파일을 사진 마커로 추가 (EXIF GPS 우선) ──
 async function loadImageAsMarker(imgFile) {
   return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      const imgSrc = ev.target.result;
-      const name = imgFile.name.replace(/\.[^.]+$/, '');
+    reader.onload = async (ev) => {
+      let imgSrc = ev.target.result;
+      let name = imgFile.name.replace(/\.[^.]+$/, '');
+      const meta = readPhotoMeta(imgSrc);
+      // exifr 폴백: 삼성 등 일부 폰 카메라 JPEG 은 piexif 가 GPS 를 못 읽음
+      if (meta.lat == null && window.exifr) {
+        try {
+          const g = await exifr.gps(imgFile);
+          if (g && g.latitude != null && (g.latitude !== 0 || g.longitude !== 0)) { meta.lat = g.latitude; meta.lng = g.longitude; }
+        } catch(e) {}
+      }
+      if (!meta.taken && window.exifr) {
+        try { const p = await exifr.parse(imgFile, ['DateTimeOriginal']); if (p && p.DateTimeOriginal) meta.taken = exifNow(new Date(p.DateTimeOriginal)); } catch(e) {}
+      }
+      let latlng = (meta.lat != null) ? new kakao.maps.LatLng(meta.lat, meta.lng) : null;
 
-      // EXIF GPS 읽기
-      let latlng = null;
-      try {
-        const exif = piexif.load(imgSrc);
-        const gps = exif['GPS'];
-        if (gps && gps[piexif.GPSIFD.GPSLatitude] && gps[piexif.GPSIFD.GPSLongitude]) {
-          const toDec = (dms, ref) => {
-            const d = dms[0][0]/dms[0][1];
-            const m = dms[1][0]/dms[1][1];
-            const s = dms[2][0]/dms[2][1];
-            return (d + m/60 + s/3600) * ((ref === 'S' || ref === 'W') ? -1 : 1);
-          };
-          const lat = toDec(gps[piexif.GPSIFD.GPSLatitude],  gps[piexif.GPSIFD.GPSLatitudeRef]  || 'N');
-          const lng = toDec(gps[piexif.GPSIFD.GPSLongitude], gps[piexif.GPSIFD.GPSLongitudeRef] || 'E');
-          if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
-            latlng = new kakao.maps.LatLng(lat, lng);
-          }
+      // 방금 촬영한 사진 판별: 파일 시각이 1분 이내 (📂 → 카메라 촬영).
+      // 촬영본은 임시파일이라 갤러리에 안 남음 → 기기에 1회 저장한다.
+      const justCaptured = (Date.now() - imgFile.lastModified < 60000);
+      if (justCaptured) {
+        const taken = meta.taken || exifNow(new Date(imgFile.lastModified));
+        name = 'IMG_' + taken.replace(/[: ]/g, '').slice(0, 15);
+        if (meta.lat == null) {
+          // GPS 없을 때만 현재 위치(실패 시 지도 중심)를 EXIF 에 기록.
+          // 카메라가 GPS 를 넣어준 경우엔 EXIF 를 절대 건드리지 않는다.
+          const pos = await new Promise(res => navigator.geolocation
+            ? navigator.geolocation.getCurrentPosition(p => res(p), () => res(null), { enableHighAccuracy: true, timeout: 5000 })
+            : res(null));
+          let lat, lng;
+          if (pos) { lat = pos.coords.latitude; lng = pos.coords.longitude; }
+          else { const c = map.getCenter(); lat = c.getLat(); lng = c.getLng(); }
+          imgSrc = writePhotoMeta(imgSrc, { lat, lng, taken });
+          meta.lat = lat; meta.lng = lng;
+          latlng = new kakao.maps.LatLng(lat, lng);
         }
+        meta.taken = taken;
+        // 메타 입력창이 없으므로 촬영본은 여기서 바로 1회 기기 저장 (위치·날짜 EXIF 포함)
+        downloadPhoto(imgSrc, name);
+      }
+
+      // 지도 마커·메모리에는 압축 표시본만 사용 (원본 dataURL 은 지도 멈춤/탭 크래시 유발)
+      let dispSrc = imgSrc;
+      try {
+        dispSrc = await compressImage(imgSrc);   // EXIF(GPS·날짜)는 압축본에도 복사됨
+        _compressCache.delete(imgSrc);           // 원본 키로 잡힌 캐시(대용량 문자열) 즉시 해제
       } catch(e) {}
 
       if (latlng) {
-        addPhotoMarker(latlng, imgSrc, name);
+        addPhotoMarker(latlng, dispSrc, name);
         map.panTo(latlng);
       } else {
-        addPhotoMarker(map.getCenter(), imgSrc, name);
+        addPhotoMarker(map.getCenter(), dispSrc, name);
       }
+      const en = markers[markers.length - 1];
+      if (en) { en.taken = meta.taken || ''; en.desc = meta.desc || ''; }
       document.getElementById('saveBtn').disabled = false;
       autoSaveToDB();
-      resolve();
+      resolve(!!latlng);   // false = 위치정보 못 읽어 지도 중심에 추가됨
     };
     reader.readAsDataURL(imgFile);
   });
@@ -1273,9 +1767,11 @@ async function exportKMZ(scope = 'all') {
   const bounds = scope === 'view' ? map.getBounds() : null;
   const expMarkers = markers.filter(m =>
     m.marker.getMap() && (!bounds || bounds.contain(m.marker.getPosition())));
+  // 뷰포트 컬링으로 지도에서 뗀 선(_viewCulled)도 데이터는 살아있음 — 저장 포함
   const expPolylines = polylines.filter(pl =>
-    pl.poly.getMap() && (!bounds || pl.path.some(p => bounds.contain(p))));
-  if (expMarkers.length === 0 && expPolylines.length === 0) {
+    (pl.poly.getMap() || pl.poly._viewCulled) && (!bounds || pl.path.some(p => bounds.contain(p))));
+  const expLabels = textLabels.filter(t => !bounds || bounds.contain(t.pos));
+  if (expMarkers.length === 0 && expPolylines.length === 0 && expLabels.length === 0) {
     alert(scope === 'view' ? '현재 화면에 보이는 객체가 없습니다.' : '저장할 객체가 없습니다.');
     return;
   }
@@ -1347,18 +1843,16 @@ async function exportKMZ(scope = 'all') {
         const base64Data = compressed.split(',')[1];
         const filename = `photo_${String(photoIndex++).padStart(4,'0')}.jpg`;
         filesFolder.file(filename, base64Data, { base64: true });
-        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data></ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
+        placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="photoFile"><value>${filename}</value></Data>${_photoMetaXml(m)}</ExtendedData>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       } else {
         placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <Point><coordinates>${lng},${lat},0</coordinates></Point>\n  </Placemark>`;
       }
     }
-    for (const pl of expPolylines) {
-      const safeName = (pl.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      const coords = pl.path.map(p => `${p.getLng()},${p.getLat()},0`).join('\n      ');
-      placemarkXml += `\n  <Placemark>\n    <name>${safeName}</name>\n    <LineString><coordinates>${coords}</coordinates></LineString>\n  </Placemark>`;
-    }
+    const styles = new Map();
+    for (const pl of expPolylines) placemarkXml += _lineKmlPlacemark(pl, styles);
+    for (const t of expLabels) placemarkXml += _textKmlPlacemark(t);
 
-    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${placemarkXml}\n</Document>\n</kml>`);
+    zip.file('doc.kml', `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>${_lineKmlStyleDefs(styles)}${placemarkXml}\n</Document>\n</kml>`);
 
 // (기존 zip.generateAsync 부분 수정)
     const blob = await zip.generateAsync({ 
@@ -1397,12 +1891,21 @@ async function exportKMZ(scope = 'all') {
 }
 // ─── 이미지 압축 (저장 시 500KB 이하) ────────────────
 const _compressCache = new Map();   // 원본 src → 압축 결과 (같은 사진 매번 재압축 방지)
+const COMPRESS_TARGET = 300 * 1024;
 function compressImage(imgSrc) {
   if (_compressCache.has(imgSrc)) return Promise.resolve(_compressCache.get(imgSrc));
+  // 이미 목표 크기 이하인 JPEG(불러올 때 만든 표시본 등)은 재압축 생략 — 자동저장 때마다
+  // 전체 사진을 다시 canvas 인코딩하느라 지도가 멈추던 문제 방지
+  if (/^data:image\/jpe?g/i.test(imgSrc) && imgSrc.length * 0.75 <= COMPRESS_TARGET * 1.2) {
+    return Promise.resolve(imgSrc);
+  }
   return new Promise(resolve => {
     const img = new Image();
+    // 디코딩 실패(HEIC 등 미지원 포맷) 시 onload 가 영영 안 와서 불러오기/자동저장이
+    // 통째로 멈추던 문제 — 원본 그대로 반환하고 계속 진행
+    img.onerror = () => resolve(imgSrc);
     img.onload = () => {
-      const TARGET = 300 * 1024; // 500KB (base64 환산)
+      const TARGET = COMPRESS_TARGET; // 표시본 목표 크기 (base64 환산 ≈ 400KB)
       const canvas = document.createElement('canvas');
       const MAX = 1920;
       let w = img.width, h = img.height;
@@ -1428,7 +1931,7 @@ function compressImage(imgSrc) {
           delete exif['0th'][piexif.ImageIFD.ImageDescription];
         }
         if (exif['Exif']) delete exif['Exif'][piexif.ExifIFD.UserComment];
-        result = piexif.insert(piexif.dump(exif), result);
+        result = _exifSafeCarry(exif, result);
       } catch(e) {}
       _compressCache.set(imgSrc, result);
       resolve(result);
@@ -1587,7 +2090,8 @@ function addPhotoMarker(latlng, imgSrc, name) {
     _registerIWCloseHandler();
   });
   // 길게 누르기 → 수정/삭제 모달
-  const entry = { marker, iw, name, imgSrc };
+  const entry = { marker, iw, name, imgSrc, desc: '', taken: '' };
+  div.querySelector('img').onclick = () => openViewer(entry.imgSrc, entry.name);
   attachLongPress(marker, () => {
     iw.close();
     openMarkerEditModal(entry);
@@ -1596,11 +2100,144 @@ function addPhotoMarker(latlng, imgSrc, name) {
   showDeleteHint();
 }
 
+// ─── 랜덤 색 (KMZ 스타일 없는 선) ────────────────────
+function randColor() { return '#' + Math.floor(Math.random()*0xFFFFFF).toString(16).padStart(6,'0'); }
+
+// ─── CAD 문자(kind=text) 텍스트 라벨 — 마커 없이 글자만(회전 포함) ──
+// map.html addTextLabel 이식. 자동저장/내보내기 복원을 위해 좌표·회전·색을 함께 보관.
+let textLabels = [];
+function addTextLabel(latlng, text, rot, color) {
+  const safe = String(text == null ? '' : text)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const col = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : '#FFEB00';
+  // CAD 회전(반시계, 도) -> 화면 CSS 회전(시계 양수)이라 부호 반전
+  const content =
+    '<div style="transform:rotate(' + (-(Number(rot) || 0)) + 'deg);' +
+    'transform-origin:center center;white-space:nowrap;font-size:13px;' +
+    'font-weight:bold;line-height:1;color:' + col + ';pointer-events:none;' +
+    'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 0 2px #000;">' +
+    safe + '</div>';
+  const ov = new kakao.maps.CustomOverlay({ map, content, position: latlng, xAnchor: 0.5, yAnchor: 0.5, zIndex: 6 });
+  textLabels.push({ ov, name: String(text == null ? '' : text), rot: Number(rot) || 0, color: col, pos: latlng });
+}
+function clearTextLabels() {
+  textLabels.forEach(t => t.ov.setMap(null));
+  textLabels = [];
+}
+
+// ─── 묶음선 뷰포트 컬링 + 줌별 점 단순화 (map.html cullBundlePolys 이식) ──
+// Kakao 는 오버레이의 '전체' 좌표를 줌/이동 때마다 SVG 로 다시 그린다(뷰포트 클리핑 없음)
+// → 좌표 수만 점짜리 묶음선(KMZ MultiGeometry)은 줌인이 매우 느림.
+// 해결: 화면(+여유 30%)과 교차하는 구간만, 화면에서 ~1.3px 이상 간격인 점만 setPath 로 반영.
+// 원본 좌표는 poly._parts 에 그대로 → 내보내기/자동저장은 영향 없음.
+// 화면 밖으로 완전히 나가 지도에서 뗀 선은 _viewCulled=true (내보내기에선 표시 중으로 취급).
+let _cullTimer = null;
+function scheduleBundleCull() { clearTimeout(_cullTimer); _cullTimer = setTimeout(cullBundlePolys, 60); }
+function cullBundlePolys() {
+  if (typeof map === 'undefined' || !map) return;
+  const b = map.getBounds(); if (!b) return;
+  const swp = b.getSouthWest(), nep = b.getNorthEast();
+  const latSpan = nep.getLat() - swp.getLat(), lngSpan = nep.getLng() - swp.getLng();
+  const s = swp.getLat() - latSpan * 0.3, n = nep.getLat() + latSpan * 0.3;
+  const w = swp.getLng() - lngSpan * 0.3, e = nep.getLng() + lngSpan * 0.3;
+  const mapH = (document.getElementById('map') || {}).clientHeight || 800;
+  const eps = latSpan / mapH * 1.3;   // 화면 ~1.3px 미만 간격 점은 생략 (줌아웃일수록 크게 줄어듦)
+  for (const en of polylines) {
+    const pl = en.poly;
+    if (!pl || !pl._parts) continue;
+    // 좌표 숫자 캐시 (getLat/getLng 반복 호출 절약)
+    if (!pl._pnum) pl._pnum = pl._parts.map(part => part.map(p => [p.getLat(), p.getLng()]));
+    const parts = [];
+    for (let pi = 0; pi < pl._parts.length; pi++) {
+      const part = pl._parts[pi], num = pl._pnum[pi];
+      if (num.length < 2) continue;
+      let run = null;
+      let pla = num[0][0], plo = num[0][1];
+      let prevIn = (pla >= s && pla <= n && plo >= w && plo <= e);
+      if (prevIn) { run = [part[0]]; run._la = pla; run._lo = plo; parts.push(run); }
+      for (let i = 1; i < num.length; i++) {
+        const la = num[i][0], lo = num[i][1];
+        const pin = (la >= s && la <= n && lo >= w && lo <= e);
+        let segIn = pin || prevIn;
+        if (!segIn) {
+          // 양 끝점이 밖이어도 화면을 '가로지르는' 선분은 포함 (선분 bbox 교차 판정)
+          const l1 = Math.min(pla, la), l2 = Math.max(pla, la);
+          const g1 = Math.min(plo, lo), g2 = Math.max(plo, lo);
+          segIn = !(l2 < s || l1 > n || g2 < w || g1 > e);
+        }
+        if (segIn) {
+          if (!run) { run = [part[i - 1]]; run._la = pla; run._lo = plo; parts.push(run); }
+          // 단순화: 마지막 채택점과 eps 이상 떨어졌거나 / 구간 끝 / 화면 이탈점이면 채택
+          if (Math.abs(la - run._la) > eps || Math.abs(lo - run._lo) > eps ||
+              i === num.length - 1 || !pin) {
+            run.push(part[i]); run._la = la; run._lo = lo;
+          }
+          if (!pin) run = null;   // 화면 밖으로 나감 → 다음 교차 구간은 새 run
+        } else run = null;
+        pla = la; plo = lo; prevIn = pin;
+      }
+    }
+    const vis = parts.filter(r => r.length >= 2);
+    if (vis.length) {
+      pl.setPath(vis.length === 1 ? vis[0] : vis);
+      pl._viewCulled = false;
+      if (!pl.getMap()) pl.setMap(map);
+    } else {
+      pl._viewCulled = true;   // 화면 밖 컬링일 뿐 — 내보내기에선 표시 중으로 취급
+      if (pl.getMap()) pl.setMap(null);
+    }
+  }
+}
+
+// ─── 트랙 → KML Placemark 직렬화 (내보내기/자동저장 공용) ──
+// 묶음선(entry.parts)은 MultiGeometry 한 개로, 색·굵기는 공유 <Style id="ln_RRGGBB_W">로.
+// map.html _lineKmlPlacemarks 대응 — 다시 열어도 색·굵기 유지.
+function _lineKmlPlacemark(en, styles) {
+  const parts = (en.parts && en.parts.length) ? en.parts : [en.path];
+  const segs = [];
+  for (const cs of parts) {
+    if (!cs || cs.length < 2) continue;
+    const coords = cs.map(p => `${p.getLng()},${p.getLat()},0`).join(' ');
+    segs.push(`<LineString><coordinates>${coords}</coordinates></LineString>`);
+  }
+  if (!segs.length) return '';
+  const safeName = (en.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let su = '';
+  if (styles) {
+    const hex = ((en.color || '#FF5733') + '').replace('#','');
+    const w = en.width || 4;
+    const key = hex + '_' + w;
+    if (!styles.has(key)) styles.set(key, 'ln_' + key);
+    su = `<styleUrl>#${styles.get(key)}</styleUrl>`;
+  }
+  const geom = segs.length === 1 ? segs[0] : `<MultiGeometry>${segs.join('')}</MultiGeometry>`;
+  return `\n  <Placemark>\n    <name>${safeName}</name>${su}\n    ${geom}\n  </Placemark>`;
+}
+// styles(Map: 'RRGGBB_w' -> id) -> KML <Style> 정의 (KML 색은 aabbggrr)
+function _lineKmlStyleDefs(styles) {
+  let out = '';
+  for (const [key, id] of styles) {
+    const [hex, w] = key.split('_');
+    out += `\n  <Style id="${id}"><LineStyle><color>ff${hex.slice(4,6)}${hex.slice(2,4)}${hex.slice(0,2)}</color><width>${w}</width></LineStyle></Style>`;
+  }
+  return out;
+}
+// 사진 메타(설명/촬영일시) → ExtendedData 조각 (자동저장/내보내기 → 재로드 복원용)
+function _photoMetaXml(m) {
+  let s = '';
+  if (m.desc) s += `<Data name="desc"><value>${_escXml(m.desc)}</value></Data>`;
+  if (m.taken) s += `<Data name="taken"><value>${_escXml(m.taken)}</value></Data>`;
+  if (m.origKey) s += `<Data name="orig"><value>${_escXml(m.origKey)}</value></Data>`;   // 원본 보관소 키
+  return s;
+}
+// 텍스트 라벨 → KML Placemark (kind=text — 자동저장/내보내기 복원용)
+function _textKmlPlacemark(t) {
+  const safeName = (t.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>${t.rot}</value></Data><Data name="color"><value>${t.color}</value></Data></ExtendedData>\n    <Point><coordinates>${t.pos.getLng()},${t.pos.getLat()},0</coordinates></Point>\n  </Placemark>`;
+}
+
 // ─── KMZ 불러오기 ─────────────────────────────────────
 async function loadKMZ(file, silent = false) {
-  // .zip 확장자도 KMZ(ZIP 기반)이므로 동일하게 처리
-  const isZipOrKMZ = /\.(kmz|zip)$/i.test(file.name) || file.type === 'application/vnd.google-earth.kmz' || file.type === 'application/zip' || file.type === 'application/x-zip-compressed';
-  if (!isZipOrKMZ) { alert('KMZ 또는 ZIP 파일만 불러올 수 있습니다.'); return; }
   if (!silent) showLoading('KMZ 압축 해제 중...');
   else showLoading('이전 데이터 복원 중...');
 
@@ -1611,16 +2248,28 @@ async function loadKMZ(file, silent = false) {
     markers = [];
     polylines.forEach(p => p.poly.setMap(null));
     polylines = [];
+    clearTextLabels();
     hasData = false;
     document.getElementById('saveBtn').disabled = true;
   }
 
+  // 선은 파싱 중엔 지도에 안 붙이고 모아뒀다가 setBounds 후 한 번에 붙인다.
+  // (파싱 중 map 에 붙이면 현재 줌에서 그리고, setBounds 로 화면이 바뀌며 전부
+  //  다시 그려 이중 렌더 → 대형 KMZ 로딩이 느렸음. map.html 과 동일 방식)
+  const _deferPolys = [];
   try {
-    const zip = await JSZip.loadAsync(file);
-    const zipFiles = Object.keys(zip.files);
+    // KMZ(zip)는 'PK'(0x50 0x4B)로 시작. 평문 .kml 은 zip 이 아니므로 헤더로 판별.
+    let zip = null, zipFiles = [], kmlText = null;
+    const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    const isZip = head[0] === 0x50 && head[1] === 0x4B;
+    if (!isZip) {
+      if (!/\.kml$/i.test(file.name)) { alert('KMZ / ZIP / KML 파일만 불러올 수 있습니다.'); hideLoading(); return; }
+      kmlText = await file.text();   // 평문 KML (내부 임베드 사진 없음 — 마커/트랙만)
+    } else {
+    zip = await JSZip.loadAsync(file);
+    zipFiles = Object.keys(zip.files);
 
     // 파일명에 널문자(\u0000)가 포함된 경우 제거 후 탐색
-    let kmlText = null;
     for (const name of zipFiles) {
       const cleanName = name.replace(/\0/g, '');
       if (/\.kml$/i.test(cleanName)) {
@@ -1631,12 +2280,25 @@ async function loadKMZ(file, silent = false) {
       }
     }
     if (!kmlText) { alert('.kml 파일을 읽을 수 없습니다.\n포함된 파일:\n' + zipFiles.map(n=>n.replace(/\0/g,'')).join('\n')); hideLoading(); return; }
+    }
 
     showLoading('데이터 읽는 중...');
     const xml = new DOMParser().parseFromString(kmlText, 'application/xml');
     // Folder 안에 있는 Placemark도 모두 포함
     const placemarks = Array.from(xml.getElementsByTagName('Placemark'));
     const bounds = new kakao.maps.LatLngBounds();
+
+    // KML 스타일 맵 (styleUrl -> 색·굵기). KML 색은 aabbggrr 순서. (map.html 이식)
+    const styleColors = {}, styleWidths = {};
+    const kmlC2Hex = c => { c = (c||'').trim(); if (c.length < 8) return null; return '#' + c.slice(6,8) + c.slice(4,6) + c.slice(2,4); };
+    for (const st of Array.from(xml.getElementsByTagName('Style'))) {
+      const id = st.getAttribute('id'); if (!id) continue;
+      const cs = (st.getElementsByTagName('LineStyle')[0] || st.getElementsByTagName('PolyStyle')[0]);
+      const h = kmlC2Hex(cs?.getElementsByTagName('color')[0]?.textContent);
+      if (h) styleColors['#'+id] = h;
+      const w = parseFloat(cs?.getElementsByTagName('width')[0]?.textContent);
+      if (!isNaN(w)) styleWidths['#'+id] = w;
+    }
 
     for (let i = 0; i < placemarks.length; i++) {
       const pm = placemarks[i];
@@ -1669,22 +2331,61 @@ async function loadKMZ(file, silent = false) {
         }
       }
 
-      const lineString = pm.getElementsByTagName('LineString')[0];
+      // ── 선/폴리곤 도형 전부 수집 (MultiGeometry 안의 모든 LineString + Polygon 링) ──
+      const coordEls = [];
+      for (const ls of Array.from(pm.getElementsByTagName('LineString')))
+        coordEls.push(ls.getElementsByTagName('coordinates')[0]);
+      for (const pg of Array.from(pm.getElementsByTagName('Polygon')))
+        for (const lr of Array.from(pg.getElementsByTagName('LinearRing')))
+          coordEls.push(lr.getElementsByTagName('coordinates')[0]);
+
       const point = pm.getElementsByTagName('Point')[0];
 
-      if (lineString) {
-        const coordsText = lineString.getElementsByTagName('coordinates')[0]?.textContent || '';
-        const pts = coordsText.trim().split(/\s+/).map(c => {
-          const [lng, lat] = c.split(',').map(Number);
-          return new kakao.maps.LatLng(lat, lng);
-        }).filter(ll => !isNaN(ll.getLat()) && !isNaN(ll.getLng()));
-        if (pts.length) {
-          const entry = { poly: null, name: pmName, path: pts };
-          const poly = new kakao.maps.Polyline({ map, path: pts, strokeWeight: 4, strokeColor: '#FF5733', strokeOpacity: 0.9 });
-          entry.poly = poly;
+      if (coordEls.length) {
+        const su = pm.getElementsByTagName('styleUrl')[0]?.textContent?.trim();
+        const color = (su && styleColors[su]) || randColor();
+        // Kakao는 선 굵기를 정수 px로 렌더 → 소수 굵기(0.6 등)는 올림(ceil)으로 구분
+        const sw = (su && styleWidths[su] != null) ? Math.max(1, Math.ceil(styleWidths[su])) : 4;
+        // Placemark 하나(MultiGeometry 포함)의 모든 선을 멀티파트 Polyline 1개로 —
+        // 선별 개별 Polyline 은 수천 개 KMZ 에서 pan/zoom 버벅임 (map.html 과 동일 경량화).
+        // 원본 경로는 _parts/entry.parts 에 보관(getPath()가 멀티파트를 유실하므로 저장용).
+        const parts = [];
+        for (const ce of coordEls) {
+          const coordsText = ce?.textContent || '';
+          const pts = coordsText.trim().split(/\s+/).map(c => {
+            const [lng, lat] = c.split(',').map(Number);
+            return new kakao.maps.LatLng(lat, lng);
+          }).filter(ll => !isNaN(ll.getLat()) && !isNaN(ll.getLng()));
+          if (pts.length < 2) continue;
           pts.forEach(p => bounds.extend(p));
+          parts.push(pts);
+        }
+        if (parts.length) {
+          const poly = new kakao.maps.Polyline({ path: parts.length === 1 ? parts[0] : parts, strokeWeight: sw, strokeColor: color, strokeOpacity: 1 });
+          if (parts.length > 1) poly._parts = parts;   // 단일 경로는 점 편집 가능 — getPath()로 최신 경로 사용
+          _deferPolys.push(poly);   // setBounds 후 한 번에 setMap
+          const entry = { poly, name: pmName, path: parts.length === 1 ? parts[0] : parts.flat(), parts: parts.length > 1 ? parts : null, color, width: sw };
           attachPolylineDelete(poly, entry);
           polylines.push(entry);
+        }
+      } else if (point && (() => {
+        // ── CAD 문자(kind=text): 마커 대신 회전 텍스트 라벨만 그림 ──
+        for (const d of Array.from(pm.getElementsByTagName('Data'))) {
+          if (d.getAttribute('name') === 'kind')
+            return (d.getElementsByTagName('value')[0]?.textContent || '').trim() === 'text';
+        }
+        return false;
+      })()) {
+        const ct = point.getElementsByTagName('coordinates')[0]?.textContent || '';
+        const [lng, lat] = ct.trim().split(',').map(Number);
+        if (!isNaN(lat) && !isNaN(lng)) {
+          let _rot = 0, _col = '';
+          for (const d of Array.from(pm.getElementsByTagName('Data'))) {
+            const nm = d.getAttribute('name'); const v = d.getElementsByTagName('value')[0]?.textContent || '';
+            if (nm === 'rot') _rot = parseFloat(v) || 0; else if (nm === 'color') _col = v.trim();
+          }
+          const ll = new kakao.maps.LatLng(lat, lng); bounds.extend(ll);
+          addTextLabel(ll, pmName, _rot, _col);
         }
       } else if (point) {
         const coordsText = point.getElementsByTagName('coordinates')[0]?.textContent || '';
@@ -1714,6 +2415,15 @@ async function loadKMZ(file, silent = false) {
             const ext = baseName.split('.').pop().toLowerCase();
             const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
             addPhotoMarker(ll, `data:${mime};base64,${base64}`, pmName);
+            // 저장된 사진 메타(설명/촬영일시) 복원
+            const _en = markers[markers.length - 1];
+            if (_en) {
+              for (const d of Array.from(pm.getElementsByTagName('Data'))) {
+                const nm = d.getAttribute('name'); const v = d.getElementsByTagName('value')[0]?.textContent || '';
+                if (nm === 'desc') _en.desc = v; else if (nm === 'taken') _en.taken = v;
+                else if (nm === 'orig') _en.origKey = v;   // 원본 보관소 키 (이 기기 DB에 있을 때만 유효)
+              }
+            }
           } else {
             addMarker(ll, pmName);
           }
@@ -1729,11 +2439,16 @@ async function loadKMZ(file, silent = false) {
     }
 
     if (!bounds.isEmpty()) map.setBounds(bounds);
+    // 화면(줌) 확정 후 한 번만 그림. 묶음선(_parts)은 컬링이 화면 교차 구간만 붙임.
+    _deferPolys.forEach(p => { if (!p._parts) p.setMap(map); });
+    cullBundlePolys();
     hasData = true;
     document.getElementById('saveBtn').disabled = false;
     hideLoading();
   } catch (err) {
     hideLoading();
+    // 오류 전까지 파싱된 선은 그대로 표시 (숨은 채 남지 않게)
+    try { _deferPolys.forEach(p => { if (!p._parts && !p.getMap()) p.setMap(map); }); cullBundlePolys(); } catch(e) {}
     alert('오류: ' + err.message);
   }
 }

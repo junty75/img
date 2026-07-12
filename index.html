@@ -867,7 +867,7 @@ function initMap(center) {
     const latLng = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
     updateDistanceOverlay(latLng, true);
   });
-  // 지도 빈 곳 길게 누르기 제거 (마커는 📍 버튼으로만 추가)
+  // 지도 빈 곳 길게 누르기 → 위치 공유 (마커 추가는 📍 버튼으로만)
   let mapLongPressTimer = null;
   let startX = 0, startY = 0;
 
@@ -875,6 +875,11 @@ function initMap(center) {
     if (suppressLongPress) return;
     const t = e.changedTouches ? e.changedTouches[0] : e;
     startX = t.clientX; startY = t.clientY;
+    clearTimeout(mapLongPressTimer);
+    if (!drawingMode) {
+      const ll = cssScale > 1 ? getScaledLatLng(t.clientX, t.clientY) : e.latLng;
+      if (ll) mapLongPressTimer = setTimeout(() => openShareLocation(ll.getLat(), ll.getLng()), 600);
+    }
   });
   kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
   kakao.maps.event.addListener(map, 'touchmove', (e) => {
@@ -1393,6 +1398,50 @@ function startLocationWatchIfNeeded() {
     locationMode = 0;
     applyLocationMode();
   }, { enableHighAccuracy: true, maximumAge: 3000 });
+}
+
+// ─── 위치 공유 (지도 길게 누르기) ─────────────────────
+// 확인창에서 '공유'를 누르면 안드로이드 공유 시트(navigator.share)가 열리고
+// 카카오톡을 선택하면 카카오맵 위치 링크가 전송된다. 미지원 브라우저는 링크 복사.
+function openShareLocation(lat, lng) {
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9000;display:flex;align-items:center;justify-content:center;';
+  const coordTxt = lat.toFixed(6) + ', ' + lng.toFixed(6);
+  bg.innerHTML =
+    '<div style="background:white;border-radius:14px;padding:20px;width:290px;box-shadow:0 4px 24px rgba(0,0,0,0.25);">' +
+    '<h3 style="margin:0 0 10px;font-size:16px;color:#333;">📍 위치 공유</h3>' +
+    '<div class="share-addr" style="font-size:13px;color:#555;margin-bottom:4px;word-break:keep-all;">주소 확인 중...</div>' +
+    '<div style="font-size:12px;color:#999;margin-bottom:14px;">' + coordTxt + '</div>' +
+    '<div style="display:flex;gap:8px;">' +
+    '<button class="share-ok" style="flex:1;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#fee500;color:#191919;">공유</button>' +
+    '<button class="share-cancel" style="flex:1;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#f1f3f4;color:#555;">취소</button>' +
+    '</div></div>';
+  document.body.appendChild(bg);
+  let addr = '';
+  const addrEl = bg.querySelector('.share-addr');
+  if (typeof geocoder !== 'undefined' && geocoder) {
+    geocoder.coord2Address(lng, lat, (r, s) => {
+      if (s === kakao.maps.services.Status.OK && r[0]) {
+        addr = r[0].road_address?.address_name || r[0].address?.address_name || '';
+      }
+      if (addrEl) addrEl.textContent = addr || '주소 정보 없음';
+    });
+  } else if (addrEl) addrEl.textContent = '주소 정보 없음';
+  bg.addEventListener('click', e => { if (e.target === bg) bg.remove(); });
+  bg.querySelector('.share-cancel').onclick = () => bg.remove();
+  bg.querySelector('.share-ok').onclick = async () => {
+    const url = 'https://map.kakao.com/link/map/' + encodeURIComponent(addr || '공유 위치') + ',' + lat + ',' + lng;
+    const text = '📍 ' + (addr || coordTxt);
+    bg.remove();
+    if (navigator.share) {
+      try { await navigator.share({ title: '위치 공유', text, url }); } catch(e) {}   // 사용자가 공유 취소해도 무시
+    } else {
+      try {
+        await navigator.clipboard.writeText(text + '\n' + url);
+        alert('이 브라우저는 공유 시트를 지원하지 않아 링크를 복사했습니다.\n카카오톡 대화창에 붙여넣기 하세요.');
+      } catch(e) { prompt('아래 링크를 복사해 카카오톡에 붙여넣기 하세요.', url); }
+    }
+  };
 }
 
 // ─── 지도 레이아웃 재계산 ─────────────────────────────

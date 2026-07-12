@@ -867,7 +867,9 @@ function initMap(center) {
     const latLng = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
     updateDistanceOverlay(latLng, true);
   });
-  // 지도 빈 곳 길게 누르기 → 위치 공유 (마커 추가는 📍 버튼으로만)
+  // 지도 빈 곳 길게 누르기 → 위치 공유
+  // 카카오 SDK 의 touchstart 이벤트는 공식 지원이 아니라 기기에 따라 발생하지 않음 →
+  // vworld 와 동일하게 지도 DOM 에 브라우저 표준 pointer 이벤트를 직접 연결한다.
   let mapLongPressTimer = null;
   let startX = 0, startY = 0;
 
@@ -875,18 +877,35 @@ function initMap(center) {
     if (suppressLongPress) return;
     const t = e.changedTouches ? e.changedTouches[0] : e;
     startX = t.clientX; startY = t.clientY;
-    clearTimeout(mapLongPressTimer);
-    if (!drawingMode) {
-      // touchstart 는 e.latLng 가 안 넘어오는 경우가 있어 화면 좌표에서 직접 계산
-      const cx = t.clientX, cy = t.clientY;
+  });
+
+  {
+    const mapDiv = document.getElementById('map');
+    let pressX = 0, pressY = 0;
+    window.cancelMapPress = () => { clearTimeout(mapLongPressTimer); mapLongPressTimer = null; };
+    mapDiv.addEventListener('pointerdown', (e) => {
+      clearTimeout(mapLongPressTimer);
+      if (e.pointerType !== 'touch' || !e.isPrimary) return;   // 두 번째 손가락(핀치)은 취소만
+      if (drawingMode || suppressLongPress) return;
+      if (e.target.closest && e.target.closest('[data-iw]')) return;   // 사진 팝업 위는 제외
+      pressX = e.clientX; pressY = e.clientY;
       mapLongPressTimer = setTimeout(() => {
+        mapLongPressTimer = null;
+        if (suppressLongPress) return;   // 마커/선 길게 누르기가 진행 중이면 양보
         try {
-          const ll = getScaledLatLng(cx, cy);
+          const ll = getScaledLatLng(pressX, pressY);
           if (ll) openShareLocation(ll.getLat(), ll.getLng());
         } catch(err) {}
       }, 600);
-    }
-  });
+    }, { passive: true });
+    mapDiv.addEventListener('pointermove', (e) => {
+      if (mapLongPressTimer && (Math.abs(e.clientX - pressX) > 8 || Math.abs(e.clientY - pressY) > 8)) {
+        cancelMapPress();
+      }
+    }, { passive: true });
+    mapDiv.addEventListener('pointerup', () => cancelMapPress(), { passive: true });
+    mapDiv.addEventListener('pointercancel', () => cancelMapPress(), { passive: true });
+  }
   kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
   kakao.maps.event.addListener(map, 'touchmove', (e) => {
     const t = e.changedTouches ? e.changedTouches[0] : e;
@@ -2106,6 +2125,7 @@ function attachLongPress(target, onLongPress) {
   function start(x, y) {
     startX = x; startY = y;
     suppressLongPress = true;  // 마커/선 위에서 누름 → 지도 롱프레스 차단
+    if (typeof cancelMapPress === 'function') cancelMapPress();   // 위치 공유 타이머도 취소
     timer = setTimeout(() => { suppressLongPress = false; onLongPress(); }, LONG_PRESS_MS);
   }
   function cancel() { clearTimeout(timer); timer = null; suppressLongPress = false; }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kmz-viewer-v22';
+const CACHE_NAME = 'kmz-viewer-v24';
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const STATIC_ASSETS = [
   './index.html',

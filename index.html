@@ -1688,10 +1688,10 @@ async function loadImageAsMarker(imgFile) {
       const imgSrc = ev.target.result;
       const name = imgFile.name.replace(/\.[^.]+$/, '');
 
-      // EXIF GPS 읽기
-      let latlng = null;
+      // EXIF GPS 읽기 (exif0 은 압축본 EXIF 복사에 재사용)
+      let latlng = null, exif0 = null;
       try {
-        const exif = piexif.load(imgSrc);
+        const exif = exif0 = piexif.load(imgSrc);
         const gps = exif['GPS'];
         if (gps && gps[piexif.GPSIFD.GPSLatitude] && gps[piexif.GPSIFD.GPSLongitude]) {
           const toDec = (dms, ref) => {
@@ -1709,13 +1709,25 @@ async function loadImageAsMarker(imgFile) {
       } catch(e) {}
 
       // 대량 사진 대비 메모리 절약: 마커에는 압축 표시본만 사용.
-      // 원본 dataURL(장당 수 MB)을 마커에 상주시키면 여러 장에서 메모리 폭증.
-      // GPS·촬영일시 EXIF 는 압축본에도 복사되므로 KMZ 저장에 그대로 유지됨.
+      // 압축은 워커(OffscreenCanvas)에서 — 페이지 캔버스 압축은 지도 백화 유발.
+      // 워커 미지원/실패 시 원본 그대로 사용 (백화 없던 옛 동작).
       let dispSrc = imgSrc;
-      try {
-        dispSrc = await compressImage(imgSrc);
-        _compressCache.delete(imgSrc);   // 원본 키 캐시(대용량 문자열) 즉시 해제
-      } catch(e) {}
+      const compressed = await compressFileInWorker(imgFile);
+      if (compressed) {
+        dispSrc = compressed;
+        // GPS·촬영일시 EXIF 를 압축본에 복사 (KMZ 저장 시 위치·날짜 유지)
+        try {
+          if (exif0) {
+            if (exif0['0th']) {
+              delete exif0['0th'][piexif.ImageIFD.UserComment];
+              delete exif0['0th'][piexif.ImageIFD.ImageDescription];
+              exif0['0th'][piexif.ImageIFD.Orientation] = 1;   // 워커 압축본은 픽셀에 회전 반영됨
+            }
+            if (exif0['Exif']) delete exif0['Exif'][piexif.ExifIFD.UserComment];
+            dispSrc = _exifSafeCarry(exif0, compressed);
+          }
+        } catch(e) { dispSrc = compressed; }
+      }
 
       if (latlng) {
         addPhotoMarker(latlng, dispSrc, name);
@@ -1888,6 +1900,45 @@ async function exportKMZ(scope = 'all') {
     alert('KMZ 저장 중 오류: ' + err.message);
   }
 }
+
+// ─── 워커 압축 (OffscreenCanvas) ─────────────────────
+// 사진 압축을 Web Worker 에서 수행 — 페이지 캔버스로 압축하면 파일 선택창을
+// 다녀온 직후 지도 타일이 하얗게 죽는 기기가 있음 (압축 자체가 백화 원인).
+// 워커는 페이지 렌더링/GPU 와 분리되어 지도에 영향을 주지 않는다.
+const _imgWorkerCode = "self.onmessage=async e=>{const{id,file,max,target}=e.data;try{const bmp=await createImageBitmap(file,{imageOrientation:'from-image'});let w=bmp.width,h=bmp.height;if(w>max||h>max){if(w>h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}const cv=new OffscreenCanvas(w,h);cv.getContext('2d').drawImage(bmp,0,0,w,h);bmp.close();let q=0.85,blob=await cv.convertToBlob({type:'image/jpeg',quality:q});while(blob.size>target&&q>0.1){q=Math.round((q-0.05)*100)/100;blob=await cv.convertToBlob({type:'image/jpeg',quality:q});}const buf=await blob.arrayBuffer();self.postMessage({id,ok:true,buf},[buf]);}catch(err){self.postMessage({id,ok:false});}};";
+let _imgWorker = null;
+const _imgJobs = new Map();
+let _imgJobId = 0;
+function _getImgWorker() {
+  if (_imgWorker !== null) return _imgWorker;
+  try {
+    if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined' || typeof Worker === 'undefined') { _imgWorker = false; return false; }
+    _imgWorker = new Worker(URL.createObjectURL(new Blob([_imgWorkerCode], { type: 'text/javascript' })));
+    _imgWorker.onmessage = e => { const j = _imgJobs.get(e.data.id); if (j) { _imgJobs.delete(e.data.id); j(e.data); } };
+    _imgWorker.onerror = () => { _imgJobs.forEach(j => j({ ok: false })); _imgJobs.clear(); };
+  } catch(e) { _imgWorker = false; }
+  return _imgWorker;
+}
+// 파일을 워커에서 압축해 JPEG dataURL 로 반환. 실패/미지원이면 null (호출측이 원본 사용).
+function compressFileInWorker(file) {
+  return new Promise(resolve => {
+    const w = _getImgWorker();
+    if (!w) return resolve(null);
+    const id = ++_imgJobId;
+    const to = setTimeout(() => { _imgJobs.delete(id); resolve(null); }, 20000);
+    _imgJobs.set(id, d => {
+      clearTimeout(to);
+      if (!d.ok || !d.buf) return resolve(null);
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => resolve(null);
+      fr.readAsDataURL(new Blob([d.buf], { type: 'image/jpeg' }));
+    });
+    try { w.postMessage({ id, file, max: 1920, target: COMPRESS_TARGET }); }
+    catch(e) { clearTimeout(to); _imgJobs.delete(id); resolve(null); }
+  });
+}
+
 // ─── 이미지 압축 (저장 시 500KB 이하) ────────────────
 const _compressCache = new Map();   // 원본 src → 압축 결과 (같은 사진 매번 재압축 방지)
 const COMPRESS_TARGET = 300 * 1024;

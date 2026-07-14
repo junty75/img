@@ -25,7 +25,35 @@
   function _earlyBackHandler(){ history.forward(); }
   window.addEventListener('popstate', _earlyBackHandler);
   </script>
-  <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=94bf4516825c146467eb2318cd55b782&autoload=false&libraries=services"></script>
+  <!-- ── API 키: 사용자별 키를 최초 1회 입력받아 localStorage에 저장 ──
+       키 재입력: 주소 뒤에 ?resetkey 를 붙여 열기 -->
+  <script>
+  if (location.search.indexOf('resetkey') >= 0) localStorage.removeItem('kakao_js_key');
+  function _askApiKey(storeKey, name, guide){
+    var k = localStorage.getItem(storeKey);
+    while (!k || !k.trim()) {
+      k = prompt(name + ' API 키를 입력하세요. (최초 1회, 이 기기에 저장됨)\n\n' + guide);
+      if (k === null) alert(name + ' 키가 없으면 지도를 표시할 수 없습니다.');
+    }
+    k = k.trim();
+    localStorage.setItem(storeKey, k);
+    return k;
+  }
+  function _apiKeyError(storeKey, name){
+    alert(name + ' 로딩 실패 — 키가 잘못되었을 수 있습니다. 키를 다시 입력하세요.');
+    localStorage.removeItem(storeKey);
+    location.reload();
+  }
+  var KAKAO_GUIDE = '[카카오 JavaScript 키 발급]\n'
+    + '1. https://developers.kakao.com 로그인\n'
+    + '2. 내 애플리케이션 → 애플리케이션 추가하기\n'
+    + '3. 앱 설정 → 앱 키 → "JavaScript 키" 복사\n'
+    + '4. 앱 설정 → 플랫폼 → Web 플랫폼(사이트 도메인) 등록\n'
+    + '5. 제품 설정 → 카카오맵 → 활성화 ON';
+  var KAKAO_JS_KEY = _askApiKey('kakao_js_key', '카카오맵', KAKAO_GUIDE);
+  document.write('<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=' + KAKAO_JS_KEY
+    + '&autoload=false&libraries=services" onerror="_apiKeyError(\'kakao_js_key\',\'카카오맵 SDK\')"><\/script>');
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/piexifjs"></script>
   <!-- exifr: 삼성 등 일부 폰 카메라 JPEG 은 piexif 가 GPS 를 못 읽음 — 읽기 폴백 -->
@@ -906,6 +934,67 @@ function initMap(center) {
     mapDiv.addEventListener('pointerup', () => cancelMapPress(), { passive: true });
     mapDiv.addEventListener('pointercancel', () => cancelMapPress(), { passive: true });
   }
+
+  // ─── S펜(스타일러스) 자유곡선 그리기 — 선그리기 모드 겸용 ─────────
+  // 펜으로 쭉 끌면 자유선이 그려지고, 손가락 탭은 기존처럼 점을 찍는다.
+  // (손가락 드래그는 지도 이동으로 그대로 두어 펜=그리기 / 손가락=이동·점찍기)
+  {
+    const mapDiv = document.getElementById('map');
+    let penDrawing = false, penActiveId = null, penLastPt = null;
+    const PEN_MIN_PX = 3;   // 이 픽셀 미만 이동은 점 추가 생략(과도한 점 방지)
+
+    function penAddPoint(clientX, clientY, preview) {
+      const ll = getScaledLatLng(clientX, clientY);
+      if (!ll) return;
+      currentPath.push(ll);
+      currentPolyline.setPath(currentPath);
+      updateDistanceOverlay(ll);
+    }
+
+    mapDiv.addEventListener('pointerdown', (e) => {
+      if (!drawingMode || e.pointerType !== 'pen') return;
+      if (e.target.closest && e.target.closest('[data-iw]')) return;   // 사진 팝업 위 제외
+      if (!currentPolyline) return;
+      penDrawing = true;
+      penActiveId = e.pointerId;
+      cancelMapPress();               // 롱프레스 타이머 취소
+      map.setDraggable(false);        // 펜 그리는 동안 지도 이동 잠금
+      suppressMapClick = true;        // pointerup 뒤 따라오는 map click 무시
+      try { mapDiv.setPointerCapture(e.pointerId); } catch (_) {}
+      penAddPoint(e.clientX, e.clientY);
+      penLastPt = { x: e.clientX, y: e.clientY };
+      e.preventDefault();
+    });
+
+    mapDiv.addEventListener('pointermove', (e) => {
+      if (!penDrawing || e.pointerId !== penActiveId) return;
+      if (penLastPt &&
+          Math.abs(e.clientX - penLastPt.x) < PEN_MIN_PX &&
+          Math.abs(e.clientY - penLastPt.y) < PEN_MIN_PX) return;
+      penAddPoint(e.clientX, e.clientY);
+      penLastPt = { x: e.clientX, y: e.clientY };
+      e.preventDefault();
+    });
+
+    function endPen(e) {
+      if (!penDrawing) return;
+      if (e && penActiveId !== null && e.pointerId !== penActiveId) return;
+      penDrawing = false; penActiveId = null; penLastPt = null;
+      map.setDraggable(true);
+      const en = polylines.find(p => p.poly === currentPolyline);
+      if (en) en.path = [...currentPath];
+      if (currentPath.length > 1) {
+        document.getElementById('saveBtn').disabled = false;
+        autoSaveToDB();
+      }
+      // 펜 뗀 직후 오는 합성 click 만 무시하고, 없으면 다음 탭이 막히지 않게 해제
+      suppressMapClick = true;
+      setTimeout(() => { suppressMapClick = false; }, 350);
+    }
+    mapDiv.addEventListener('pointerup', endPen);
+    mapDiv.addEventListener('pointercancel', endPen);
+  }
+
   kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));
   kakao.maps.event.addListener(map, 'touchmove', (e) => {
     const t = e.changedTouches ? e.changedTouches[0] : e;

@@ -617,29 +617,43 @@ document.getElementById('markerBtn').onclick = () => {
 
 // PC 키보드 이벤트
 document.addEventListener('keydown', e => {
-  if (drawingMode && currentPath.length > 0) {
+  if (drawingMode && drawUndo.length > 0) {
     if (e.key === 'Backspace' || e.key === 'Escape') {
       e.preventDefault();
-      undoLastPoint();
+      undoLastAction();
     }
   }
 });
 
-// 뒤로가기 = 절대 앱 종료 안 함. 선그리기 중: 점 삭제 또는 모드 종료
-// addEventListener 사용: window.onpopstate 방식은 카카오SDK가 덮어써서 동작 안 함
-let _ignoreNextPop = false;
+// 뒤로가기 = 절대 앱 종료 안 함. 선그리기 중: 점/펜획 되돌리기 또는 모드 종료
+// 기기(갤럭시 액티브탭 등)에 따라 history.forward() 가 먹지 않아 뒤로가기 시 앱이
+// 종료되던 문제 → popstate 마다 즉시 상태를 다시 push 해서 항상 뒤로 갈 여분을 남긴다.
 window.removeEventListener('popstate', _earlyBackHandler);
 window.addEventListener('popstate', function() {
-  if (_ignoreNextPop) { _ignoreNextPop = false; return; }
+  history.pushState({ k: 2 }, '', '');   // 소비된 히스토리 즉시 재보충(앱 종료 방지)
   if (drawingMode) {
-    if (currentPath.length > 0) { undoLastPoint(); }
-    else { stopDrawing(); }
+    if (drawUndo.length > 0) undoLastAction();
+    else stopDrawing();
   }
-  _ignoreNextPop = true;
-  window.history.forward();
 });
 
-function undoLastPoint() {
+// 되돌리기: 마지막 동작(탭 점 1개 또는 펜 획 1개)을 취소
+function undoLastAction() {
+  const act = drawUndo.pop();
+  if (!act) return;
+  if (act.type === 'stroke') {
+    // 펜으로 그린 획 하나를 통째로 제거
+    if (act.entry && act.entry.poly) {
+      act.entry.poly.setMap(null);
+      polylines = polylines.filter(p => p.poly !== act.entry.poly);
+    }
+    if (moveLine) { moveLine.setMap(null); moveLine = null; }
+    if (distanceOverlay) { distanceOverlay.setMap(null); distanceOverlay = null; }
+    if (markers.length === 0 && polylines.length === 0) document.getElementById('saveBtn').disabled = true;
+    autoSaveToDB();
+    return;
+  }
+  // act.type === 'point' : 탭으로 찍은 점 하나 제거
   if (currentPath.length === 0) return;
   currentPath.pop();
   currentPolyline.setPath(currentPath);
@@ -661,6 +675,8 @@ function undoLastPoint() {
     if (distanceOverlay) { distanceOverlay.setMap(null); distanceOverlay = null; }
   }
 }
+// 이전 이름 호환
+function undoLastPoint() { undoLastAction(); }
 // ─── IndexedDB: KMZ 파일 저장/복원 + 사진 원본 보관 ──
 // 'orig' 스토어: 불러온/촬영한 사진의 원본(dataURL, 전체 EXIF 포함)을 보관.
 // 지도 표시·KMZ 는 압축본을 쓰지만, 메타 수정·사진저장은 항상 원본 기준 → EXIF 유실 방지.
@@ -762,6 +778,7 @@ let deviceHeading = null;   // 기기 나침반 방향
 let headingInterval = null; // 정지 중 방향 갱신 타이머
 let hasData = false, suppressMapClick = false, suppressLongPress = false;
 let drawingMode = false, currentPolyline = null, currentPath = [];
+let drawUndo = [];   // 선그리기 되돌리기 스택: {type:'point'} = 탭 점, {type:'stroke', entry} = 펜 획
 let moveLine = null, distanceOverlay = null;
 let geocoder = null;
 let cssScale = 1; // CSS scale 전역 (레벨1 이후 확대용)
@@ -816,6 +833,7 @@ function initMap(center) {
       const latLng = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
       currentPath.push(latLng);
       currentPolyline.setPath(currentPath);
+      drawUndo.push({ type: 'point' });
       updateDistanceOverlay(latLng);
       return;
     }
@@ -914,30 +932,47 @@ function initMap(center) {
 
   // ─── S펜(스타일러스) 자유곡선 그리기 — 선그리기 모드 겸용 ─────────
   // 펜으로 쭉 끌면 자유선이 그려지고, 손가락 탭은 기존처럼 점을 찍는다.
+  // 펜은 한 획(내려서 떼기)마다 "각기 다른 선"으로 그려진다 — 획끼리 이어지지 않음.
   // (손가락 드래그는 지도 이동으로 그대로 두어 펜=그리기 / 손가락=이동·점찍기)
   {
     const mapDiv = document.getElementById('map');
     let penDrawing = false, penActiveId = null, penLastPt = null;
+    let penPoly = null, penPath = null, penEntry = null;   // 이번 획 전용 (currentPath와 분리)
     const PEN_MIN_PX = 3;   // 이 픽셀 미만 이동은 점 추가 생략(과도한 점 방지)
 
-    function penAddPoint(clientX, clientY, preview) {
+    function penOverlay(ll) {
+      const fmt = d => d < 1000 ? Math.round(d) + 'm' : (d/1000).toFixed(2) + 'km';
+      const html = '<div class="distance-overlay">✏️ 총 ' + fmt(penPoly.getLength()) + '</div>';
+      if (distanceOverlay) { distanceOverlay.setPosition(ll); distanceOverlay.setContent(html); }
+      else distanceOverlay = new kakao.maps.CustomOverlay({ map, content: html, position: ll, xAnchor: 0, yAnchor: 1.8, zIndex: 3 });
+    }
+
+    function penAddPoint(clientX, clientY) {
       const ll = getScaledLatLng(clientX, clientY);
       if (!ll) return;
-      currentPath.push(ll);
-      currentPolyline.setPath(currentPath);
-      updateDistanceOverlay(ll);
+      penPath.push(ll);
+      penPoly.setPath(penPath);
+      penOverlay(ll);
     }
 
     mapDiv.addEventListener('pointerdown', (e) => {
       if (!drawingMode || e.pointerType !== 'pen') return;
       if (e.target.closest && e.target.closest('[data-iw]')) return;   // 사진 팝업 위 제외
-      if (!currentPolyline) return;
       penDrawing = true;
       penActiveId = e.pointerId;
       cancelMapPress();               // 롱프레스 타이머 취소
       map.setDraggable(false);        // 펜 그리는 동안 지도 이동 잠금
       suppressMapClick = true;        // pointerup 뒤 따라오는 map click 무시
       try { mapDiv.setPointerCapture(e.pointerId); } catch (_) {}
+      // 이번 획 전용으로 새 폴리라인 생성 → 이전 획과 이어지지 않음
+      penPath = [];
+      penPoly = new kakao.maps.Polyline({
+        map, path: penPath,
+        strokeWeight: currentDrawWidth, strokeColor: currentDrawColor, strokeOpacity: 1
+      });
+      attachPolylineDelete(penPoly);
+      penEntry = { poly: penPoly, name: '선', path: penPath, color: currentDrawColor, width: currentDrawWidth };
+      polylines.push(penEntry);
       penAddPoint(e.clientX, e.clientY);
       penLastPt = { x: e.clientX, y: e.clientY };
       e.preventDefault();
@@ -958,12 +993,27 @@ function initMap(center) {
       if (e && penActiveId !== null && e.pointerId !== penActiveId) return;
       penDrawing = false; penActiveId = null; penLastPt = null;
       map.setDraggable(true);
-      const en = polylines.find(p => p.poly === currentPolyline);
-      if (en) en.path = [...currentPath];
-      if (currentPath.length > 1) {
+      if (penPath && penPath.length > 1) {
+        // 끌어서 그린 자유곡선 획 → 각기 다른 선으로 확정
+        penEntry.path = [...penPath];
+        drawUndo.push({ type: 'stroke', entry: penEntry });   // 되돌리기용
         document.getElementById('saveBtn').disabled = false;
         autoSaveToDB();
+      } else if (penPoly) {
+        // 끌지 않고 톡 찍음 = 점 하나 → 획은 버리고, 탭 선에 점으로 추가(점찍기 겸용)
+        const pt = penPath && penPath.length ? penPath[0] : null;
+        penPoly.setMap(null);
+        polylines = polylines.filter(p => p.poly !== penPoly);
+        if (pt && currentPolyline) {
+          currentPath.push(pt);
+          currentPolyline.setPath(currentPath);
+          drawUndo.push({ type: 'point' });
+          updateDistanceOverlay(pt);
+          document.getElementById('saveBtn').disabled = false;
+          autoSaveToDB();
+        }
       }
+      penPoly = null; penPath = null; penEntry = null;
       // 펜 뗀 직후 오는 합성 click 만 무시하고, 없으면 다음 탭이 막히지 않게 해제
       suppressMapClick = true;
       setTimeout(() => { suppressMapClick = false; }, 350);
@@ -1269,6 +1319,7 @@ function setMarkersClickThrough(drawing) {
 
 function startDrawing() {
   drawingMode = true;
+  drawUndo = [];
   setMarkersClickThrough(true);
   currentPath = [];
   currentPolyline = new kakao.maps.Polyline({
@@ -1301,6 +1352,7 @@ function stopDrawing() {
     autoSaveToDB();
   }  currentPolyline = null;
   currentPath = [];
+  drawUndo = [];
   document.getElementById('drawBtn').classList.remove('active');
   document.getElementById('drawBtn').title = '선 그리기';
   document.getElementById('drawStyleBtn').classList.remove('show');

@@ -626,11 +626,25 @@ document.addEventListener('keydown', e => {
 });
 
 // 뒤로가기 = 절대 앱 종료 안 함. 선그리기 중: 점/펜획 되돌리기 또는 모드 종료
-// 기기(갤럭시 액티브탭 등)에 따라 history.forward() 가 먹지 않아 뒤로가기 시 앱이
-// 종료되던 문제 → popstate 마다 즉시 상태를 다시 push 해서 항상 뒤로 갈 여분을 남긴다.
+// 갤럭시 액티브탭 등 일부 기기의 브라우저는 "사용자 제스처 없이 push 된" 히스토리 항목을
+// 뒤로가기에서 통째로 건너뜀(back/history-manipulation intervention) → 로드 직후 push 한
+// 항목이 전부 무시되어 뒤로가기 한 번에 앱이 종료되던 원인.
+// 해결: 실제 터치(사용자 활성화) 시점에 히스토리 항목을 재보충해 두면
+// 뒤로가기가 반드시 페이지 안에서 소비되어 popstate(되돌리기)가 동작한다.
+let _histRearm = true;   // 로드 직후·뒤로가기 소비 직후 = 재보충 필요
+document.addEventListener('pointerdown', (e) => {
+  if (!e.isPrimary) return;
+  // 그리기 중에는 획/점마다 1개씩 보충 → 연속 뒤로가기(여러 번 되돌리기)에도 안 끊김
+  if (_histRearm || drawingMode) {
+    _histRearm = false;
+    try { history.pushState({ k: 3 }, '', ''); } catch (_) {}
+  }
+}, { capture: true, passive: true });
+
 window.removeEventListener('popstate', _earlyBackHandler);
 window.addEventListener('popstate', function() {
   history.pushState({ k: 2 }, '', '');   // 소비된 히스토리 즉시 재보충(앱 종료 방지)
+  _histRearm = true;   // 방금 push 는 무활성 항목 — 다음 터치 때 활성 항목으로 재보충
   if (drawingMode) {
     if (drawUndo.length > 0) undoLastAction();
     else stopDrawing();
@@ -937,8 +951,18 @@ function initMap(center) {
   {
     const mapDiv = document.getElementById('map');
     let penDrawing = false, penActiveId = null, penLastPt = null;
+    let penDownX = 0, penDownY = 0;   // 획/탭 판정용 시작 좌표
     let penPoly = null, penPath = null, penEntry = null;   // 이번 획 전용 (currentPath와 분리)
     const PEN_MIN_PX = 3;   // 이 픽셀 미만 이동은 점 추가 생략(과도한 점 방지)
+    const PEN_TAP_PX = 8;   // 이 미만 이동으로 끝나면 탭(점찍기)으로 간주
+
+    // 기기에 따라 스타일러스(S펜 등)가 'pen'이 아닌 'mouse'로 보고됨(갤럭시 액티브탭 등)
+    // → 터치 지원 기기에서 'touch'가 아닌 포인터는 전부 펜으로 간주.
+    // (터치스크린 없는 PC 의 마우스는 기존 탭 점찍기 방식 그대로)
+    function isPenPointer(e) {
+      return e.pointerType === 'pen' ||
+             (e.pointerType !== 'touch' && navigator.maxTouchPoints > 0);
+    }
 
     function penOverlay(ll) {
       const fmt = d => d < 1000 ? Math.round(d) + 'm' : (d/1000).toFixed(2) + 'km';
@@ -955,11 +979,15 @@ function initMap(center) {
       penOverlay(ll);
     }
 
+    // capture 단계로 연결 — 지도 내부 요소가 이벤트를 먼저 소비해도 펜 획이 끊기지 않음
     mapDiv.addEventListener('pointerdown', (e) => {
-      if (!drawingMode || e.pointerType !== 'pen') return;
+      if (!drawingMode || !isPenPointer(e)) return;
+      if (e.button != null && e.button !== 0) return;   // 보조 버튼(우클릭 등) 제외
+      if (penDrawing) return;                           // 이미 획 진행 중이면 무시
       if (e.target.closest && e.target.closest('[data-iw]')) return;   // 사진 팝업 위 제외
       penDrawing = true;
       penActiveId = e.pointerId;
+      penDownX = e.clientX; penDownY = e.clientY;
       cancelMapPress();               // 롱프레스 타이머 취소
       map.setDraggable(false);        // 펜 그리는 동안 지도 이동 잠금
       suppressMapClick = true;        // pointerup 뒤 따라오는 map click 무시
@@ -976,7 +1004,7 @@ function initMap(center) {
       penAddPoint(e.clientX, e.clientY);
       penLastPt = { x: e.clientX, y: e.clientY };
       e.preventDefault();
-    });
+    }, { capture: true, passive: false });
 
     mapDiv.addEventListener('pointermove', (e) => {
       if (!penDrawing || e.pointerId !== penActiveId) return;
@@ -986,11 +1014,17 @@ function initMap(center) {
       penAddPoint(e.clientX, e.clientY);
       penLastPt = { x: e.clientX, y: e.clientY };
       e.preventDefault();
-    });
+    }, { capture: true, passive: false });
 
     function endPen(e) {
       if (!penDrawing) return;
       if (e && penActiveId !== null && e.pointerId !== penActiveId) return;
+      // 일부 기기는 획 도중 pointermove 가 유실됨 → 누른 지점~뗀 지점 거리로 획 여부 보정
+      // (보정 없으면 획이 '탭'으로 오인되어 이전 선에 이어지던 원인)
+      if (e && e.type === 'pointerup' && penPath && penPath.length < 2 &&
+          Math.hypot(e.clientX - penDownX, e.clientY - penDownY) >= PEN_TAP_PX) {
+        penAddPoint(e.clientX, e.clientY);
+      }
       penDrawing = false; penActiveId = null; penLastPt = null;
       map.setDraggable(true);
       if (penPath && penPath.length > 1) {
@@ -1018,8 +1052,8 @@ function initMap(center) {
       suppressMapClick = true;
       setTimeout(() => { suppressMapClick = false; }, 350);
     }
-    mapDiv.addEventListener('pointerup', endPen);
-    mapDiv.addEventListener('pointercancel', endPen);
+    mapDiv.addEventListener('pointerup', endPen, { capture: true });
+    mapDiv.addEventListener('pointercancel', endPen, { capture: true });
   }
 
   kakao.maps.event.addListener(map, 'touchend', () => clearTimeout(mapLongPressTimer));

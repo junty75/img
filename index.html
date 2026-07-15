@@ -836,9 +836,15 @@ function getScaledLatLng(clientX, clientY) {
 // ─── 지도 초기화 ──────────────────────────────────────
 function initMap(center) {
   map = new kakao.maps.Map(document.getElementById('map'), {
-    center, level: 5, mapTypeId: kakao.maps.MapTypeId.HYBRID,
+    center, level: 5, minLevel: 0, mapTypeId: kakao.maps.MapTypeId.HYBRID,
     disableDoubleClick: true
   });
+  // Edge에서 minLevel:0이 무시될 경우 휠 이벤트로 강제 처리
+  document.getElementById('map').addEventListener('wheel', e => {
+    if (e.deltaY < 0 && map && map.getLevel() === 1) {
+      setTimeout(() => { if (map.getLevel() === 1) map.setLevel(0); }, 50);
+    }
+  }, { passive: true });
   geocoder = new kakao.maps.services.Geocoder();
 
   // 더블탭/더블클릭으로 선 삭제 (줌 대신)
@@ -1101,7 +1107,7 @@ function initMap(center) {
 
   // 줌 레벨 올라가면 (축소) CSS scale도 함께 1로 리셋
   kakao.maps.event.addListener(map, 'zoom_changed', () => {
-    if (map.getLevel() > 1) applyScale(1);
+    if (map.getLevel() > 0) applyScale(1);
   });
 
   // 묶음선(KMZ MultiGeometry) 뷰포트 컬링 — 이동/줌 멈출 때마다 화면 교차 구간만 다시 그림
@@ -1109,8 +1115,8 @@ function initMap(center) {
 
   // CSS scale +/- 버튼
   document.getElementById('cssZoomIn').onclick = () => {
-    if (map.getLevel() > 1) {
-      map.setLevel(map.getLevel() - 1); // 카카오맵 확대
+    if (map.getLevel() > 0) {
+      map.setLevel(map.getLevel() - 1); // 카카오맵 확대 (minLevel:0까지)
     } else {
       applyScale(cssScale * 2); // CSS scale 2배
     }

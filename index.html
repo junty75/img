@@ -632,7 +632,10 @@ document.addEventListener('keydown', e => {
 // 해결: 실제 터치(사용자 활성화) 시점에 히스토리 항목을 재보충해 두면
 // 뒤로가기가 반드시 페이지 안에서 소비되어 popstate(되돌리기)가 동작한다.
 let _histRearm = true;   // 로드 직후·뒤로가기 소비 직후 = 재보충 필요
-document.addEventListener('pointerdown', (e) => {
+// 반드시 pointerup 시점에 push 할 것 — 터치 기기에서 pointerdown(=touchstart)은
+// "사용자 활성화"를 부여하지 않아(S22 등) push 항목이 여전히 뒤로가기에서 건너뛰어짐.
+// 활성화는 pointerup/touchend 에 부여되므로 이 시점의 push 만 확실히 살아남는다.
+document.addEventListener('pointerup', (e) => {
   if (!e.isPrimary) return;
   // 그리기 중에는 획/점마다 1개씩 보충 → 연속 뒤로가기(여러 번 되돌리기)에도 안 끊김
   if (_histRearm || drawingMode) {
@@ -922,7 +925,9 @@ function initMap(center) {
     window.cancelMapPress = () => { clearTimeout(mapLongPressTimer); mapLongPressTimer = null; };
     mapDiv.addEventListener('pointerdown', (e) => {
       clearTimeout(mapLongPressTimer);
-      if (e.pointerType !== 'touch' || !e.isPrimary) return;   // 두 번째 손가락(핀치)은 취소만
+      // 손가락 + (터치기기의) 펜/스타일러스 허용 — 터치스크린 없는 PC 마우스는 제외
+      const okPtr = e.pointerType === 'touch' || navigator.maxTouchPoints > 0;
+      if (!okPtr || !e.isPrimary) return;   // 두 번째 손가락(핀치)은 취소만
       if (drawingMode || suppressLongPress) return;
       if (e.target.closest && e.target.closest('[data-iw]')) return;   // 사진 팝업 위는 제외
       pressX = e.clientX; pressY = e.clientY;
@@ -931,7 +936,16 @@ function initMap(center) {
         if (suppressLongPress) return;   // 마커/선 길게 누르기가 진행 중이면 양보
         try {
           const ll = getScaledLatLng(pressX, pressY);
-          if (ll) openShareLocation(ll.getLat(), ll.getLng());
+          if (!ll) return;
+          // 선 근처(화면 ~15px)를 길게 누르면 위치공유 대신 선 수정/삭제 메뉴
+          // (선을 픽셀 단위로 정확히 안 눌러도 선택되도록 허용 반경 확대)
+          const near = findNearPolyK(ll, 15);
+          if (near) {
+            suppressMapClick = true;
+            showPolyMenu(pressX, pressY, near.poly, near);
+            return;
+          }
+          openShareLocation(ll.getLat(), ll.getLng());
         } catch(err) {}
       }, 600);
     }, { passive: true });
@@ -1324,6 +1338,40 @@ document.getElementById('polyEditBtn').onclick = () => {
     updateDistanceOverlay(last);
   }
 };
+
+// ─── 좌표 주변 선 찾기 (길게눌러 선택 보조) ──────────
+// 카카오 Polyline 자체 히트테스트는 선을 픽셀 단위로 정확히 눌러야 반응 →
+// 화면 tolPx 픽셀 반경 안에서 가장 가까운 선을 직접 찾는다.
+function findNearPolyK(ll, tolPx = 15) {
+  if (typeof map === 'undefined' || !map) return null;
+  const b = map.getBounds(); if (!b) return null;
+  const mapH = document.getElementById('map').clientHeight || 800;
+  // 화면 픽셀 → 위도 간격 (CSS scale 확대 중엔 화면이 커진 만큼 반경 축소)
+  const tol = (b.getNorthEast().getLat() - b.getSouthWest().getLat()) / mapH * tolPx / (cssScale || 1);
+  const py = ll.getLat(), px = ll.getLng();
+  const cosLat = Math.cos(py * Math.PI / 180);
+  let best = null, bestD = tol;
+  for (const en of polylines) {
+    if (!en.poly || (!en.poly.getMap() && !en.poly._viewCulled)) continue;
+    const parts = (en.parts && en.parts.length) ? en.parts : [en.path];
+    for (const cs of parts) {
+      if (!cs || cs.length < 2) continue;
+      let ax = (cs[0].getLng() - px) * cosLat, ay = cs[0].getLat() - py;
+      for (let i = 1; i < cs.length; i++) {
+        // 점-선분 거리 (경도는 cos(위도) 보정 후 평면 근사)
+        const bx = (cs[i].getLng() - px) * cosLat, by = cs[i].getLat() - py;
+        const dx = bx - ax, dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        let t = len2 > 0 ? -(ax * dx + ay * dy) / len2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const d = Math.hypot(ax + dx * t, ay + dy * t);
+        if (d < bestD) { bestD = d; best = en; }
+        ax = bx; ay = by;
+      }
+    }
+  }
+  return best;
+}
 
 function attachPolylineDelete(poly, entry) {
   // 우클릭 (PC)

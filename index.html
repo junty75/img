@@ -626,28 +626,29 @@ document.addEventListener('keydown', e => {
 });
 
 // 뒤로가기 = 절대 앱 종료 안 함. 선그리기 중: 점/펜획 되돌리기 또는 모드 종료
-// 갤럭시 액티브탭 등 일부 기기의 브라우저는 "사용자 제스처 없이 push 된" 히스토리 항목을
-// 뒤로가기에서 통째로 건너뜀(back/history-manipulation intervention) → 로드 직후 push 한
-// 항목이 전부 무시되어 뒤로가기 한 번에 앱이 종료되던 원인.
-// 해결: 실제 터치(사용자 활성화) 시점에 히스토리 항목을 재보충해 두면
-// 뒤로가기가 반드시 페이지 안에서 소비되어 popstate(되돌리기)가 동작한다.
-let _histRearm = true;   // 로드 직후·뒤로가기 소비 직후 = 재보충 필요
-// 반드시 pointerup 시점에 push 할 것 — 터치 기기에서 pointerdown(=touchstart)은
-// "사용자 활성화"를 부여하지 않아(S22 등) push 항목이 여전히 뒤로가기에서 건너뛰어짐.
-// 활성화는 pointerup/touchend 에 부여되므로 이 시점의 push 만 확실히 살아남는다.
+//
+// ── 기기별 실측으로 확인된 두 가지 함정 (둘 다 피해야 함) ──
+// (1) popstate 안에서 pushState 로 재보충하면 안 됨: S22 등은 이를
+//     "뒤로가기 가두기(back-trap)"로 판단해 두 번째 뒤로가기에서 앱을 통째로 종료시킴.
+// (2) popstate 안에서 history.forward() 로 복귀해도 안 됨(20260712 이전 버전 방식):
+//     갤럭시 액티브탭 등은 forward() 가 조용히 무시되어 버퍼가 소진되고 앱이 종료됨.
+//
+// 해결: 히스토리 항목을 미리 '깊게'(HIST_MAX개) 쌓아 두고, 보충은 popstate 가 아니라
+// 사용자 터치(pointerup) 시점에만 한다 → 뒤로가기는 버퍼만 소비하며 항상 페이지 안에서
+// popstate(되돌리기)로 이어지고, 화면을 만질 때마다 버퍼가 다시 가득 찬다.
+const HIST_MAX = 24;   // 연속 뒤로가기(되돌리기) 최대 횟수 버퍼
+let _histDepth = (history.state && history.state.k) || 0;
+function _histTopUp() {
+  try { while (_histDepth < HIST_MAX) history.pushState({ k: ++_histDepth }, '', ''); } catch (_) {}
+}
 document.addEventListener('pointerup', (e) => {
-  if (!e.isPrimary) return;
-  // 그리기 중에는 획/점마다 1개씩 보충 → 연속 뒤로가기(여러 번 되돌리기)에도 안 끊김
-  if (_histRearm || drawingMode) {
-    _histRearm = false;
-    try { history.pushState({ k: 3 }, '', ''); } catch (_) {}
-  }
+  if (e.isPrimary) _histTopUp();
 }, { capture: true, passive: true });
 
 window.removeEventListener('popstate', _earlyBackHandler);
-window.addEventListener('popstate', function() {
-  history.pushState({ k: 2 }, '', '');   // 소비된 히스토리 즉시 재보충(앱 종료 방지)
-  _histRearm = true;   // 방금 push 는 무활성 항목 — 다음 터치 때 활성 항목으로 재보충
+window.addEventListener('popstate', function(ev) {
+  _histDepth = (ev.state && ev.state.k) || 0;   // 남은 버퍼 깊이 동기화
+  // 주의: 여기서 pushState/forward() 금지 — 위 (1)(2) 함정 참조
   if (drawingMode) {
     if (drawUndo.length > 0) undoLastAction();
     else stopDrawing();

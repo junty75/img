@@ -25,34 +25,11 @@
   function _earlyBackHandler(){ history.forward(); }
   window.addEventListener('popstate', _earlyBackHandler);
   </script>
-  <!-- ── API 키: 사용자별 키를 최초 1회 입력받아 localStorage에 저장 ──
-       키 재입력: 주소 뒤에 ?resetkey 를 붙여 열기 -->
+  <!-- ── API 키: 고정(하드코딩). 이 폴더 파일들은 아래 JavaScript 키로 동작 ── -->
   <script>
-  if (location.search.indexOf('resetkey') >= 0) localStorage.removeItem('kakao_js_key');
-  function _askApiKey(storeKey, name, guide){
-    var k = localStorage.getItem(storeKey);
-    while (!k || !k.trim()) {
-      k = prompt(name + ' API 키를 입력하세요. (최초 1회, 이 기기에 저장됨)\n\n' + guide);
-      if (k === null) alert(name + ' 키가 없으면 지도를 표시할 수 없습니다.');
-    }
-    k = k.trim();
-    localStorage.setItem(storeKey, k);
-    return k;
-  }
-  function _apiKeyError(storeKey, name){
-    alert(name + ' 로딩 실패 — 키가 잘못되었을 수 있습니다. 키를 다시 입력하세요.');
-    localStorage.removeItem(storeKey);
-    location.reload();
-  }
-  var KAKAO_GUIDE = '[카카오 JavaScript 키 발급]\n'
-    + '1. https://developers.kakao.com 로그인\n'
-    + '2. 내 애플리케이션 → 애플리케이션 추가하기\n'
-    + '3. 앱 설정 → 앱 키 → "JavaScript 키" 복사\n'
-    + '4. 앱 설정 → 플랫폼 → Web 플랫폼(사이트 도메인) 등록\n'
-    + '5. 제품 설정 → 카카오맵 → 활성화 ON';
-  var KAKAO_JS_KEY = _askApiKey('kakao_js_key', '카카오맵', KAKAO_GUIDE);
+  var KAKAO_JS_KEY = '94bf4516825c146467eb2318cd55b782';
   document.write('<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=' + KAKAO_JS_KEY
-    + '&autoload=false&libraries=services" onerror="_apiKeyError(\'kakao_js_key\',\'카카오맵 SDK\')"><\/script>');
+    + '&autoload=false&libraries=services"><\/script>');
   </script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/piexifjs"></script>

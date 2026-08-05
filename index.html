@@ -40,14 +40,43 @@
     html, body { height: 100%; margin: 0; overflow: hidden; }
     #map { width: 100%; height: 100%; }
 
-    /* ── 상단 주소표시 ── */
+    /* ── 주소표시 (우측 상단) ── */
     #address-display {
-      position: absolute; top: 10px; left: 10px; z-index: 2000;
+      position: absolute; top: 70px; right: 72px; z-index: 2000;
       background: rgba(0,0,0,0.62); color: white; font-size: 13px;
       padding: 5px 10px; border-radius: 6px; pointer-events: auto; cursor: pointer;
-      white-space: nowrap; max-width: calc(100vw - 24px);
-      overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; max-width: calc(100vw - 96px);
+      overflow: hidden; text-overflow: ellipsis; text-align: right;
     }
+
+    /* ── 검색 (좌측 상단, 좁게) ── */
+    #searchBox { position: absolute; top: 10px; left: 10px; z-index: 2100; width: 176px; }
+    #searchRow {
+      display: flex; align-items: center;
+      background: rgba(255,255,255,0.96); border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden;
+    }
+    #searchInput {
+      flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+      padding: 7px 2px 7px 9px; font-size: 16px; font-family: inherit; color: #222;
+    }
+    #searchInput::placeholder { color: #999; font-size: 13px; }
+    #searchGo, #searchClear { border: none; background: transparent; cursor: pointer; padding: 0; flex-shrink: 0; font-size: 15px; color: #555; }
+    #searchGo { width: 32px; height: 34px; }
+    #searchClear { width: 22px; height: 34px; display: none; color: #aaa; font-size: 16px; }
+    #searchClear.show { display: block; }
+    #searchResults {
+      display: none; margin-top: 5px; width: 250px; max-width: calc(100vw - 20px);
+      background: #fff; border-radius: 8px; box-shadow: 0 3px 14px rgba(0,0,0,0.3);
+      max-height: 46vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    }
+    #searchResults.show { display: block; }
+    .sr-item { padding: 8px 10px; border-bottom: 1px solid #eee; cursor: pointer; }
+    .sr-item:last-child { border-bottom: none; }
+    .sr-item:active { background: #eef3fb; }
+    .sr-t { font-size: 13px; font-weight: 600; color: #222; word-break: keep-all; }
+    .sr-a { font-size: 11px; color: #777; margin-top: 2px; word-break: keep-all; }
+    .sr-msg { padding: 10px; font-size: 12px; color: #888; text-align: center; }
 
     .btn {
       position: absolute; z-index: 1000;
@@ -325,6 +354,16 @@
 <!-- 주소 표시 -->
 <div id="address-display" onclick="copyAddr()" title="탭하면 주소 복사">위치 확인 중...</div>
 
+<!-- 검색 -->
+<div id="searchBox">
+  <div id="searchRow">
+    <input type="text" id="searchInput" placeholder="주소·장소 검색" autocomplete="off" enterkeyhint="search">
+    <button id="searchClear" title="지우기">✕</button>
+    <button id="searchGo" title="검색">🔍</button>
+  </div>
+  <div id="searchResults"></div>
+</div>
+
 <button class="btn" id="saveBtn" title="KMZ로 저장" disabled>💾</button>
 <button class="btn" id="loadBtn" title="KMZ / 사진 불러오기">📂</button>
 <button class="btn" id="myLocationBtn" title="현재 위치">
@@ -478,6 +517,132 @@ function copyAddr() {
   el.textContent = '✅ 복사됨';
   setTimeout(() => el.textContent = prev, 1300);
 }
+
+// ─── 검색 (카카오 주소/장소) ──────────────────────────
+function showSearchMsg(msg) {
+  const box = document.getElementById('searchResults');
+  box.innerHTML = '';
+  const d = document.createElement('div');
+  d.className = 'sr-msg';
+  d.textContent = msg;
+  box.appendChild(d);
+  box.classList.add('show');
+}
+function hideSearchResults() {
+  document.getElementById('searchResults').classList.remove('show');
+}
+
+// 주소 검색 (지번/도로명)
+function searchAddress(q) {
+  return new Promise(resolve => {
+    if (!geocoder) { resolve([]); return; }
+    geocoder.addressSearch(q, (result, status) => {
+      if (status !== kakao.maps.services.Status.OK || !result) { resolve([]); return; }
+      resolve(result.map(r => ({
+        title: r.address?.address_name || r.address_name || '',
+        addr : r.road_address?.address_name || '',
+        lng  : parseFloat(r.x),
+        lat  : parseFloat(r.y)
+      })));
+    });
+  });
+}
+
+// 장소(키워드) 검색
+let placesSvc = null;
+function searchPlace(q) {
+  return new Promise(resolve => {
+    try {
+      if (!placesSvc) placesSvc = new kakao.maps.services.Places();
+    } catch (_) { resolve([]); return; }
+    placesSvc.keywordSearch(q, (data, status) => {
+      if (status !== kakao.maps.services.Status.OK || !data) { resolve([]); return; }
+      resolve(data.map(p => ({
+        title: p.place_name || '',
+        addr : p.address_name || p.road_address_name || '',
+        lng  : parseFloat(p.x),
+        lat  : parseFloat(p.y)
+      })));
+    }, { size: 10 });
+  });
+}
+
+let searchSeq = 0;
+async function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) { hideSearchResults(); return; }
+  const seq = ++searchSeq;
+  showSearchMsg('검색 중...');
+  const settled = await Promise.allSettled([searchAddress(q), searchPlace(q)]);
+  if (seq !== searchSeq) return;   // 더 최근 검색이 있으면 무시
+  const seen = new Set(), list = [];
+  settled.forEach(s => {
+    if (s.status !== 'fulfilled') return;
+    s.value.forEach(r => {
+      if (!r.title || !isFinite(r.lng) || !isFinite(r.lat)) return;
+      const k = r.lat.toFixed(6) + ',' + r.lng.toFixed(6);
+      if (seen.has(k)) return;
+      seen.add(k);
+      list.push(r);
+    });
+  });
+  renderSearchResults(list.slice(0, 20));
+}
+
+function renderSearchResults(list) {
+  if (!list.length) { showSearchMsg('검색 결과가 없습니다'); return; }
+  const box = document.getElementById('searchResults');
+  box.innerHTML = '';
+  list.forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'sr-item';
+    const t = document.createElement('div');
+    t.className = 'sr-t';
+    t.textContent = r.title;
+    item.appendChild(t);
+    if (r.addr) {
+      const a = document.createElement('div');
+      a.className = 'sr-a';
+      a.textContent = r.addr;
+      item.appendChild(a);
+    }
+    item.addEventListener('click', () => moveToSearchResult(r));
+    box.appendChild(item);
+  });
+  box.classList.add('show');
+}
+
+function moveToSearchResult(r) {
+  hideSearchResults();
+  document.getElementById('searchInput').blur();
+  if (!map) return;
+  map.setCenter(new kakao.maps.LatLng(r.lat, r.lng));
+  if (map.getLevel() > 3) map.setLevel(3);
+  scheduleAddrUpdate(r.lat, r.lng);
+}
+
+(function initSearchUI() {
+  const input = document.getElementById('searchInput');
+  const clear = document.getElementById('searchClear');
+  if (!input) return;
+  const syncClear = () => clear.classList.toggle('show', !!input.value);
+  input.addEventListener('input', syncClear);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); doSearch(); }
+    else if (e.key === 'Escape') { hideSearchResults(); input.blur(); }
+  });
+  document.getElementById('searchGo').addEventListener('click', () => { input.blur(); doSearch(); });
+  clear.addEventListener('click', () => {
+    input.value = '';
+    syncClear();
+    hideSearchResults();
+    input.focus();
+  });
+  // 검색창 밖을 누르면 결과 닫기
+  document.addEventListener('pointerdown', e => {
+    if (!document.getElementById('searchBox').contains(e.target)) hideSearchResults();
+  }, true);
+})();
 
 // ─── 마커 추가 모달 ───────────────────────────────────
 let pendingMarkerLatLng = null;
@@ -1106,6 +1271,7 @@ function initMap(center) {
 
   // 묶음선(KMZ MultiGeometry) 뷰포트 컬링 — 이동/줌 멈출 때마다 화면 교차 구간만 다시 그림
   kakao.maps.event.addListener(map, 'idle', scheduleBundleCull);
+  kakao.maps.event.addListener(map, 'zoom_changed', updateTextLabelSizes); // CAD 문자 라벨 줌 연동 크기
 
   // CSS scale +/- 버튼
   document.getElementById('cssZoomIn').onclick = () => {
@@ -2450,19 +2616,61 @@ function randColor() { return '#' + Math.floor(Math.random()*0xFFFFFF).toString(
 // ─── CAD 문자(kind=text) 텍스트 라벨 — 마커 없이 글자만(회전 포함) ──
 // map.html addTextLabel 이식. 자동저장/내보내기 복원을 위해 좌표·회전·색을 함께 보관.
 let textLabels = [];
-function addTextLabel(latlng, text, rot, color) {
+// 현재 지도 1픽셀당 미터(m/px) — 중심에서 가로 100px 실거리(하버사인)로 계산
+function _mapMetersPerPixel() {
+  try {
+    const proj = map.getProjection();
+    const c = map.getCenter();
+    const p = proj.containerPointFromCoords(c);
+    const c2 = proj.coordsFromContainerPoint(new kakao.maps.Point(p.x + 100, p.y));
+    const R = 6371000, toR = Math.PI / 180,
+      dLa = (c2.getLat() - c.getLat()) * toR, dLo = (c2.getLng() - c.getLng()) * toR,
+      sa = Math.sin(dLa / 2), sb = Math.sin(dLo / 2),
+      a = sa * sa + Math.cos(c.getLat() * toR) * Math.cos(c2.getLat() * toR) * sb * sb;
+    const d = 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return d > 0 ? d / 100 : 0;
+  } catch (e) { return 0; }
+}
+function addTextLabel(latlng, text, rot, color, h, ax, ay) {
   const safe = String(text == null ? '' : text)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const col = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : '#FFEB00';
-  // CAD 회전(반시계, 도) -> 화면 CSS 회전(시계 양수)이라 부호 반전
-  const content =
-    '<div style="transform:rotate(' + (-(Number(rot) || 0)) + 'deg);' +
-    'transform-origin:center center;white-space:nowrap;font-size:13px;' +
+  h = Number(h) || 0;
+  // 앵커(CAD 정렬): ax 0=왼쪽 0.5=중앙 1=오른쪽 / ay 0=아래 0.5=중간 1=위 (화면 yAnchor=1-ay)
+  ax = isFinite(Number(ax)) ? Number(ax) : 0;
+  ay = isFinite(Number(ay)) ? Number(ay) : 0;
+  const xa = h > 0 ? ax : 0.5;
+  // ay=0(베이스라인)은 글상자 맨아래(1.0)가 아니라 밑선 위치(0.8)에 앵커 — CAD 기준점과 일치
+  const ya = h > 0 ? (ay < 0.25 ? 0.8 : 1 - ay) : 0.5;
+  // CAD 회전(반시계, 도) -> 화면 CSS 회전(시계 양수)이라 부호 반전. h 있으면 줌 연동 크기.
+  const el = document.createElement('div');
+  el.style.cssText =
+    // 좌표점 고정 + CSS 정렬(dmap 방식): translate%는 요소 크기 비례라
+    // 줌으로 글자 px가 바뀌어도 기준점이 절대 안 움직임
+    'transform:translate(' + (-xa * 100) + '%,' + (-ya * 100) + '%) rotate(' + (-(Number(rot) || 0)) + 'deg);' +
+    'transform-origin:' + (xa * 100) + '% ' + (ya * 100) + '%;' +
+    'white-space:nowrap;font-size:13px;' +
     'font-weight:bold;line-height:1;color:' + col + ';pointer-events:none;' +
-    'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 0 2px #000;">' +
-    safe + '</div>';
-  const ov = new kakao.maps.CustomOverlay({ map, content, position: latlng, xAnchor: 0.5, yAnchor: 0.5, zIndex: 6 });
-  textLabels.push({ ov, name: String(text == null ? '' : text), rot: Number(rot) || 0, color: col, pos: latlng });
+    'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 0 2px #000;';
+  el.innerHTML = safe;
+  const ov = new kakao.maps.CustomOverlay({ map, content: el, position: latlng, xAnchor: 0, yAnchor: 0, zIndex: 6 });
+  const o = { ov, el, name: String(text == null ? '' : text), rot: Number(rot) || 0,
+              color: col, pos: latlng, h, ax, ay };
+  textLabels.push(o);
+  if (h > 0) _applyTextLabelSize(o, _mapMetersPerPixel());
+}
+// 줌 변경 시 h 있는 라벨 px 재계산 (h[m] ÷ m/px). 2px 미만 숨김(축소 시 겹침 방지)
+function _applyTextLabelSize(o, mpp) {
+  if (!(o.h > 0) || !(mpp > 0)) return;
+  const px = o.h * 1.1 / mpp;   // 크기 보정 x1.1 (사용자 체감 확정값 — 여기 숫자만 바꾸면 됨)
+  if (px < 2) { o.el.style.display = 'none'; return; }
+  o.el.style.display = '';
+  o.el.style.fontSize = Math.min(px, 400) + 'px';
+}
+function updateTextLabelSizes() {
+  if (!textLabels.some(o => o.h > 0)) return;
+  const mpp = _mapMetersPerPixel();
+  textLabels.forEach(o => _applyTextLabelSize(o, mpp));
 }
 function clearTextLabels() {
   textLabels.forEach(t => t.ov.setMap(null));
@@ -2577,7 +2785,7 @@ function _photoMetaXml(m) {
 // 텍스트 라벨 → KML Placemark (kind=text — 자동저장/내보내기 복원용)
 function _textKmlPlacemark(t) {
   const safeName = (t.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  return `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>${t.rot}</value></Data><Data name="color"><value>${t.color}</value></Data></ExtendedData>\n    <Point><coordinates>${t.pos.getLng()},${t.pos.getLat()},0</coordinates></Point>\n  </Placemark>`;
+  return `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>${t.rot}</value></Data><Data name="color"><value>${t.color}</value></Data><Data name="h"><value>${t.h || 0}</value></Data><Data name="ax"><value>${t.ax || 0}</value></Data><Data name="ay"><value>${t.ay || 0}</value></Data></ExtendedData>\n    <Point><coordinates>${t.pos.getLng()},${t.pos.getLat()},0</coordinates></Point>\n  </Placemark>`;
 }
 
 // ─── KMZ 불러오기 ─────────────────────────────────────
@@ -2723,13 +2931,15 @@ async function loadKMZ(file, silent = false) {
         const ct = point.getElementsByTagName('coordinates')[0]?.textContent || '';
         const [lng, lat] = ct.trim().split(',').map(Number);
         if (!isNaN(lat) && !isNaN(lng)) {
-          let _rot = 0, _col = '';
+          let _rot = 0, _col = '', _h = 0, _ax = 0, _ay = 0;
           for (const d of Array.from(pm.getElementsByTagName('Data'))) {
             const nm = d.getAttribute('name'); const v = d.getElementsByTagName('value')[0]?.textContent || '';
             if (nm === 'rot') _rot = parseFloat(v) || 0; else if (nm === 'color') _col = v.trim();
+            else if (nm === 'h') _h = parseFloat(v) || 0;
+            else if (nm === 'ax') _ax = parseFloat(v) || 0; else if (nm === 'ay') _ay = parseFloat(v) || 0;
           }
           const ll = new kakao.maps.LatLng(lat, lng); bounds.extend(ll);
-          addTextLabel(ll, pmName, _rot, _col);
+          addTextLabel(ll, pmName, _rot, _col, _h, _ax, _ay);
         }
       } else if (point) {
         const coordsText = point.getElementsByTagName('coordinates')[0]?.textContent || '';

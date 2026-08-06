@@ -1005,12 +1005,35 @@ function initMap(center) {
     minLevel: 0,                 // 최대 확대 한 단계 더 (기본 1 → 0, map.html·index_vworld.html 과 동일 배율)
     disableDoubleClick: true
   });
-  // Edge 등에서 minLevel:0 이 무시되는 경우 휠로 강제 (map.html 과 동일 처리)
-  document.getElementById('map').addEventListener('wheel', e => {
+  // ── 최대 확대 레벨 0 열기 ───────────────────────────────────────────────
+  // 생성 옵션의 minLevel 은 카카오 공식 MapOptions 에 없는 값이라 무시되는 환경이 있다.
+  // 정식 API 인 setMinLevel 로 다시 한 번 확실히 지정한다.
+  try { if (typeof map.setMinLevel === 'function') map.setMinLevel(0); } catch (e) {}
+
+  const _mapEl = document.getElementById('map');
+  // (PC) 옵션이 무시될 때 휠로 강제 — map.html 과 동일 처리
+  _mapEl.addEventListener('wheel', e => {
     if (e.deltaY < 0 && map && map.getLevel() === 1) {
       setTimeout(() => { if (map.getLevel() === 1) map.setLevel(0); }, 50);
     }
   }, { passive: true });
+  // (모바일) 핀치는 휠 이벤트가 없어 위 처리가 안 먹는다 → 두 손가락 확대 제스처가
+  // 끝났는데 레벨 1에 멈춰 있으면 레벨 0으로 강제. 확대 방향(거리 10% 이상 증가)일 때만.
+  let _pinchD0 = 0, _pinchD1 = 0;
+  const _pinchDist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  _mapEl.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) _pinchD0 = _pinchD1 = _pinchDist(e.touches);
+  }, { passive: true });
+  _mapEl.addEventListener('touchmove', e => {
+    if (e.touches.length === 2 && _pinchD0) _pinchD1 = _pinchDist(e.touches);
+  }, { passive: true });
+  _mapEl.addEventListener('touchend', () => {
+    if (_pinchD0 && _pinchD1 > _pinchD0 * 1.1 && map && map.getLevel() === 1) {
+      setTimeout(() => { if (map.getLevel() === 1) map.setLevel(0); }, 80);
+    }
+    _pinchD0 = _pinchD1 = 0;
+  }, { passive: true });
+
   geocoder = new kakao.maps.services.Geocoder();
 
   // 더블탭/더블클릭으로 선 삭제 (줌 대신)

@@ -365,7 +365,7 @@
 </div>
 
 <button class="btn" id="saveBtn" title="KMZ로 저장" disabled>💾</button>
-<button class="btn" id="loadBtn" title="KMZ / 사진 불러오기">📂</button>
+<button class="btn" id="loadBtn" title="KMZ / HTM / 사진 불러오기">📂</button>
 <button class="btn" id="myLocationBtn" title="현재 위치">
   <svg viewBox="0 0 24 24" fill="none">
     <circle cx="12" cy="12" r="4" stroke="#1a73e8" stroke-width="2"/>
@@ -390,7 +390,7 @@
     <option value="USE_DISTRICT">🗺️ 지적도</option>
   </select>
 </div>
-<input type="file" id="fileInput" accept=".kmz,.zip,.kml,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
+<input type="file" id="fileInput" accept=".kmz,.zip,.kml,.htm,.html,image/jpeg,image/png,.jpg,.jpeg,.png" multiple>
 
 <!-- 마커 조준원 -->
 <div id="crosshair"></div>
@@ -1306,6 +1306,7 @@ async function consumeSharedFiles() {
       const blob = await r.blob();
       const file = new File([blob], names[i]);
       if (/\.(jpe?g|png)$/i.test(names[i])) await loadImageAsMarker(file);
+      else if (/\.html?$/i.test(names[i])) { await loadHTM(file); autoSaveToDB(); }
       else { await loadKMZ(file); autoSaveToDB(); }   // kmz/kml/zip (확장자 불명이어도 PK 헤더로 판별)
     }
     await caches.delete('shared-files');
@@ -1330,6 +1331,9 @@ kakao.maps.load(() => {
       if (/\.(kmz|zip|kml)$/i.test(file.name)) {
         await saveKMZtoDB(file);
         loadKMZ(file);
+      } else if (/\.html?$/i.test(file.name)) {
+        await loadHTM(file);
+        autoSaveToDB();
       }
     });
   }
@@ -1868,11 +1872,15 @@ document.getElementById('fileInput').onchange = async e => {
   // 이미지 파일과 지도 파일 분리
   const imageFiles = files.filter(f => /\.(jpe?g|png)$/i.test(f.name) || f.type.startsWith('image/'));
   const mapFiles = files.filter(f => /\.(kmz|zip|kml)$/i.test(f.name));
+  const htmFiles = files.filter(_isHtmFile);
 
   for (const file of mapFiles) {
     await loadKMZ(file);
   }
-  if (mapFiles.length > 0) autoSaveToDB();
+  for (const file of htmFiles) {
+    await loadHTM(file);
+  }
+  if (mapFiles.length > 0 || htmFiles.length > 0) autoSaveToDB();
 
   // 이미지 파일 처리 - 현재 지도 중심에 사진 마커 추가
   // (index_20260611 방식 + 압축 표시본. 여러 장이면 진행 표시)
@@ -2789,6 +2797,88 @@ function _textKmlPlacemark(t) {
 }
 
 // ─── KMZ 불러오기 ─────────────────────────────────────
+// ─── HTM 불러오기 (KMZ → HTM 변환 뷰어 파일) ──────────
+// 파일 안의 var LINES / POLYS / TEXTS / MARKERS / PHOTOS 배열을 그대로 읽어 옴.
+// 좌표는 [lat, lng] 순서, 색은 #RRGGBB, 사진은 data:URL.
+function _htmArr(text, name) {
+  // 각 배열은 한 줄에 하나씩 기록돼 있음 → 개행을 안 넘는 greedy 매칭이 안전
+  const m = text.match(new RegExp('var\\s+' + name + '\\s*=\\s*(\\[.*\\])\\s*;'));
+  if (!m) return [];
+  try { return JSON.parse(m[1]); } catch(e) { return []; }
+}
+function _isHtmFile(f) { return /\.html?$/i.test(f.name); }
+
+async function loadHTM(file) {
+  showLoading('HTM 읽는 중...');
+  const _deferPolys = [];
+  try {
+    const text   = await file.text();
+    const LINES  = _htmArr(text, 'LINES'),  POLYS   = _htmArr(text, 'POLYS'),
+          TEXTS  = _htmArr(text, 'TEXTS'),  MARKERS = _htmArr(text, 'MARKERS'),
+          PHOTOS = _htmArr(text, 'PHOTOS');
+    if (!LINES.length && !POLYS.length && !TEXTS.length && !MARKERS.length && !PHOTOS.length) {
+      hideLoading();
+      alert('이 HTM 파일에서 지도 데이터를 찾지 못했습니다.\n(KMZ → HTM 로 변환된 지도 파일만 열 수 있습니다)');
+      return;
+    }
+
+    const bounds = new kakao.maps.LatLngBounds();
+    const LL = a => { const l = new kakao.maps.LatLng(a[0], a[1]); bounds.extend(l); return l; };
+
+    // 선 + 폴리곤(외곽선) — 원본 도면 순서(z)대로
+    const shapes = LINES.concat(POLYS).sort((a, b) => (a.z || 0) - (b.z || 0));
+    shapes.forEach(g => {
+      const parts = (g.p || []).map(part => part.map(LL)).filter(p => p.length >= 2);
+      if (!parts.length) return;
+      const color = /^#[0-9a-fA-F]{6}$/.test(g.c || '') ? g.c : randColor();
+      // Kakao는 선 굵기를 정수 px로 렌더 → 소수 굵기(1.4 등)는 올림
+      const width = Math.max(1, Math.ceil(Number(g.w) || 4));
+      const poly = new kakao.maps.Polyline({
+        path: parts.length === 1 ? parts[0] : parts,
+        strokeWeight: width, strokeColor: color,
+        strokeOpacity: (g.o != null ? g.o : 1), strokeStyle: 'solid'
+      });
+      if (parts.length > 1) poly._parts = parts;
+      _deferPolys.push(poly);
+      const entry = { poly, name: '선', path: parts.length === 1 ? parts[0] : parts.flat(),
+                      parts: parts.length > 1 ? parts : null, color, width };
+      attachPolylineDelete(poly, entry);
+      polylines.push(entry);
+    });
+
+    // CAD 문자 라벨 [lat,lng,내용,rot,color,h,ax,ay,tw]
+    TEXTS.forEach(t => {
+      if (!t || t.length < 3) return;
+      addTextLabel(LL(t), t[2], t[3] || 0, t[4] || '', t[5] || 0, t[6] || 0, t[7] || 0);
+    });
+
+    // 일반 마커 [lat,lng,이름]
+    MARKERS.forEach(m => { if (m && m.length >= 2) addMarker(LL(m), m[2] || '마커'); });
+
+    // 사진 마커 [lat,lng,이름,dataURL]
+    for (let i = 0; i < PHOTOS.length; i++) {
+      const ph = PHOTOS[i];
+      if (!ph || ph.length < 4 || !ph[3]) continue;
+      addPhotoMarker(LL(ph), ph[3], ph[2] || '사진');
+      if (i % 5 === 0) {
+        showLoading(`사진 불러오는 중... (${i + 1} / ${PHOTOS.length})`);
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    if (!bounds.isEmpty()) map.setBounds(bounds);
+    _deferPolys.forEach(p => { if (!p._parts) p.setMap(map); });
+    cullBundlePolys();
+    hasData = true;
+    document.getElementById('saveBtn').disabled = false;
+    hideLoading();
+  } catch (err) {
+    hideLoading();
+    try { _deferPolys.forEach(p => { if (!p._parts && !p.getMap()) p.setMap(map); }); cullBundlePolys(); } catch(e) {}
+    alert('HTM 오류: ' + err.message);
+  }
+}
+
 async function loadKMZ(file, silent = false) {
   if (!silent) showLoading('KMZ 압축 해제 중...');
   else showLoading('이전 데이터 복원 중...');

@@ -1294,10 +1294,10 @@ function initMap(center) {
   // 핀치/휠로 인한 CSS scale 확대는 중심점이 흔들려 조작이 어려우므로 제거.
   // 최대 확대(레벨0) 이후 추가 확대/축소는 우측 하단 +,- 버튼으로만 가능.
 
-  // 줌 레벨 올라가면 (축소) CSS scale도 함께 1로 리셋
-  kakao.maps.event.addListener(map, 'zoom_changed', () => {
-    if (map.getLevel() > 0) applyScale(1);
-  });
+  // 실제 줌 레벨이 바뀌면 CSS scale 은 1로 리셋.
+  // (CSS scale 은 '더 이상 레벨이 안 내려갈 때'만 +버튼으로 걸리므로, 레벨이 바뀌었다는 건
+  //  최대 확대에서 벗어났다는 뜻. 최대 레벨이 0이든 1이든 상관없이 맞게 동작한다.)
+  kakao.maps.event.addListener(map, 'zoom_changed', () => applyScale(1));
 
   // 묶음선(KMZ MultiGeometry) 뷰포트 컬링 — 이동/줌 멈출 때마다 화면 교차 구간만 다시 그림
   kakao.maps.event.addListener(map, 'idle', scheduleBundleCull);
@@ -1305,11 +1305,12 @@ function initMap(center) {
 
   // CSS scale +/- 버튼
   document.getElementById('cssZoomIn').onclick = () => {
-    if (map.getLevel() > 0) {
-      map.setLevel(map.getLevel() - 1); // 카카오맵 확대
-    } else {
-      applyScale(cssScale * 2); // CSS scale 2배
-    }
+    if (cssScale > 1) { applyScale(cssScale * 2); return; }   // 이미 CSS 확대 중이면 계속 CSS 로
+    const lv = map.getLevel();
+    map.setLevel(lv - 1);                                     // 카카오맵 확대 시도
+    // 레벨이 실제로 안 내려가면(기기/지역에 따라 레벨 0 미지원) CSS scale 로 확대.
+    // 레벨 하한을 숫자로 박아두면 그 하한이 틀린 기기에서 버튼이 통째로 먹통이 된다.
+    setTimeout(() => { if (map.getLevel() === lv) applyScale(cssScale * 2); }, 60);
   };
   document.getElementById('cssZoomOut').onclick = () => {
     if (cssScale > 1) {
@@ -1318,6 +1319,19 @@ function initMap(center) {
       map.setLevel(map.getLevel() + 1); // 카카오맵 축소
     }
   };
+
+  // ── 줌 디버그 배지 (주소에 ?zoomdebug=1 붙였을 때만) ────────────────────────
+  // 휴대폰에서 카카오가 레벨 0 을 실제로 허용하는지 눈으로 확인하기 위한 임시 표시.
+  if (/[?&]zoomdebug=1/.test(location.search)) {
+    const badge = document.createElement('div');
+    badge.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.75);'
+      + 'color:#fff;font:12px/1.4 monospace;padding:4px 7px;border-radius:5px;pointer-events:none';
+    document.body.appendChild(badge);
+    const upd = () => { badge.textContent = 'level ' + map.getLevel() + ' / scale ' + cssScale; };
+    kakao.maps.event.addListener(map, 'zoom_changed', upd);
+    setInterval(upd, 300);
+    upd();
+  }
 }
 
 // ─── Web Share Target: '공유 → KMZ 뷰어'로 받은 파일 소비 ─────

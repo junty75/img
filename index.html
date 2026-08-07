@@ -1357,6 +1357,44 @@ async function consumeSharedFiles() {
   } catch (e) { console.warn('공유 파일 처리 실패', e); }
 }
 
+// ─── PC 지도가 보낸 데이터 받기 (해시 #link) ─────────────────
+// PC 지도(map.html)의 'HTM 내보내기 (깃허브지도)' 로 만든 파일을 열면, 그 파일이
+// 이 페이지를 새 탭으로 띄우고 postMessage 로 { LINES, POLYS, TEXTS, MARKERS, PHOTOS } 를 넘긴다.
+// file:// 로 연 페이지는 보안 컨텍스트가 아니라 내위치(geolocation)가 항상 막히므로,
+// 데이터만 로컬 파일에 두고 지도 화면은 https 인 여기서 띄우는 구조다.
+// cross-origin 통로 중 URL 해시는 사진(base64 수 MB)을 못 담고 window.name 은
+// Chrome 88부터 초기화되므로 postMessage 만 쓸 수 있다.
+//
+// #link 로 열렸을 때만, 딱 한 번만 받는다. 보내는 쪽이 file:// 이면 ev.origin 이 'null' 이라
+// 발신 origin 으로는 거를 수 없어서 이 두 조건으로 대신 제한한다.
+function _installLinkReceiver() {
+  if (!/(^|[#&])link(&|=|$)/.test(location.hash || '')) return;
+  let loaded = false;
+  const reply = (ev, msg) => { try { ev.source && ev.source.postMessage(msg, '*'); } catch (e) {} };
+  const onMsg = async ev => {
+    const d = ev.data;
+    if (!d || typeof d !== 'object') return;
+    if (d.__jtymap === 'ping') { if (!loaded) reply(ev, { __jtymap: 'ready' }); return; }
+    if (d.__jtymap !== 'data' || loaded) return;
+    loaded = true;
+    window.removeEventListener('message', onMsg);
+    try {
+      await _loadHtmData(d.payload || {});
+      autoSaveToDB();                     // 앱을 다시 열어도 남아 있게 (공유파일 처리와 같은 방식)
+      reply(ev, { __jtymap: 'done' });
+    } catch (e) {
+      hideLoading();
+      alert('전달받은 데이터를 읽지 못했습니다: ' + e.message);
+    }
+    // 새로고침 시 다시 대기 상태로 남지 않게 해시만 지운다.
+    // history.state 는 그대로 둔다 — 뒤로가기 버퍼(_histTopUp)가 여기에 들어있다.
+    try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) {}
+  };
+  window.addEventListener('message', onMsg);
+  // 런처가 ping 을 보내기 전에 먼저 알려 첫 전달을 앞당긴다
+  try { if (window.opener) window.opener.postMessage({ __jtymap: 'ready' }, '*'); } catch (e) {}
+}
+
 kakao.maps.load(() => {
   initMap(new kakao.maps.LatLng(35.6478, 127.5213));
 
@@ -1364,6 +1402,7 @@ kakao.maps.load(() => {
   loadKMZfromDB().then(async file => {
     if (file) await loadKMZ(file, true);
     consumeSharedFiles();
+    _installLinkReceiver();   // 복원이 끝난 뒤에 대기 시작 (같은 이유 — 복원이 받은 데이터를 지움)
   });
 
   // ─── File Handling API: KMZ 파일로 앱 실행됐을 때 (데스크톱 Chrome/Edge) ─────
@@ -2854,12 +2893,25 @@ function _isHtmFile(f) { return /\.html?$/i.test(f.name); }
 
 async function loadHTM(file) {
   showLoading('HTM 읽는 중...');
+  let D;
+  try {
+    const text = await file.text();
+    D = { LINES:  _htmArr(text, 'LINES'),  POLYS:   _htmArr(text, 'POLYS'),
+          TEXTS:  _htmArr(text, 'TEXTS'),  MARKERS: _htmArr(text, 'MARKERS'),
+          PHOTOS: _htmArr(text, 'PHOTOS') };
+  } catch (err) { hideLoading(); alert('HTM 오류: ' + err.message); return; }
+  return _loadHtmData(D);
+}
+
+// 위 배열들을 실제로 지도에 그린다.
+// 파일에서 읽은 경우(loadHTM)와 런처 htm 이 postMessage 로 보낸 경우(_installLinkReceiver)가 공유한다.
+async function _loadHtmData(D) {
+  showLoading('HTM 읽는 중...');
   const _deferPolys = [];
   try {
-    const text   = await file.text();
-    const LINES  = _htmArr(text, 'LINES'),  POLYS   = _htmArr(text, 'POLYS'),
-          TEXTS  = _htmArr(text, 'TEXTS'),  MARKERS = _htmArr(text, 'MARKERS'),
-          PHOTOS = _htmArr(text, 'PHOTOS');
+    const LINES  = D.LINES  || [], POLYS   = D.POLYS   || [],
+          TEXTS  = D.TEXTS  || [], MARKERS = D.MARKERS || [],
+          PHOTOS = D.PHOTOS || [];
     if (!LINES.length && !POLYS.length && !TEXTS.length && !MARKERS.length && !PHOTOS.length) {
       hideLoading();
       alert('이 HTM 파일에서 지도 데이터를 찾지 못했습니다.\n(KMZ → HTM 로 변환된 지도 파일만 열 수 있습니다)');

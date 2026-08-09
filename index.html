@@ -1418,6 +1418,8 @@ function _installLinkReceiver() {
     loaded = true;
     window.removeEventListener('message', onMsg);
     try {
+      // 복원이 끝난 뒤에 그린다 — silent 복원의 초기화가 받은 데이터를 지우지 않게
+      try { await (window._restoreReady || Promise.resolve()); } catch (e) {}
       await _loadHtmData(d.payload || {});
       autoSaveToDB();                     // 앱을 다시 열어도 남아 있게 (공유파일 처리와 같은 방식)
       _claimSingleTab();                  // 먼저 열려 있던 지도 탭들은 닫는다
@@ -1439,12 +1441,19 @@ kakao.maps.load(() => {
   initMap(new kakao.maps.LatLng(35.6478, 127.5213));
   _initTabChannel();   // 다른 탭이 '비켜달라'고 하면 받을 수 있게 먼저 열어 둔다
 
-  // 이전 데이터 복원 후 공유파일 소비 (동시에 돌면 silent 복원의 초기화가 공유 로드를 지움)
-  loadKMZfromDB().then(async file => {
-    if (file) await loadKMZ(file, true);
-    consumeSharedFiles();
-    _installLinkReceiver();   // 복원이 끝난 뒤에 대기 시작 (같은 이유 — 복원이 받은 데이터를 지움)
-  });
+  // 이전 데이터 복원.
+  // ⚠ 수신부(_installLinkReceiver)는 복원 결과와 상관없이 '즉시' 걸어야 한다.
+  //   전에는 복원이 끝난 뒤에 걸었는데(복원의 초기화가 받은 데이터를 지우니까),
+  //   복원이 실패하거나 오래 걸리면 수신 대기가 아예 안 걸려서 런처가 보낸 데이터를
+  //   못 받고 '지도는 뜨는데 객체가 하나도 없음' 이 됐다.
+  //   → 수신은 바로 걸고, 받은 데이터는 복원이 끝난 뒤에 그린다(_restoreReady 대기).
+  //   복원이 영영 안 끝나는 경우까지 대비해 15초 뒤에는 그냥 그린다.
+  const _restore = loadKMZfromDB()
+    .then(async file => { if (file) await loadKMZ(file, true); })
+    .catch(e => console.warn('이전 데이터 복원 실패 — 빈 지도로 시작', e));
+  window._restoreReady = Promise.race([_restore, new Promise(r => setTimeout(r, 15000))]);
+  _restore.then(() => { try { consumeSharedFiles(); } catch (e) { console.warn('공유파일 처리 실패', e); } });
+  _installLinkReceiver();
 
   // ─── File Handling API: KMZ 파일로 앱 실행됐을 때 (데스크톱 Chrome/Edge) ─────
   if ('launchQueue' in window) {

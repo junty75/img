@@ -1862,11 +1862,22 @@ function showToastMsg(msg) {
   _toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
 }
 
+// 지우개 모드에서 마커만 클릭 통과시킨다 (탭이 지도까지 닿아야 지워짐).
+// 선그리기 때 쓰는 setMarkersClickThrough 는 반투명(0.35)까지 걸어서 여기선 안 쓴다 —
+// 지우개 중에 객체가 희미해지면 무엇을 지우는지 잘 안 보인다.
+function setMarkersClickableForErase(clickThrough) {
+  markers.forEach(m => {
+    try {
+      if (clickThrough) m.iw.close();
+      m.marker.setClickable(!clickThrough);
+    } catch (e) {}
+  });
+}
+
 function setEraseMode(on) {
   eraseMode = !!on;
   document.getElementById('eraseBtn').classList.toggle('active', eraseMode);
-  // 마커를 클릭 통과 + 반투명으로 (탭이 지도까지 닿아야 지워짐 / 모드 표시도 겸함)
-  setMarkersClickThrough(eraseMode);
+  setMarkersClickableForErase(eraseMode);
   if (eraseMode) {
     if (drawingMode) stopDrawing();
     if (markerPlacingMode) {

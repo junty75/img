@@ -40,19 +40,23 @@
     html, body { height: 100%; margin: 0; overflow: hidden; }
     #map { width: 100%; height: 100%; }
 
-    /* ── 주소표시 (우측 상단) ── */
+    /* ── 주소표시 (검색박스 바로 아래) ── */
     #address-display {
-      position: absolute; top: 70px; right: 72px; z-index: 2000;
+      margin-top: 5px; width: max-content;
       background: rgba(0,0,0,0.62); color: white; font-size: 13px;
       padding: 5px 10px; border-radius: 6px; pointer-events: auto; cursor: pointer;
-      white-space: nowrap; max-width: calc(100vw - 96px);
-      overflow: hidden; text-overflow: ellipsis; text-align: right;
+      white-space: nowrap; max-width: calc(100vw - 20px);
+      overflow: hidden; text-overflow: ellipsis; text-align: left;
     }
+    /* 주소를 못 찾아 빈 문자열이 들어가면 빈 검은 알약이 남는다 → 숨김 */
+    #address-display:empty { display: none; }
 
     /* ── 검색 (좌측 상단, 좁게) ── */
-    #searchBox { position: absolute; top: 10px; left: 10px; z-index: 2100; width: 176px; }
+    /* 세로 flex — 검색줄 / 주소표시 / 검색결과 순서로 쌓인다 */
+    #searchBox { position: absolute; top: 10px; left: 10px; z-index: 2100; width: 176px;
+                 display: flex; flex-direction: column; align-items: flex-start; }
     #searchRow {
-      display: flex; align-items: center;
+      display: flex; align-items: center; width: 100%;
       background: rgba(255,255,255,0.96); border-radius: 8px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden;
     }
@@ -104,7 +108,12 @@
     #drawStyleBtn .dsb-line { width: 26px; border-radius: 3px; background: #FF5733; height: 4px; }
     #markerBtn { top: 184px; right: 16px; padding: 0; transition: background 0.2s; font-size: 20px; }
     #markerBtn.active { background: #43a047; box-shadow: 0 2px 8px rgba(67,160,71,0.6); }
+    /* 빗자루 = 전체삭제 / 지우개 = 선택삭제 / 되돌리기 = 방금 지운 것 복구 */
     #clearBtn { top: 240px; right: 16px; padding: 0; transition: background 0.2s; }
+    #eraseBtn { top: 240px; right: 72px; padding: 0; transition: background 0.2s; }
+    #eraseBtn.active { background: #ffcdd2; box-shadow: 0 2px 8px rgba(229,57,53,0.6); }
+    #undoBtn { top: 296px; right: 72px; padding: 0; display: none; font-size: 20px; }
+    #undoBtn.show { display: flex; }
 
     /* 마커 조준원 */
     #crosshair {
@@ -351,20 +360,18 @@
 
 <div id="map"></div>
 
-<!-- 주소 표시 -->
-<div id="address-display" onclick="copyAddr()" title="탭하면 주소 복사">위치 확인 중...</div>
-
-<!-- 검색 -->
+<!-- 검색 + 주소 표시 (주소는 검색박스 바로 아래) -->
 <div id="searchBox">
   <div id="searchRow">
     <input type="text" id="searchInput" placeholder="주소·장소 검색" autocomplete="off" enterkeyhint="search">
     <button id="searchClear" title="지우기">✕</button>
     <button id="searchGo" title="검색">🔍</button>
   </div>
+  <div id="address-display" onclick="copyAddr()" title="탭하면 주소 복사">위치 확인 중...</div>
   <div id="searchResults"></div>
 </div>
 
-<button class="btn" id="saveBtn" title="KMZ로 저장" disabled>💾</button>
+<button class="btn" id="saveBtn" title="HTM으로 저장 / 공유" disabled>💾</button>
 <button class="btn" id="loadBtn" title="KMZ / HTM / 사진 불러오기">📂</button>
 <button class="btn" id="myLocationBtn" title="현재 위치">
   <svg viewBox="0 0 24 24" fill="none">
@@ -379,7 +386,15 @@
 <button class="btn" id="drawBtn" title="선 그리기">✏️</button>
 <button class="btn" id="drawStyleBtn" title="선 색상/굵기"><span class="dsb-line"></span></button>
 <button class="btn" id="markerBtn" title="마커 추가">📍</button>
-<button class="btn" id="clearBtn" title="화면 초기화">🧹</button>
+<button class="btn" id="clearBtn" title="전체 삭제 (빗자루)">🧹</button>
+<button class="btn" id="eraseBtn" title="지우개 — 눌러서 선택 삭제">
+  <svg viewBox="0 0 24 24" fill="none" width="26" height="26">
+    <path d="M20 20H7L3 16L13 6L21 14L20 20Z" fill="#ffcdd2" stroke="#e53935" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M13 6L21 14L17 18L9 10L13 6Z" fill="#ef9a9a" stroke="#e53935" stroke-width="1.8" stroke-linejoin="round"/>
+    <line x1="4" y1="20" x2="20" y2="20" stroke="#e53935" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+</button>
+<button class="btn" id="undoBtn" title="방금 지운 것 되살리기">↩️</button>
 <!-- 지도종류 선택 -->
 <div id="mapTypeBox">
   <select id="mapTypeSelect" onchange="changeMapType(this.value)" title="지도 종류">
@@ -765,6 +780,7 @@ document.getElementById('moveCancelBtn').onclick = () => {
 let markerPlacingMode = false;
 
 document.getElementById('markerBtn').onclick = () => {
+  if (eraseMode) setEraseMode(false);   // 지우개와 동시 사용 금지
   if (markerPlacingMode) {
     // 2차 클릭: 지도 중심 좌표로 마커 이름 입력 모달 열기
     markerPlacingMode = false;
@@ -1695,21 +1711,188 @@ function stopDrawing() {
 }
 
 document.getElementById('drawBtn').onclick = () => {
+  if (eraseMode) setEraseMode(false);   // 지우개와 동시 사용 금지
   if (drawingMode) stopDrawing();
   else startDrawing();
 };
 
-// ─── 화면 초기화 버튼 ───────────────────────────────
+// ═══════════════════════════════════════════════════
+//  삭제 — 빗자루(전체) / 지우개(선택) / 되돌리기
+//
+//  · 빗자루 🧹 : 확인 후 전부 삭제
+//  · 지우개    : 모드 토글. 지도를 누르면 그 지점 화면 ERASE_TOL_PX 픽셀 안의
+//                객체를 한 번에 지운다 → 축소 상태에선 같은 반경이 넓은 지역을
+//                덮으므로 근처 여러 개가 한꺼번에 지워진다.
+//  · 되돌리기  : 지운 '묶음'을 최근 것부터 하나씩 되살린다.
+//                (한 번의 탭에서 지워진 여러 개 = 한 묶음)
+// ═══════════════════════════════════════════════════
+const ERASE_TOL_PX = 22;      // 지우개 반경(화면 픽셀)
+const ERASE_HISTORY_MAX = 60; // 되돌리기 보관 묶음 수
+let eraseMode = false;
+let eraseHistory = [];        // [ [ {kind,obj}, ... ], ... ]  뒤쪽이 최신
+
+function updateUndoBtn() {
+  document.getElementById('undoBtn').classList.toggle('show', eraseHistory.length > 0);
+}
+
+// 삭제한 객체 묶음을 기록 (배열이 비면 기록하지 않음)
+function pushEraseBatch(batch) {
+  if (!batch.length) return;
+  eraseHistory.push(batch);
+  while (eraseHistory.length > ERASE_HISTORY_MAX) eraseHistory.shift();
+  updateUndoBtn();
+}
+
+function _removeErased(it) {
+  if (it.kind === 'marker') {
+    try { it.obj.iw.close(); } catch (e) {}
+    it.obj.marker.setMap(null);
+    markers = markers.filter(m => m !== it.obj);
+  } else if (it.kind === 'line') {
+    it.obj.poly.setMap(null);
+    polylines = polylines.filter(p => p !== it.obj);
+  } else {
+    it.obj.ov.setMap(null);
+    textLabels = textLabels.filter(t => t !== it.obj);
+  }
+}
+function _restoreErased(it) {
+  if (it.kind === 'marker') { it.obj.marker.setMap(map); markers.push(it.obj); }
+  else if (it.kind === 'line') { it.obj.poly.setMap(map); polylines.push(it.obj); }
+  else { it.obj.ov.setMap(map); textLabels.push(it.obj); }
+}
+function _syncSaveBtn() {
+  document.getElementById('saveBtn').disabled =
+    !(markers.length || polylines.length || textLabels.length);
+}
+
+// 화면 픽셀 반경 → 위도(도) 반경
+function _eraseTolDeg() {
+  const b = map.getBounds(); if (!b) return 0;
+  const mapH = document.getElementById('map').clientHeight || 800;
+  return (b.getNorthEast().getLat() - b.getSouthWest().getLat())
+         / mapH * ERASE_TOL_PX / (cssScale || 1);
+}
+// 선(멀티파트 포함)이 (px,py)에서 tol 안에 있나 — findNearPolyK 의 거리계산과 동일
+function _polyWithin(en, px, py, cosLat, tol) {
+  if (!en.poly || (!en.poly.getMap() && !en.poly._viewCulled)) return false;
+  const parts = (en.parts && en.parts.length) ? en.parts : [en.path];
+  for (const cs of parts) {
+    if (!cs || cs.length < 2) continue;
+    let ax = (cs[0].getLng() - px) * cosLat, ay = cs[0].getLat() - py;
+    if (Math.hypot(ax, ay) < tol) return true;
+    for (let i = 1; i < cs.length; i++) {
+      const bx = (cs[i].getLng() - px) * cosLat, by = cs[i].getLat() - py;
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? -(ax * dx + ay * dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      if (Math.hypot(ax + dx * t, ay + dy * t) < tol) return true;
+      ax = bx; ay = by;
+    }
+  }
+  return false;
+}
+
+function eraseAt(ll) {
+  const tol = _eraseTolDeg();
+  if (!(tol > 0)) return;
+  const py = ll.getLat(), px = ll.getLng();
+  const cosLat = Math.cos(py * Math.PI / 180);
+  const near = (lat, lng) => Math.hypot((lng - px) * cosLat, lat - py) <= tol;
+
+  const batch = [];
+  for (const m of markers) {
+    if (!m.marker.getMap()) continue;
+    const p = m.marker.getPosition();
+    if (near(p.getLat(), p.getLng())) batch.push({ kind: 'marker', obj: m });
+  }
+  for (const t of textLabels) {
+    if (!t.ov.getMap()) continue;
+    if (near(t.pos.getLat(), t.pos.getLng())) batch.push({ kind: 'text', obj: t });
+  }
+  for (const en of polylines) {
+    if (_polyWithin(en, px, py, cosLat, tol)) batch.push({ kind: 'line', obj: en });
+  }
+
+  if (!batch.length) { showToastMsg('지울 객체가 없습니다'); return; }
+  batch.forEach(_removeErased);
+  pushEraseBatch(batch);
+  _syncSaveBtn();
+  showToastMsg(batch.length + '개 삭제 — ↩️ 로 되돌릴 수 있어요');
+  autoSaveToDB();
+}
+
+// deleteHint 요소를 일반 토스트로 재사용
+let _toastTimer = null;
+function showToastMsg(msg) {
+  const el = document.getElementById('deleteHint');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+function setEraseMode(on) {
+  eraseMode = !!on;
+  document.getElementById('eraseBtn').classList.toggle('active', eraseMode);
+  // 마커를 클릭 통과 + 반투명으로 (탭이 지도까지 닿아야 지워짐 / 모드 표시도 겸함)
+  setMarkersClickThrough(eraseMode);
+  if (eraseMode) {
+    if (drawingMode) stopDrawing();
+    if (markerPlacingMode) {
+      markerPlacingMode = false;
+      document.getElementById('markerBtn').classList.remove('active');
+      document.getElementById('crosshair').classList.remove('show');
+    }
+    showToastMsg('지우개: 지울 곳을 탭하세요 (다시 누르면 해제)');
+  }
+}
+
+document.getElementById('eraseBtn').onclick = () => setEraseMode(!eraseMode);
+
+document.getElementById('undoBtn').onclick = () => {
+  const batch = eraseHistory.pop();
+  if (!batch) { updateUndoBtn(); return; }
+  batch.forEach(_restoreErased);
+  try { cullBundlePolys(); } catch (e) {}
+  hasData = true;
+  _syncSaveBtn();
+  updateUndoBtn();
+  showToastMsg(batch.length + '개 되살림');
+  autoSaveToDB();
+};
+
+// 지우개 탭 — 카카오 이벤트를 거치지 않고 지도 DOM 에서 직접 받는다
+// (마커/선 위를 눌러도 같은 방식으로 처리되도록 캡처 단계에서 가로챈다)
+document.getElementById('map').addEventListener('click', e => {
+  if (!eraseMode) return;
+  if (e.target.closest && e.target.closest('[data-iw]')) return;   // 열린 팝업 위는 제외
+  e.stopPropagation();
+  try {
+    const ll = getScaledLatLng(e.clientX, e.clientY);
+    if (ll) eraseAt(ll);
+  } catch (err) {}
+}, true);
+
+// ─── 화면 초기화 버튼 (빗자루 = 전체 삭제) ───────────
 document.getElementById('clearBtn').onclick = () => {
   if (!confirm('모든 마커와 선을 삭제하고 화면을 초기화할까요?')) return;
+  // 전체 삭제도 한 묶음으로 기록 → ↩️ 로 되살릴 수 있음
+  const batch = markers.map(m => ({ kind: 'marker', obj: m }))
+    .concat(polylines.map(p => ({ kind: 'line', obj: p })))
+    .concat(textLabels.map(t => ({ kind: 'text', obj: t })));
   markers.forEach(m => { m.iw.close(); m.marker.setMap(null); });
   markers = [];
   polylines.forEach(p => p.poly.setMap(null));
   polylines = [];
-  clearTextLabels();
+  textLabels.forEach(t => t.ov.setMap(null));
+  textLabels = [];
   clearOrigs();   // 보관 원본 전체 정리
   if (drawingMode) stopDrawing();
+  if (eraseMode) setEraseMode(false);
   hasData = false;
+  pushEraseBatch(batch);
   document.getElementById('saveBtn').disabled = true;
   autoSaveToDB();
 };
@@ -2305,8 +2488,258 @@ function askSaveScope() {
 document.getElementById('saveBtn').onclick = async () => {
   const scope = await askSaveScope();
   if (!scope) return;
-  exportKMZ(scope);
+  exportHTM(scope);
 };
+
+// ═══════════════════════════════════════════════════
+//  저장 = HTM 내보내기 + 공유
+//
+//  KMZ 대신 .htm 으로 저장한다:
+//   · 파일 하나에 데이터가 다 들어가고, 열면 [지도 열기] 버튼으로 바로 지도가 뜬다
+//     (PC 에서 열면 PC 지도, 휴대폰에서 열면 이 모바일 지도로 — MAPURL 분기 참조)
+//   · 이 지도에 다시 끌어다 놓거나 📂 로 불러오면 그대로 복원된다
+//   · text/html 은 안드로이드 크롬 공유 시트가 허용하는 형식이라 카톡 등으로 바로 보낼 수 있다
+//     (application/vnd.google-earth.kmz 는 공유가 막혀 있었다)
+// ═══════════════════════════════════════════════════
+const GH_MAP_URL_MOBILE = 'https://junty75.github.io/img/';
+const GH_MAP_URL_PC     = 'https://junty75.github.io/map/map';
+
+const LAUNCHER_JS = [
+"(function(){",
+"  var btn=document.getElementById('go'), msg=document.getElementById('msg');",
+"  var payload={LINES:LINES,POLYS:POLYS,TEXTS:TEXTS,MARKERS:MARKERS,PHOTOS:PHOTOS};",
+"  // PC 에서 열면 PC 지도, 휴대폰에서 열면 모바일 지도",
+"  var isMobile=/Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(navigator.userAgent)",
+"    ||(navigator.maxTouchPoints>1&&/Mac/.test(navigator.platform));",
+"  var MAPURL=isMobile?MAPURL_MOBILE:MAPURL_PC;",
+"  var origin=MAPURL.replace(/^(https?:\\/\\/[^\\/]+).*$/,'$1');",
+"  var win=null, timer=null, tries=0, sent=false;",
+"  function say(h){msg.innerHTML=h;}",
+"  function reset(label){clearInterval(timer);btn.disabled=false;btn.textContent=label;}",
+"  function send(target){",
+"    if(sent||!target)return;",
+"    try{target.postMessage({__jtymap:'data',payload:payload},origin);}",
+"    catch(e){say('전송 실패: '+e.message);return;}",
+"    sent=true;clearInterval(timer);",
+"    say('지도로 보냈습니다. 새 탭을 확인하세요.');",
+"  }",
+"  window.addEventListener('message',function(ev){",
+"    if(ev.origin!==origin||!ev.data)return;",
+"    if(ev.data.__jtymap==='ready')send(ev.source||win);",
+"    else if(ev.data.__jtymap==='done'){reset('지도 다시 열기');",
+"      say('지도에 표시됐습니다. 이 창은 닫아도 됩니다.');}",
+"  });",
+"  btn.onclick=function(){",
+"    sent=false;tries=0;btn.disabled=true;btn.textContent='여는 중...';",
+"    say('지도 페이지(https)를 여는 중...');",
+"    win=window.open(MAPURL+'#link','jtymap');",
+"    if(!win){reset('지도 열기');",
+"      say('<b>팝업이 차단됐습니다.</b> 주소창의 차단 아이콘에서 허용한 뒤 다시 누르세요.');return;}",
+"    try{win.focus();}catch(e){}",
+"    clearInterval(timer);",
+"    timer=setInterval(function(){",
+"      if(sent){clearInterval(timer);return;}",
+"      if(++tries>60){reset('다시 시도');",
+"        say('<b>지도 탭이 응답하지 않습니다.</b> 인터넷 연결을 확인하고,'",
+"          +' 열린 지도 탭을 새로고침한 뒤 다시 누르세요.');return;}",
+"      try{win.postMessage({__jtymap:'ping'},origin);}catch(e){}",
+"    },500);",
+"  };",
+"})();"
+].join('\n');
+
+function _hescM(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function buildLauncherHtm(title, D) {
+  const J = o => JSON.stringify(o || []).replace(/</g, '\\u003c');
+  const c = k => (D[k] || []).length;
+  return [
+'<!DOCTYPE html>','<html lang="ko">','<head>','<meta charset="utf-8">',
+'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">',
+'<title>' + _hescM(title) + '</title>',
+'<style>',
+'html,body{height:100%;margin:0}',
+'body{display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:18px;',
+'  background:#0f1115;color:#e6e8ee;font-family:"Malgun Gothic","맑은 고딕",system-ui,sans-serif}',
+'.card{width:100%;max-width:420px;text-align:center}',
+'h1{font-size:19px;margin:0 0 8px;word-break:break-all}',
+'.sub{font-size:13px;color:#95a0b4;margin:0 0 22px}',
+'button{width:100%;padding:16px;font-size:17px;font-weight:700;border:0;border-radius:12px;',
+'  background:#2f6fed;color:#fff;cursor:pointer}',
+'button:active{background:#2559c4}',
+'button[disabled]{background:#39414f;color:#8b94a4;cursor:default}',
+'.msg{margin-top:16px;font-size:13px;line-height:1.7;color:#95a0b4;min-height:46px}',
+'.msg b{color:#ffd166}',
+'</style>','</head>','<body>',
+'<div class="card">',
+'<h1>' + _hescM(title) + '</h1>',
+'<p class="sub">선 ' + c('LINES') + ' · 면 ' + c('POLYS') + ' · 문자 ' + c('TEXTS')
+  + ' · 마커 ' + c('MARKERS') + ' · 사진 ' + c('PHOTOS') + '</p>',
+'<button id="go">지도 열기</button>',
+'<p class="msg" id="msg">인터넷 지도(https)에서 열려 <b>내위치</b>가 동작합니다. 인터넷 연결이 필요합니다.</p>',
+'</div>',
+'<script>',
+'var LINES=' + J(D.LINES) + ';',
+'var POLYS=' + J(D.POLYS) + ';',
+'var TEXTS=' + J(D.TEXTS) + ';',
+'var MARKERS=' + J(D.MARKERS) + ';',
+'var PHOTOS=' + J(D.PHOTOS) + ';',
+'var MAPURL_MOBILE=' + JSON.stringify(GH_MAP_URL_MOBILE) + ';',
+'var MAPURL_PC=' + JSON.stringify(GH_MAP_URL_PC) + ';',
+LAUNCHER_JS,
+'<\/script>','</body>','</html>'
+].join('\n');
+}
+
+// 지도 위 객체 → 뷰어용 배열. 사진은 압축해 data URI 로 내장.
+async function _collectHtmData(scope) {
+  const bounds = scope === 'view' ? map.getBounds() : null;
+  const R = n => +Number(n).toFixed(7);
+  const D = { LINES: [], POLYS: [], TEXTS: [], MARKERS: [], PHOTOS: [] };
+
+  // 뷰포트 컬링으로 지도에서 뗀 선(_viewCulled)도 데이터는 살아있음 — 저장 포함
+  for (const pl of polylines) {
+    if (!pl.poly.getMap() && !pl.poly._viewCulled) continue;
+    const parts = (pl.parts && pl.parts.length) ? pl.parts : [pl.path];
+    if (bounds && !parts.some(cs => cs.some(p => bounds.contain(p)))) continue;
+    const p = parts.map(cs => cs.map(ll => [R(ll.getLat()), R(ll.getLng())]))
+                   .filter(cs => cs.length >= 2);
+    if (p.length) D.LINES.push({ c: pl.color || '#ff0000', o: 1, w: pl.width || 3, p });
+  }
+  for (const t of textLabels) {
+    if (!t.ov.getMap()) continue;
+    if (bounds && !bounds.contain(t.pos)) continue;
+    D.TEXTS.push([R(t.pos.getLat()), R(t.pos.getLng()), t.name || '', t.rot || 0,
+                  t.color || '#FFEB00', t.h || 0, t.ax || 0, t.ay || 0]);
+  }
+  const photoMarkers = [];
+  for (const m of markers) {
+    if (!m.marker.getMap()) continue;
+    const pos = m.marker.getPosition();
+    if (bounds && !bounds.contain(pos)) continue;
+    if (m.imgSrc) photoMarkers.push([m, pos]);
+    else D.MARKERS.push([R(pos.getLat()), R(pos.getLng()), m.name || '']);
+  }
+  for (let i = 0; i < photoMarkers.length; i++) {
+    const [m, pos] = photoMarkers[i];
+    showLoading('사진 압축 중... (' + (i + 1) + ' / ' + photoMarkers.length + ')');
+    let src = '';
+    try { src = await compressImage(m.imgSrc); } catch (e) { src = m.imgSrc; }
+    D.PHOTOS.push([R(pos.getLat()), R(pos.getLng()), m.name || '', src]);
+  }
+  return D;
+}
+
+// 저장한 파일을 공유 시트로 보낸다 (공유앱 선택). 지원 안 하면 조용히 넘어감.
+async function shareHtmFile(file, name) {
+  if (!(navigator.canShare && navigator.share)) return;
+  let shareable = false;
+  try { shareable = navigator.canShare({ files: [file] }); } catch (e) { shareable = false; }
+  if (!shareable) return;
+  // 사진 압축·파일명 입력을 거치면서 '사용자 조작 유효시간'이 끝났을 수 있다 →
+  // 바로 시도해 보고 막히면 버튼 한 번 더 누르게 한다.
+  try {
+    await navigator.share({ files: [file], title: name, text: name });
+    return;
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;   // 사용자가 공유 취소
+  }
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9200;display:flex;align-items:center;justify-content:center;';
+  bg.innerHTML =
+    '<div style="background:white;border-radius:14px;padding:20px;width:270px;box-shadow:0 4px 24px rgba(0,0,0,0.25);text-align:center;">' +
+    '<h3 style="margin:0 0 6px;font-size:15px;color:#333;">저장 완료</h3>' +
+    '<p style="margin:0 0 14px;font-size:12px;color:#777;word-break:break-all;">' + _hescM(name) + '</p>' +
+    '<button class="sh-go" style="display:block;width:100%;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:8px;background:#1a73e8;color:white;">📤 공유하기</button>' +
+    '<button class="sh-no" style="display:block;width:100%;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#f1f3f4;color:#555;">닫기</button>' +
+    '</div>';
+  bg.querySelector('.sh-no').onclick = () => bg.remove();
+  bg.querySelector('.sh-go').onclick = async () => {
+    bg.remove();
+    try { await navigator.share({ files: [file], title: name, text: name }); } catch (e) {}
+  };
+  document.body.appendChild(bg);
+}
+
+async function exportHTM(scope = 'all') {
+  // 저장 범위: 'view'=현재 화면에 보이는 객체만, 'all'=전체 객체
+  const hasAny = markers.some(m => m.marker.getMap())
+              || polylines.some(p => p.poly.getMap() || p.poly._viewCulled)
+              || textLabels.some(t => t.ov.getMap());
+  if (!hasAny) { alert('저장할 객체가 없습니다.'); return; }
+
+  const now = new Date();
+  const dateStr = now.getFullYear().toString() +
+                  (now.getMonth() + 1).toString().padStart(2, '0') +
+                  now.getDate().toString().padStart(2, '0');
+
+  // 지도 중심 좌표로 주소 조회 → 읍면+리 이름 추출
+  const getAddrPrefix = () => new Promise(resolve => {
+    const center = map.getCenter();
+    geocoder.coord2Address(center.getLng(), center.getLat(), (result, status) => {
+      if (status !== kakao.maps.services.Status.OK || !result[0]) { resolve(''); return; }
+      const parts = (result[0].address?.address_name || '').split(' ').filter(p => !/^\d/.test(p));
+      const eupMyeon = parts.find(p => /[읍면]$/.test(p)) || '';
+      const ri       = parts.find(p => /리$/.test(p)) || '';
+      const gu   = parts.find(p => /구$/.test(p)) || '';
+      const dong = [...parts].reverse().find(p => /동(\d+가)?$/.test(p)) || '';
+      let prefix = '';
+      if (eupMyeon && ri)      prefix = `${eupMyeon.replace(/[읍면]$/, '')}${ri}_`;
+      else if (eupMyeon)       prefix = `${eupMyeon}_`;
+      else if (gu && dong)     prefix = `${gu.replace(/구$/, '')}${dong}_`;
+      else if (gu)             prefix = `${gu.replace(/구$/, '')}_`;
+      else if (dong)           prefix = `${dong}_`;
+      resolve(prefix);
+    });
+  });
+  const prefix = await getAddrPrefix();
+
+  const activeM = markers.filter(m => m.marker.getMap());
+  const lastMarkerRaw = ([...activeM].reverse().find(m => !m.imgSrc)?.name
+                        || activeM.at(-1)?.name || '');
+  const lastMarkerName = lastMarkerRaw.replace(/_\d{8}.*$/, '').replace(/[\\/:*?"<>|]/g, '').trim();
+  const defaultName = lastMarkerName ? `${prefix}${dateStr}_${lastMarkerName}` : `${prefix}${dateStr}_지도`;
+
+  const userInput = prompt('저장할 파일 이름을 입력하세요 (확장자 제외):', defaultName);
+  if (userInput === null) return;
+  const base = (userInput.trim() || defaultName).replace(/[\\/:*?"<>|]/g, '_');
+  const fileName = base + '.htm';
+
+  showLoading('HTM 저장 중...');
+  try {
+    const D = await _collectHtmData(scope);
+    const n = D.LINES.length + D.POLYS.length + D.TEXTS.length + D.MARKERS.length + D.PHOTOS.length;
+    if (!n) {
+      hideLoading();
+      alert(scope === 'view' ? '현재 화면에 보이는 객체가 없습니다.' : '저장할 객체가 없습니다.');
+      return;
+    }
+    const html = buildLauncherHtm(base, D);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+
+    // 1) 저장 (다운로드)
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    if (isIOS) window.open(url, '_blank'); else a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    hideLoading();
+
+    // 2) 공유 시트 (공유앱 선택)
+    let f = null;
+    try { f = new File([blob], fileName, { type: 'text/html' }); } catch (e) {}
+    if (f) await shareHtmFile(f, fileName);
+  } catch (err) {
+    hideLoading();
+    alert('HTM 저장 중 오류: ' + err.message);
+  }
+}
 
 async function exportKMZ(scope = 'all') {
   // 저장 범위: 'view'=현재 화면에 보이는 객체만, 'all'=전체 객체
@@ -2571,9 +3004,8 @@ let hintShown = false;
 function showDeleteHint() {
   if (hintShown) return;
   hintShown = true;
-  const el = document.getElementById('deleteHint');
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 3000);
+  // deleteHint 요소는 지우개 토스트와 공용 → 문구를 매번 넣어준다
+  showToastMsg('길게 눌러서 마커 / 선을 삭제할 수 있어요');
 }
 
 // ─── 길게 누르기 ──────────────────────────────────────
@@ -2891,6 +3323,35 @@ function _htmArr(text, name) {
 }
 function _isHtmFile(f) { return /\.html?$/i.test(f.name); }
 
+// ─── 중복 방지 ────────────────────────────────────────
+// 같은 파일을 여러 번 열어도 이미 지도에 있는 객체는 다시 만들지 않는다.
+// 지도에 살아있는 객체에서 매번 새로 시그니처를 뽑으므로,
+// 지웠다가 다시 열면 정상적으로 되살아난다(그때는 '없는' 객체이므로).
+const _R6 = n => Number(n).toFixed(6);
+function _sigLine(color, width, parts) {
+  return 'L|' + color + '|' + width + '|' +
+    parts.map(cs => cs.map(ll => _R6(ll.getLat()) + ',' + _R6(ll.getLng())).join(';')).join('#');
+}
+function _sigPt(kind, lat, lng, name) {
+  return kind + '|' + _R6(lat) + ',' + _R6(lng) + '|' + (name == null ? '' : name);
+}
+// 지금 지도에 있는 모든 객체의 시그니처
+function _existingSigs() {
+  const s = new Set();
+  for (const en of polylines) {
+    if (!en.poly) continue;
+    const parts = (en.parts && en.parts.length) ? en.parts : [en.path || []];
+    s.add(_sigLine(en.color || '', en.width || 0, parts));
+  }
+  for (const m of markers) {
+    if (!m.marker) continue;
+    const p = m.marker.getPosition();
+    s.add(_sigPt(m.imgSrc ? 'P' : 'M', p.getLat(), p.getLng(), m.name));
+  }
+  for (const t of textLabels) s.add(_sigPt('T', t.pos.getLat(), t.pos.getLng(), t.name));
+  return s;
+}
+
 async function loadHTM(file) {
   showLoading('HTM 읽는 중...');
   let D;
@@ -2920,6 +3381,9 @@ async function _loadHtmData(D) {
 
     const bounds = new kakao.maps.LatLngBounds();
     const LL = a => { const l = new kakao.maps.LatLng(a[0], a[1]); bounds.extend(l); return l; };
+    // 같은 파일을 두 번 열어도 이미 있는 객체는 건너뛴다
+    const sigs = _existingSigs();
+    let skipped = 0;
 
     // 선 + 폴리곤(외곽선) — 원본 도면 순서(z)대로
     const shapes = LINES.concat(POLYS).sort((a, b) => (a.z || 0) - (b.z || 0));
@@ -2929,6 +3393,9 @@ async function _loadHtmData(D) {
       const color = /^#[0-9a-fA-F]{6}$/.test(g.c || '') ? g.c : randColor();
       // Kakao는 선 굵기를 정수 px로 렌더 → 소수 굵기(1.4 등)는 올림
       const width = Math.max(1, Math.ceil(Number(g.w) || 4));
+      const sig = _sigLine(color, width, parts);
+      if (sigs.has(sig)) { skipped++; return; }
+      sigs.add(sig);
       const poly = new kakao.maps.Polyline({
         path: parts.length === 1 ? parts[0] : parts,
         strokeWeight: width, strokeColor: color,
@@ -2943,19 +3410,37 @@ async function _loadHtmData(D) {
     });
 
     // CAD 문자 라벨 [lat,lng,내용,rot,color,h,ax,ay,tw]
+    // (건너뛴 객체도 LL() 로 좌표를 먼저 반영해 화면 맞춤 범위는 파일 전체 기준이 되게)
     TEXTS.forEach(t => {
       if (!t || t.length < 3) return;
-      addTextLabel(LL(t), t[2], t[3] || 0, t[4] || '', t[5] || 0, t[6] || 0, t[7] || 0);
+      const ll = LL(t);
+      const sig = _sigPt('T', t[0], t[1], String(t[2] == null ? '' : t[2]));
+      if (sigs.has(sig)) { skipped++; return; }
+      sigs.add(sig);
+      addTextLabel(ll, t[2], t[3] || 0, t[4] || '', t[5] || 0, t[6] || 0, t[7] || 0);
     });
 
     // 일반 마커 [lat,lng,이름]
-    MARKERS.forEach(m => { if (m && m.length >= 2) addMarker(LL(m), m[2] || '마커'); });
+    MARKERS.forEach(m => {
+      if (!m || m.length < 2) return;
+      const ll = LL(m);
+      const name = m[2] || '마커';
+      const sig = _sigPt('M', m[0], m[1], name);
+      if (sigs.has(sig)) { skipped++; return; }
+      sigs.add(sig);
+      addMarker(ll, name);
+    });
 
     // 사진 마커 [lat,lng,이름,dataURL]
     for (let i = 0; i < PHOTOS.length; i++) {
       const ph = PHOTOS[i];
       if (!ph || ph.length < 4 || !ph[3]) continue;
-      addPhotoMarker(LL(ph), ph[3], ph[2] || '사진');
+      const ll = LL(ph);
+      const name = ph[2] || '사진';
+      const sig = _sigPt('P', ph[0], ph[1], name);
+      if (sigs.has(sig)) { skipped++; continue; }
+      sigs.add(sig);
+      addPhotoMarker(ll, ph[3], name);
       if (i % 5 === 0) {
         showLoading(`사진 불러오는 중... (${i + 1} / ${PHOTOS.length})`);
         await new Promise(r => setTimeout(r, 0));
@@ -2963,6 +3448,7 @@ async function _loadHtmData(D) {
     }
 
     if (!bounds.isEmpty()) map.setBounds(bounds);
+    if (skipped) showToastMsg('이미 있는 객체 ' + skipped + '개는 건너뛰었습니다');
     _deferPolys.forEach(p => { if (!p._parts) p.setMap(map); });
     cullBundlePolys();
     hasData = true;

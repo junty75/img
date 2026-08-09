@@ -1,15 +1,27 @@
-const CACHE_NAME = 'kmz-viewer-v32';   // manifest 에 .htm 공유/열기 추가 → 캐시 갱신
+const CACHE_NAME = 'kmz-viewer-v33';   // install 을 개별 실패에 견디게 수정 → 캐시 갱신
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const STATIC_ASSETS = [
   './index.html',
-  './manifest.json',
+  './manifest.json'
+];
+const EXTRA_ASSETS = [                                     // 있으면 좋지만 설치를 붙잡진 않는 것
   'https://unpkg.com/jszip@3.10.1/dist/jszip.min.js'
 ];
 
 // 설치: 정적 파일 캐시
+// 설치는 되도록 빨리, 그리고 반드시 끝나야 한다 —
+//  · addAll 은 하나라도 실패하면 install 전체가 실패해 워커가 아예 안 남는다.
+//  · 워커가 없으면 공유 POST(share-target)를 받아줄 주체가 없어 요청이 깃허브 서버까지
+//    가고 '405 Not Allowed' 가 뜬다(정적 호스팅은 POST 를 못 받는다).
+//  · 런처 htm 은 지도 페이지를 연 뒤 6초 만에 공유 POST 를 보내므로, 느린 CDN 을
+//    기다리다 설치가 늦어지면 그 POST 가 또 405 가 된다.
+// 그래서 같은 도메인 파일만 waitUntil 로 담고, CDN 은 실패해도/늦어도 무시한다.
 self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME).then(cache => {
+      EXTRA_ASSETS.forEach(u => { cache.add(u).catch(() => {}); });   // 기다리지 않음
+      return Promise.all(STATIC_ASSETS.map(u => cache.add(u).catch(() => {})));
+    })
   );
   self.skipWaiting();
 });

@@ -1444,6 +1444,20 @@ function _installLinkReceiver() {
   window.addEventListener('message', onMsg);
   // 런처가 ping 을 보내기 전에 먼저 알려 첫 전달을 앞당긴다
   try { if (window.opener) window.opener.postMessage({ __jtymap: 'ready' }, '*'); } catch (e) {}
+
+  // ── 런처와 연결이 끊긴 경우 이유를 알려준다 ──────────
+  // 안드로이드에서 이 주소(/img/)에 앱(KMZ 뷰어)이 설치돼 있으면, 런처의 window.open 을
+  // 브라우저 탭이 아니라 '설치된 앱'이 가로채 여는 일이 있다. 그러면 opener 가 끊겨
+  // 런처가 데이터를 넘길 수 없고 — 지도는 뜨는데 객체가 하나도 없는 상태가 된다.
+  // 원인이 안 보여 헷갈리므로, 8초를 기다려도 안 오면 해결책과 함께 알려준다.
+  setTimeout(() => {
+    if (loaded) return;
+    const orphan = !window.opener;
+    showToastMsg(orphan
+      ? '런처와 연결이 끊겼습니다 — 파일을 "공유 → KMZ 뷰어"로 열어 주세요'
+      : '런처에서 데이터가 아직 안 왔습니다');
+    if (orphan) console.warn('[jtymap] #link 로 열렸는데 opener 가 없음 — 설치된 앱이 링크를 가로챈 것으로 보임');
+  }, 8000);
 }
 
 kakao.maps.load(() => {
@@ -2593,8 +2607,39 @@ const LAUNCHER_JS = [
 "      try{ if(win&&!win.closed) win.focus(); }catch(e){}",
 "      setTimeout(function(){try{window.close();}catch(e){}},500);}",
 "  });",
+"  // ── 앱이 링크를 가로챘을 때의 우회로 ─────────────────────────",
+"  // 안드로이드에 지도 앱(KMZ 뷰어)이 설치돼 있으면 브라우저 탭이 아니라 '앱'이 이 주소를",
+"  // 열어버린다. 그러면 opener 가 끊겨 postMessage 로는 데이터를 넘길 수 없다",
+"  // (지도는 뜨는데 객체가 하나도 없음 — 실제로 겪은 증상).",
+"  // 그때는 앱의 '공유 대상'(share-target)으로 파일을 POST 한다. 이건 서비스워커가 받으므로",
+"  // 창끼리 연결이 끊겨 있어도 데이터가 도착한다.",
+"  var shareTried=false;",
+"  function sendViaShareTarget(){",
+"    if(shareTried||sent)return; shareTried=true;",
+"    try{",
+"      var txt='<!DOCTYPE html><meta charset=\"utf-8\"><title>'+document.title+'</title>\\n'",
+"        +'<scr'+'ipt>\\n'",
+"        +'var LINES='+JSON.stringify(LINES)+';\\n'",
+"        +'var POLYS='+JSON.stringify(POLYS)+';\\n'",
+"        +'var TEXTS='+JSON.stringify(TEXTS)+';\\n'",
+"        +'var MARKERS='+JSON.stringify(MARKERS)+';\\n'",
+"        +'var PHOTOS='+JSON.stringify(PHOTOS)+';\\n'",
+"        +'</scr'+'ipt>';",
+"      var f=new File([txt],(document.title||'지도')+'.htm',{type:'text/html'});",
+"      var dt=new DataTransfer(); dt.items.add(f);",
+"      var inp=document.createElement('input'); inp.type='file'; inp.name='file'; inp.files=dt.files;",
+"      var form=document.createElement('form');",
+"      form.method='POST'; form.enctype='multipart/form-data'; form.target='jtymap';",
+"      form.action=MAPURL.replace(/\\/?$/,'/')+'share-target';",
+"      form.style.display='none'; form.appendChild(inp);",
+"      document.body.appendChild(form);",
+"      say('설치된 앱이 링크를 가로챈 것 같아 <b>다른 방법</b>으로 보냅니다...');",
+"      form.submit();",
+"      sent=true; clearInterval(timer); reset('지도 다시 열기');",
+"    }catch(e){ shareTried=false; say('전달 실패: '+e.message); }",
+"  }",
 "  btn.onclick=function(){",
-"    sent=false;tries=0;btn.disabled=true;btn.textContent='여는 중...';",
+"    sent=false;tries=0;shareTried=false;btn.disabled=true;btn.textContent='여는 중...';",
 "    say('지도 페이지(https)를 여는 중...');",
 "    win=window.open(MAPURL+'#link','jtymap');",
 "    if(!win){reset('지도 열기');",
@@ -2604,7 +2649,9 @@ const LAUNCHER_JS = [
 "    clearInterval(timer);",
 "    timer=setInterval(function(){",
 "      if(sent){clearInterval(timer);return;}",
-"      if(++tries>60){reset('다시 시도');",
+"      // 6초(12번)를 두드려도 응답이 없으면 앱이 가로챈 것으로 보고 우회로로 보낸다",
+"      if(++tries===12){ sendViaShareTarget(); return; }",
+"      if(tries>60){reset('다시 시도');",
 "        say('<b>지도 탭이 응답하지 않습니다.</b> 인터넷 연결을 확인하고,'",
 "          +' 열린 지도 탭을 새로고침한 뒤 다시 누르세요.');return;}",
 "      try{win.postMessage({__jtymap:'ping'},origin);}catch(e){}",

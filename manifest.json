@@ -16,7 +16,8 @@
       "accept": {
         "application/vnd.google-earth.kmz": [".kmz"],
         "application/vnd.google-earth.kml+xml": [".kml"],
-        "application/zip": [".zip"]
+        "application/zip": [".zip"],
+        "text/html": [".htm", ".html"]
       }
     }
   ],
@@ -33,7 +34,8 @@
             "application/vnd.google-earth.kml+xml",
             "application/zip",
             "application/octet-stream",
-            ".kmz", ".kml", ".zip",
+            "text/html",
+            ".kmz", ".kml", ".zip", ".htm", ".html",
             "image/jpeg", "image/png"
           ]
         }

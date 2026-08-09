@@ -108,12 +108,13 @@
     #drawStyleBtn .dsb-line { width: 26px; border-radius: 3px; background: #FF5733; height: 4px; }
     #markerBtn { top: 184px; right: 16px; padding: 0; transition: background 0.2s; font-size: 20px; }
     #markerBtn.active { background: #43a047; box-shadow: 0 2px 8px rgba(67,160,71,0.6); }
-    /* 빗자루 = 전체삭제 / 지우개 = 선택삭제 / 되돌리기 = 방금 지운 것 복구 */
-    #clearBtn { top: 240px; right: 16px; padding: 0; transition: background 0.2s; }
-    #eraseBtn { top: 240px; right: 72px; padding: 0; transition: background 0.2s; }
+    /* 오른쪽 한 줄: … 마커 → 지우개(선택삭제) → 빗자루(전체삭제)
+       되돌리기는 지우개 왼쪽에, 지우개 모드에서 실제로 지웠을 때만 나타난다 */
+    #eraseBtn { top: 240px; right: 16px; padding: 0; transition: background 0.2s; }
     #eraseBtn.active { background: #ffcdd2; box-shadow: 0 2px 8px rgba(229,57,53,0.6); }
-    #undoBtn { top: 296px; right: 72px; padding: 0; display: none; font-size: 20px; }
+    #undoBtn { top: 240px; right: 72px; padding: 0; display: none; font-size: 20px; }
     #undoBtn.show { display: flex; }
+    #clearBtn { top: 296px; right: 16px; padding: 0; transition: background 0.2s; }
 
     /* 마커 조준원 */
     #crosshair {
@@ -180,7 +181,8 @@
     #moveHint .mh-cancel { background: #555; color: white; }
 
     /* ── 지도종류 선택 ── */
-    #mapTypeBox { position: absolute; z-index: 1000; top: 296px; right: 16px; }
+    /* 오른쪽 버튼 줄이 빗자루까지 296px 를 쓰므로 한 칸 아래(352px) */
+    #mapTypeBox { position: absolute; z-index: 1000; top: 352px; right: 16px; }
     #mapTypeBox select {
       width: 48px; padding: 5px 1px; border: none; border-radius: 8px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 11px;
@@ -386,7 +388,6 @@
 <button class="btn" id="drawBtn" title="선 그리기">✏️</button>
 <button class="btn" id="drawStyleBtn" title="선 색상/굵기"><span class="dsb-line"></span></button>
 <button class="btn" id="markerBtn" title="마커 추가">📍</button>
-<button class="btn" id="clearBtn" title="전체 삭제 (빗자루)">🧹</button>
 <button class="btn" id="eraseBtn" title="지우개 — 눌러서 선택 삭제">
   <svg viewBox="0 0 24 24" fill="none" width="26" height="26">
     <path d="M20 20H7L3 16L13 6L21 14L20 20Z" fill="#ffcdd2" stroke="#e53935" stroke-width="1.8" stroke-linejoin="round"/>
@@ -395,6 +396,7 @@
   </svg>
 </button>
 <button class="btn" id="undoBtn" title="방금 지운 것 되살리기">↩️</button>
+<button class="btn" id="clearBtn" title="전체 삭제 (빗자루)">🧹</button>
 <!-- 지도종류 선택 -->
 <div id="mapTypeBox">
   <select id="mapTypeSelect" onchange="changeMapType(this.value)" title="지도 종류">
@@ -1383,6 +1385,27 @@ async function consumeSharedFiles() {
 //
 // #link 로 열렸을 때만, 딱 한 번만 받는다. 보내는 쪽이 file:// 이면 ev.origin 이 'null' 이라
 // 발신 origin 으로는 거를 수 없어서 이 두 조건으로 대신 제한한다.
+// ─── 지도 탭 하나로 모으기 ────────────────────────────
+// 런처 htm 을 여러 번 열면 그때마다 새 지도 탭이 열린다. 창 이름('jtymap')은 탭 그룹을
+// 넘어 공유되지 않아서 런처 쪽에서 기존 탭을 찾아 재사용할 방법이 없다.
+// 그래서 반대로, '런처로 새로 열린 탭'이 데이터를 다 받은 뒤 같은 주소의 다른 탭들에게
+// 비켜달라고 방송한다. 이전 탭의 내용은 IndexedDB 자동저장에서 이미 복원돼 있고 파일
+// 내용도 방금 반영했으므로, 남는 탭 하나에 전부 들어 있다.
+// (직접 주소로 연 탭은 브라우저가 close() 를 거부할 수 있다 — 그때는 그냥 남는다)
+let _tabBC = null, _tabClaimed = false;
+function _initTabChannel() {
+  if (!('BroadcastChannel' in window)) return;
+  try { _tabBC = new BroadcastChannel('jtymap-tabs:' + location.pathname); } catch (e) { return; }
+  _tabBC.onmessage = ev => {
+    if (!ev.data || ev.data.t !== 'takeover' || _tabClaimed) return;
+    try { window.close(); } catch (e) {}
+  };
+}
+function _claimSingleTab() {
+  _tabClaimed = true;   // 동시에 두 탭이 방송해도 서로 닫아버리지 않게
+  if (_tabBC) { try { _tabBC.postMessage({ t: 'takeover' }); } catch (e) {} }
+}
+
 function _installLinkReceiver() {
   if (!/(^|[#&])link(&|=|$)/.test(location.hash || '')) return;
   let loaded = false;
@@ -1397,6 +1420,7 @@ function _installLinkReceiver() {
     try {
       await _loadHtmData(d.payload || {});
       autoSaveToDB();                     // 앱을 다시 열어도 남아 있게 (공유파일 처리와 같은 방식)
+      _claimSingleTab();                  // 먼저 열려 있던 지도 탭들은 닫는다
       reply(ev, { __jtymap: 'done' });
     } catch (e) {
       hideLoading();
@@ -1413,6 +1437,7 @@ function _installLinkReceiver() {
 
 kakao.maps.load(() => {
   initMap(new kakao.maps.LatLng(35.6478, 127.5213));
+  _initTabChannel();   // 다른 탭이 '비켜달라'고 하면 받을 수 있게 먼저 열어 둔다
 
   // 이전 데이터 복원 후 공유파일 소비 (동시에 돌면 silent 복원의 초기화가 공유 로드를 지움)
   loadKMZfromDB().then(async file => {
@@ -1725,6 +1750,9 @@ document.getElementById('drawBtn').onclick = () => {
 //                덮으므로 근처 여러 개가 한꺼번에 지워진다.
 //  · 되돌리기  : 지운 '묶음'을 최근 것부터 하나씩 되살린다.
 //                (한 번의 탭에서 지워진 여러 개 = 한 묶음)
+//                지우개로 실제로 지웠을 때만 지우개 왼쪽에 나타나고,
+//                지우개 모드를 끝내면 버튼도 이력도 사라진다.
+//                → 빗자루(전체삭제)는 되돌리기 대상이 아니다.
 // ═══════════════════════════════════════════════════
 const ERASE_TOL_PX = 22;      // 지우개 반경(화면 픽셀)
 const ERASE_HISTORY_MAX = 60; // 되돌리기 보관 묶음 수
@@ -1732,7 +1760,8 @@ let eraseMode = false;
 let eraseHistory = [];        // [ [ {kind,obj}, ... ], ... ]  뒤쪽이 최신
 
 function updateUndoBtn() {
-  document.getElementById('undoBtn').classList.toggle('show', eraseHistory.length > 0);
+  document.getElementById('undoBtn')
+    .classList.toggle('show', eraseMode && eraseHistory.length > 0);
 }
 
 // 삭제한 객체 묶음을 기록 (배열이 비면 기록하지 않음)
@@ -1846,7 +1875,10 @@ function setEraseMode(on) {
       document.getElementById('crosshair').classList.remove('show');
     }
     showToastMsg('지우개: 지울 곳을 탭하세요 (다시 누르면 해제)');
+  } else {
+    eraseHistory = [];   // 모드를 끝내면 되돌리기 이력도 비운다 (버튼도 같이 사라짐)
   }
+  updateUndoBtn();
 }
 
 document.getElementById('eraseBtn').onclick = () => setEraseMode(!eraseMode);
@@ -1876,12 +1908,9 @@ document.getElementById('map').addEventListener('click', e => {
 }, true);
 
 // ─── 화면 초기화 버튼 (빗자루 = 전체 삭제) ───────────
+// 되돌리기 대상이 아니다 — 확인창으로 한 번 막고, 이력도 남기지 않는다.
 document.getElementById('clearBtn').onclick = () => {
   if (!confirm('모든 마커와 선을 삭제하고 화면을 초기화할까요?')) return;
-  // 전체 삭제도 한 묶음으로 기록 → ↩️ 로 되살릴 수 있음
-  const batch = markers.map(m => ({ kind: 'marker', obj: m }))
-    .concat(polylines.map(p => ({ kind: 'line', obj: p })))
-    .concat(textLabels.map(t => ({ kind: 'text', obj: t })));
   markers.forEach(m => { m.iw.close(); m.marker.setMap(null); });
   markers = [];
   polylines.forEach(p => p.poly.setMap(null));
@@ -1890,9 +1919,10 @@ document.getElementById('clearBtn').onclick = () => {
   textLabels = [];
   clearOrigs();   // 보관 원본 전체 정리
   if (drawingMode) stopDrawing();
-  if (eraseMode) setEraseMode(false);
+  if (eraseMode) setEraseMode(false);   // 이력도 함께 비워짐
+  eraseHistory = [];
+  updateUndoBtn();
   hasData = false;
-  pushEraseBatch(batch);
   document.getElementById('saveBtn').disabled = true;
   autoSaveToDB();
 };
@@ -1952,11 +1982,8 @@ async function _autoSaveNow() {
 
 // ─── 전체화면 뷰어 ────────────────────────────────────
 const photoViewer = document.getElementById('photoViewer');
-photoViewer.addEventListener('click', e => {
-  if (e.target === photoViewer || e.target === document.getElementById('viewerName')) {
-    photoViewer.classList.remove('show');
-  }
-});
+// 사진 자체를 눌러도 닫힌다 (예전엔 사진 바깥/아래만 닫혀서 헷갈렸음)
+photoViewer.addEventListener('click', () => photoViewer.classList.remove('show'));
 function openViewer(src, name) {
   document.getElementById('viewerImg').src = src;
   document.getElementById('viewerName').textContent = name;
@@ -2516,6 +2543,7 @@ const LAUNCHER_JS = [
 "  var win=null, timer=null, tries=0, sent=false;",
 "  function say(h){msg.innerHTML=h;}",
 "  function reset(label){clearInterval(timer);btn.disabled=false;btn.textContent=label;}",
+"  // 지도 탭이 '준비됨'을 알려오면 그때 데이터를 넘긴다 (한 번만)",
 "  function send(target){",
 "    if(sent||!target)return;",
 "    try{target.postMessage({__jtymap:'data',payload:payload},origin);}",
@@ -2527,7 +2555,12 @@ const LAUNCHER_JS = [
 "    if(ev.origin!==origin||!ev.data)return;",
 "    if(ev.data.__jtymap==='ready')send(ev.source||win);",
 "    else if(ev.data.__jtymap==='done'){reset('지도 다시 열기');",
-"      say('지도에 표시됐습니다. 이 창은 닫아도 됩니다.');}",
+"      say('지도에 표시됐습니다. 이 창은 닫아도 됩니다.');",
+"      // 데이터 전달이 끝났으니 이 창은 스스로 닫는다.",
+"      // 크롬은 '스크립트가 연 창' 또는 '방문기록이 1개뿐인 탭'만 close() 를 허용한다.",
+"      // htm 을 더블클릭해서 연 탭은 기록이 1개라 닫히고, 다른 페이지에서 넘어와",
+"      // 기록이 쌓인 탭이면 거부돼 위 안내문과 함께 그대로 남는다.",
+"      setTimeout(function(){try{window.close();}catch(e){}},400);}",
 "  });",
 "  btn.onclick=function(){",
 "    sent=false;tries=0;btn.disabled=true;btn.textContent='여는 중...';",
@@ -2536,6 +2569,7 @@ const LAUNCHER_JS = [
 "    if(!win){reset('지도 열기');",
 "      say('<b>팝업이 차단됐습니다.</b> 주소창의 차단 아이콘에서 허용한 뒤 다시 누르세요.');return;}",
 "    try{win.focus();}catch(e){}",
+"    // 지도 탭이 아직 로딩 중일 수 있어 준비될 때까지 0.5초 간격으로 두드린다(최대 30초).",
 "    clearInterval(timer);",
 "    timer=setInterval(function(){",
 "      if(sent){clearInterval(timer);return;}",
@@ -3325,31 +3359,47 @@ function _isHtmFile(f) { return /\.html?$/i.test(f.name); }
 
 // ─── 중복 방지 ────────────────────────────────────────
 // 같은 파일을 여러 번 열어도 이미 지도에 있는 객체는 다시 만들지 않는다.
-// 지도에 살아있는 객체에서 매번 새로 시그니처를 뽑으므로,
-// 지웠다가 다시 열면 정상적으로 되살아난다(그때는 '없는' 객체이므로).
+// 지도에 살아있는 객체에서 매번 새로 뽑으므로, 지웠다가 다시 열면 되살아난다.
+//
+// 점 객체(마커/사진/문자)는 좌표를 문자열로 굳혀 비교하면 안 된다 —
+// 35.6519945 처럼 반올림 경계에 걸린 값은 같은 지점인데도 "35.651994" / "35.651995"
+// 로 갈려 중복을 놓친다(실제로 사진 하나가 열 때마다 늘어났다).
+// 그래서 이름으로 묶어 두고 좌표는 오차 허용(약 0.2m)으로 비교한다.
+// 사진/일반마커는 같은 종류('M')로 취급 — KMZ 복원이 사진을 못 찾아 일반마커로
+// 떨어진 경우에도 중복이 생기지 않게.
+const _PT_EPS = 2e-6;
 const _R6 = n => Number(n).toFixed(6);
 function _sigLine(color, width, parts) {
   return 'L|' + color + '|' + width + '|' +
     parts.map(cs => cs.map(ll => _R6(ll.getLat()) + ',' + _R6(ll.getLng())).join(';')).join('#');
 }
-function _sigPt(kind, lat, lng, name) {
-  return kind + '|' + _R6(lat) + ',' + _R6(lng) + '|' + (name == null ? '' : name);
+function _ptKey(kind, name) { return kind + '|' + (name == null ? '' : name); }
+function _hasPt(store, kind, lat, lng, name) {
+  const a = store.pts.get(_ptKey(kind, name));
+  if (!a) return false;
+  for (const p of a) if (Math.abs(p[0] - lat) < _PT_EPS && Math.abs(p[1] - lng) < _PT_EPS) return true;
+  return false;
 }
-// 지금 지도에 있는 모든 객체의 시그니처
+function _addPt(store, kind, lat, lng, name) {
+  const k = _ptKey(kind, name);
+  const a = store.pts.get(k);
+  if (a) a.push([lat, lng]); else store.pts.set(k, [[lat, lng]]);
+}
+// 지금 지도에 있는 모든 객체 { lines:Set, pts:Map }
 function _existingSigs() {
-  const s = new Set();
+  const store = { lines: new Set(), pts: new Map() };
   for (const en of polylines) {
     if (!en.poly) continue;
     const parts = (en.parts && en.parts.length) ? en.parts : [en.path || []];
-    s.add(_sigLine(en.color || '', en.width || 0, parts));
+    store.lines.add(_sigLine(en.color || '', en.width || 0, parts));
   }
   for (const m of markers) {
     if (!m.marker) continue;
     const p = m.marker.getPosition();
-    s.add(_sigPt(m.imgSrc ? 'P' : 'M', p.getLat(), p.getLng(), m.name));
+    _addPt(store, 'M', p.getLat(), p.getLng(), m.name);
   }
-  for (const t of textLabels) s.add(_sigPt('T', t.pos.getLat(), t.pos.getLng(), t.name));
-  return s;
+  for (const t of textLabels) _addPt(store, 'T', t.pos.getLat(), t.pos.getLng(), t.name);
+  return store;
 }
 
 async function loadHTM(file) {
@@ -3394,8 +3444,8 @@ async function _loadHtmData(D) {
       // Kakao는 선 굵기를 정수 px로 렌더 → 소수 굵기(1.4 등)는 올림
       const width = Math.max(1, Math.ceil(Number(g.w) || 4));
       const sig = _sigLine(color, width, parts);
-      if (sigs.has(sig)) { skipped++; return; }
-      sigs.add(sig);
+      if (sigs.lines.has(sig)) { skipped++; return; }
+      sigs.lines.add(sig);
       const poly = new kakao.maps.Polyline({
         path: parts.length === 1 ? parts[0] : parts,
         strokeWeight: width, strokeColor: color,
@@ -3414,9 +3464,9 @@ async function _loadHtmData(D) {
     TEXTS.forEach(t => {
       if (!t || t.length < 3) return;
       const ll = LL(t);
-      const sig = _sigPt('T', t[0], t[1], String(t[2] == null ? '' : t[2]));
-      if (sigs.has(sig)) { skipped++; return; }
-      sigs.add(sig);
+      const name = String(t[2] == null ? '' : t[2]);
+      if (_hasPt(sigs, 'T', t[0], t[1], name)) { skipped++; return; }
+      _addPt(sigs, 'T', t[0], t[1], name);
       addTextLabel(ll, t[2], t[3] || 0, t[4] || '', t[5] || 0, t[6] || 0, t[7] || 0);
     });
 
@@ -3425,9 +3475,8 @@ async function _loadHtmData(D) {
       if (!m || m.length < 2) return;
       const ll = LL(m);
       const name = m[2] || '마커';
-      const sig = _sigPt('M', m[0], m[1], name);
-      if (sigs.has(sig)) { skipped++; return; }
-      sigs.add(sig);
+      if (_hasPt(sigs, 'M', m[0], m[1], name)) { skipped++; return; }
+      _addPt(sigs, 'M', m[0], m[1], name);
       addMarker(ll, name);
     });
 
@@ -3437,9 +3486,8 @@ async function _loadHtmData(D) {
       if (!ph || ph.length < 4 || !ph[3]) continue;
       const ll = LL(ph);
       const name = ph[2] || '사진';
-      const sig = _sigPt('P', ph[0], ph[1], name);
-      if (sigs.has(sig)) { skipped++; continue; }
-      sigs.add(sig);
+      if (_hasPt(sigs, 'M', ph[0], ph[1], name)) { skipped++; continue; }
+      _addPt(sigs, 'M', ph[0], ph[1], name);
       addPhotoMarker(ll, ph[3], name);
       if (i % 5 === 0) {
         showLoading(`사진 불러오는 중... (${i + 1} / ${PHOTOS.length})`);

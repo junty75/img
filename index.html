@@ -1398,12 +1398,21 @@ function _initTabChannel() {
   try { _tabBC = new BroadcastChannel('jtymap-tabs:' + location.pathname); } catch (e) { return; }
   _tabBC.onmessage = ev => {
     if (!ev.data || ev.data.t !== 'takeover' || _tabClaimed) return;
+    const p = ev.data.payload;
     try { window.close(); } catch (e) {}
+    // 브라우저는 '스크립트가 연 탭'만 닫아준다. 직접 주소로 연 탭은 닫기가 거부돼 그대로
+    // 남는데, 런처 창이 사라지면 브라우저가 그 탭으로 돌아가 '빈 지도'를 보여주는 일이
+    // 생긴다. 그래서 닫히지 않았으면 같은 데이터를 이 탭에도 그린다(중복은 걸러짐).
+    setTimeout(() => {
+      if (!p) return;
+      _tabClaimed = true;
+      Promise.resolve(_loadHtmData(p)).then(() => autoSaveToDB()).catch(() => {});
+    }, 400);
   };
 }
-function _claimSingleTab() {
+function _claimSingleTab(payload) {
   _tabClaimed = true;   // 동시에 두 탭이 방송해도 서로 닫아버리지 않게
-  if (_tabBC) { try { _tabBC.postMessage({ t: 'takeover' }); } catch (e) {} }
+  if (_tabBC) { try { _tabBC.postMessage({ t: 'takeover', payload: payload || null }); } catch (e) {} }
 }
 
 function _installLinkReceiver() {
@@ -1422,7 +1431,7 @@ function _installLinkReceiver() {
       try { await (window._restoreReady || Promise.resolve()); } catch (e) {}
       await _loadHtmData(d.payload || {});
       autoSaveToDB();                     // 앱을 다시 열어도 남아 있게 (공유파일 처리와 같은 방식)
-      _claimSingleTab();                  // 먼저 열려 있던 지도 탭들은 닫는다
+      _claimSingleTab(d.payload || {});   // 먼저 열려 있던 지도 탭들은 닫는다(못 닫으면 같은 데이터 전달)
       reply(ev, { __jtymap: 'done' });
     } catch (e) {
       hideLoading();
@@ -2576,11 +2585,13 @@ const LAUNCHER_JS = [
 "    if(ev.data.__jtymap==='ready')send(ev.source||win);",
 "    else if(ev.data.__jtymap==='done'){reset('지도 다시 열기');",
 "      say('지도에 표시됐습니다. 이 창은 닫아도 됩니다.');",
-"      // 데이터 전달이 끝났으니 이 창은 스스로 닫는다.",
-"      // 크롬은 '스크립트가 연 창' 또는 '방문기록이 1개뿐인 탭'만 close() 를 허용한다.",
-"      // htm 을 더블클릭해서 연 탭은 기록이 1개라 닫히고, 다른 페이지에서 넘어와",
-"      // 기록이 쌓인 탭이면 거부돼 위 안내문과 함께 그대로 남는다.",
-"      setTimeout(function(){try{window.close();}catch(e){}},400);}",
+"      // ① 지도 탭을 먼저 앞으로 올린다.",
+"      //    이 창을 그냥 닫으면 브라우저가 '직전에 보던 탭'으로 돌아가는데, 예전에 열어둔",
+"      //    빈 지도 탭이 있으면 그게 앞에 나와 '아무것도 안 보인다'가 된다.",
+"      // ② 그 다음 이 창을 닫는다. 크롬은 '스크립트가 연 창' 또는 '방문기록이 1개뿐인 탭'만",
+"      //    close() 를 허용한다 — 더블클릭으로 연 탭은 닫히고, 아니면 안내문과 함께 남는다.",
+"      try{ if(win&&!win.closed) win.focus(); }catch(e){}",
+"      setTimeout(function(){try{window.close();}catch(e){}},500);}",
 "  });",
 "  btn.onclick=function(){",
 "    sent=false;tries=0;btn.disabled=true;btn.textContent='여는 중...';",

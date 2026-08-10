@@ -2387,6 +2387,34 @@ function readPhotoMeta(imgSrc) {
   } catch(e) {}
   return out;
 }
+
+// ─── EXIF 읽기 폴백 (exifr) ──────────────────────────
+// piexif 는 JPEG 의 APP1 을 자체 파서로 훑기 때문에, 아래 경우 GPS 를 통째로 놓친다.
+// 다른 사진앱들은 잘 읽는데 이 뷰어만 못 읽던 원인:
+//   · 삼성/아이폰의 큰 MakerNote·다중 APP1 → piexif.load 가 예외 → catch(e){} 로 조용히 삼켜짐
+//   · HEIC/HEIF (아이폰 기본), PNG, WebP → piexif 는 JPEG 전용이라 아예 못 읽음
+//   · 위치가 EXIF 가 아니라 XMP 에 들어 있는 사진
+// exifr 은 원본 File/Blob 을 청크 단위로 직접 읽어 위 경우를 모두 처리한다.
+// (스크립트는 예전부터 로드돼 있었지만 실제로 호출하는 곳이 없었다 — 2026-08-11 연결)
+async function readPhotoMetaFallback(file) {
+  const out = { taken:'', lat:null, lng:null };
+  if (!window.exifr || !file) return out;
+  try {
+    let ex = null;
+    try { ex = await exifr.parse(file, { tiff:true, ifd0:true, exif:true, gps:true, xmp:true }); } catch(e) {}
+    let la = ex && ex.latitude, lo = ex && ex.longitude;
+    if (la == null || lo == null) {                       // gps() 는 더 관대한 경로 — 한 번 더 시도
+      try { const g = await exifr.gps(file); if (g) { la = g.latitude; lo = g.longitude; } } catch(e) {}
+    }
+    if (typeof la === 'number' && typeof lo === 'number' &&
+        !isNaN(la) && !isNaN(lo) && (la !== 0 || lo !== 0)) { out.lat = la; out.lng = lo; }
+    const d = ex && (ex.DateTimeOriginal || ex.CreateDate || ex.ModifyDate);
+    if (d instanceof Date && !isNaN(d)) out.taken = exifNow(d);
+    else if (typeof d === 'string') out.taken = d;
+  } catch(e) { console.warn('exifr 폴백 실패', e); }
+  return out;
+}
+
 // GPS/촬영일시 등을 JPEG dataURL 의 EXIF 에 기록 (전달 안 한 항목은 유지)
 function writePhotoMeta(imgSrc, { title, desc, lat, lng, taken } = {}) {
   try {
@@ -2496,6 +2524,14 @@ async function loadImageAsMarker(imgFile) {
         }
       } catch(e) {}
 
+      // piexif 가 GPS 를 못 읽었으면 exifr 로 원본 파일을 다시 읽는다
+      // (HEIC·삼성 MakerNote·XMP 위치 등 — readPhotoMetaFallback 주석 참조)
+      let fb = null;
+      if (!latlng) {
+        fb = await readPhotoMetaFallback(imgFile);
+        if (fb.lat != null) latlng = new kakao.maps.LatLng(fb.lat, fb.lng);
+      }
+
       // 대량 사진 대비 메모리 절약: 마커에는 압축 표시본만 사용.
       // 압축은 워커(OffscreenCanvas)에서 — 페이지 캔버스 압축은 지도 백화 유발.
       // 워커 미지원/실패 시 원본 그대로 사용 (백화 없던 옛 동작).
@@ -2513,6 +2549,10 @@ async function loadImageAsMarker(imgFile) {
             }
             if (exif0['Exif']) delete exif0['Exif'][piexif.ExifIFD.UserComment];
             dispSrc = _exifSafeCarry(exif0, compressed);
+          } else if (fb && fb.lat != null) {
+            // piexif 로는 원본 EXIF 를 못 열었지만 exifr 이 위치를 찾은 경우 —
+            // 압축본(JPEG)에 위치·촬영일시를 새로 써 넣어야 저장 파일에도 위치가 남는다
+            dispSrc = writePhotoMeta(compressed, { lat: fb.lat, lng: fb.lng, taken: fb.taken || undefined });
           }
         } catch(e) { dispSrc = compressed; }
       }

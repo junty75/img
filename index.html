@@ -2222,6 +2222,7 @@ document.getElementById('fileInput').onchange = async e => {
   // (index_20260611 방식 + 압축 표시본. 여러 장이면 진행 표시)
   let imgDone = 0;
   if (imageFiles.length > 1) showLoading('사진 불러오는 중... (0/' + imageFiles.length + ')');
+  _noGpsDiag = '';                       // 이번 묶음의 '위치 못 읽음' 사유 (마지막 1건)
   try {
     for (const imgFile of imageFiles) {
       await loadImageAsMarker(imgFile);
@@ -2229,7 +2230,11 @@ document.getElementById('fileInput').onchange = async e => {
       if (imageFiles.length > 1) showLoading('사진 불러오는 중... (' + imgDone + '/' + imageFiles.length + ')');
     }
   } finally { if (imageFiles.length > 1) hideLoading(); }
+  // 위치를 못 읽은 사진이 있으면 이유를 한 번만 알린다 —
+  // 예전엔 조용히 지도 중심에 놓아서 왜 안 되는지 알 수가 없었다
+  if (_noGpsDiag) { alert('사진 위치 정보를 못 읽었습니다.\n\n' + _noGpsDiag); _noGpsDiag = ''; }
 };
+let _noGpsDiag = '';
 
 // ─── EXIF 메타 유틸 (piexif) ─────────────────────────
 // XPTitle/XPComment 는 UTF-16LE 바이트 배열 (한글 안전 — 탐색기/데스크톱 뷰어와 동일 필드)
@@ -2397,10 +2402,11 @@ function readPhotoMeta(imgSrc) {
 // exifr 은 원본 File/Blob 을 청크 단위로 직접 읽어 위 경우를 모두 처리한다.
 // (스크립트는 예전부터 로드돼 있었지만 실제로 호출하는 곳이 없었다 — 2026-08-11 연결)
 async function readPhotoMetaFallback(file) {
-  const out = { taken:'', lat:null, lng:null };
-  if (!window.exifr || !file) return out;
+  const out = { taken:'', lat:null, lng:null, diag:'' };
+  if (!file) { out.diag = '파일 없음'; return out; }
+  if (!window.exifr) { out.diag = 'exifr 미로드 — CDN 차단/오프라인'; return out; }
+  let ex = null;
   try {
-    let ex = null;
     try { ex = await exifr.parse(file, { tiff:true, ifd0:true, exif:true, gps:true, xmp:true }); } catch(e) {}
     let la = ex && ex.latitude, lo = ex && ex.longitude;
     if (la == null || lo == null) {                       // gps() 는 더 관대한 경로 — 한 번 더 시도
@@ -2412,6 +2418,10 @@ async function readPhotoMetaFallback(file) {
     if (d instanceof Date && !isNaN(d)) out.taken = exifNow(d);
     else if (typeof d === 'string') out.taken = d;
   } catch(e) { console.warn('exifr 폴백 실패', e); }
+  out.diag = out.lat != null ? 'GPS 읽음'
+    : (!ex || Object.keys(ex).length === 0)
+      ? 'EXIF 자체가 없음 — 사진이 재저장(스크린샷·메신저 경유 등)된 파일'
+      : 'EXIF 는 있는데 GPS 만 없음 — 안드로이드 갤러리 선택창이 위치를 지운 것.\n사진 고를 때 갤러리 말고 "파일" 앱으로 선택하세요.';
   return out;
 }
 
@@ -2530,6 +2540,8 @@ async function loadImageAsMarker(imgFile) {
       if (!latlng) {
         fb = await readPhotoMetaFallback(imgFile);
         if (fb.lat != null) latlng = new kakao.maps.LatLng(fb.lat, fb.lng);
+        else _noGpsDiag = fb.diag;
+        console.log('[EXIF]', imgFile.name, fb.diag);
       }
 
       // 대량 사진 대비 메모리 절약: 마커에는 압축 표시본만 사용.

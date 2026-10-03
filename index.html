@@ -4079,7 +4079,38 @@ async function loadKMZ(file, silent = false) {
   var _busy = false;
   var _loadedIds = {};      // 이번 세션에 이미 올린 드라이브 사진 (같은 영역 재검색 시 중복 방지)
   function status(t) { try { showLoading(t); } catch (e) {} }
-  function done() { try { hideLoading(); } catch (e) {} _busy = false; }
+  function done() { try { hideLoading(); } catch (e) {} _busy = false; endJob(); }
+
+  // ── 취소할 수 있는 작업 (드라이브 사진 불러오기·파일 열기·폴더 목록) ──
+  // 로딩 화면에 '취소' 버튼을 붙인다. 누르면 받는 중인 요청을 끊고, 지도에 올리는 중이면 지금 묶음(5장)까지만 올리고 멈춘다.
+  var _job = null;
+  var cancelBtn = document.createElement('button');
+  cancelBtn.id = 'gdLoadCancel'; cancelBtn.textContent = '취소';
+  cancelBtn.style.cssText = 'display:none;margin-top:6px;padding:9px 26px;font-size:15px;font-weight:600;border:none;border-radius:8px;background:#fff;color:#c62828;cursor:pointer;';
+  try { document.getElementById('loading').appendChild(cancelBtn); } catch (e) {}
+  function startJob() {
+    endJob();
+    _job = { cancelled: false, ac: (window.AbortController ? new AbortController() : null) };
+    cancelBtn.style.display = '';
+    return _job;
+  }
+  function endJob() { _job = null; cancelBtn.style.display = 'none'; }
+  cancelBtn.onclick = function (e) {
+    e.stopPropagation();
+    if (!_job) return;
+    _job.cancelled = true;
+    try { _job.ac && _job.ac.abort(); } catch (er) {}
+    cancelBtn.style.display = 'none';
+    try { showLoading('취소하는 중...'); } catch (er) {}
+  };
+  function jobSignal(job) { return job && job.ac ? job.ac.signal : undefined; }
+  // 취소됐으면 화면 정리 후 true
+  function cancelled(job, msg) {
+    if (!job || !job.cancelled) return false;
+    if (_job === job) done(); else { try { hideLoading(); } catch (e) {} _busy = false; }
+    toast(msg || '취소했습니다.', 3000);
+    return true;
+  }
 
   // ── 폴더 설정 (검색 폴더 / 업로드 폴더) ──
   // 사진 찾기 폴더 = 여러 개 (예전 저장값은 폴더 1개 객체)
@@ -4183,11 +4214,14 @@ async function loadKMZ(file, silent = false) {
     if (!tok) { login({ picker: mode }); return; }
     _busy = true;
     closePanel();
+    var job = startJob();
     status('드라이브 목록 받는 중...');
     loadIndex(tok, false).then(function (idx) {
+      if (cancelled(job)) return;
       done();
       renderPicker(mode, idx, startId);
     }).catch(function (e) {
+      if (cancelled(job)) return;
       done();
       if (e.auth) { login({ picker: mode }); return; }
       alert('드라이브 폴더 조회 실패: ' + e.message);
@@ -4225,14 +4259,15 @@ async function loadKMZ(file, silent = false) {
                   (cur ? (chosen[cur] ? '<button id="gdUnuse">이 폴더 빼기</button>' : '<button class="pri" id="gdUse">＋ 사진 찾기 폴더에 추가</button>') : '') +
                   '<button id="gdUseAll">전체 드라이브</button>'
                 : '<button class="pri" id="gdUseUp">이 폴더에 올리기</button>') +
-        '<button id="gdBack">취소</button></div>');
+        '<button id="gdBack">취소</button><button id="gdToSetup">설정으로</button></div>');
     Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr[data-id],.fr[data-up]'), function (row) {
       row.onclick = function () {
         if (row.getAttribute('data-up')) renderPicker(mode, idx, byId[cur] && byId[byId[cur][2]] ? byId[cur][2] : null);
         else renderPicker(mode, idx, row.getAttribute('data-id'));
       };
     });
-    $('gdBack').onclick = showSetup;
+    $('gdBack').onclick = closePanel;
+    $('gdToSetup').onclick = showSetup;                    // 취소 = 창 닫기 (예전엔 설정 화면으로 돌아가 반응 없는 것처럼 보였음)
     if (browse) {
       if ($('gdUse')) $('gdUse').onclick = function () {
         var a = getFolders().filter(function (f) { return f.id !== cur; });
@@ -4297,23 +4332,25 @@ async function loadKMZ(file, silent = false) {
   // 드라이브 파일 여러 개를 받아 한 번에 지도에 불러오기
   async function openDriveFiles(list) {
     var tok = getToken(); if (!tok) { login({ picker: 'browse' }); return; }
-    var out = [], bad = [];
+    var out = [], bad = [], job = startJob();
     try {
       for (var i = 0; i < list.length; i++) {
         var f = list[i];
+        if (job.cancelled) break;
         status('드라이브에서 받는 중... (' + (i + 1) + '/' + list.length + ') ' + f.name);
         try {
-          var bl = await (await api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f.id) + '?alt=media', tok)).blob();
+          var bl = await (await api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f.id) + '?alt=media', tok, { signal: jobSignal(job) })).blob();
           var file = new File([bl], f.name, { type: bl.type || '' });
           file._fromDrive = true;
           file._gdId = f.id;                               // 사진 정보 수정 때 드라이브 파일도 고치려고
           out.push(file);
-        } catch (e) { if (e.auth) throw e; bad.push(f.name); }
+        } catch (e) { if (e.auth) throw e; if (job.cancelled) break; bad.push(f.name); }
       }
-      hideLoading();
+      if (cancelled(job, '파일 열기를 중단했습니다.')) return;
+      endJob(); hideLoading();
       if (out.length) await feedFiles(out);
       if (bad.length) alert('받지 못한 파일:\n' + bad.join('\n'));
-    } catch (e) { hideLoading(); if (e.auth) { login({ picker: 'browse' }); return; } alert('파일 받기 실패: ' + e.message); }
+    } catch (e) { if (cancelled(job, '파일 열기를 중단했습니다.')) return; endJob(); hideLoading(); if (e.auth) { login({ picker: 'browse' }); return; } alert('파일 받기 실패: ' + e.message); }
   }
 
   function showCidForm() {
@@ -4349,7 +4386,7 @@ async function loadKMZ(file, silent = false) {
   function api(url, tok, opt) {
     opt = opt || {};
     var headers = opt.headers || {}; headers.Authorization = 'Bearer ' + tok;
-    return fetch(url, { method: opt.method || 'GET', headers: headers, body: opt.body }).then(function (r) {
+    return fetch(url, { method: opt.method || 'GET', headers: headers, body: opt.body, signal: opt.signal }).then(function (r) {
       if (r.status === 401) { lsDel(LS_TOK); var e = new Error('auth'); e.auth = true; throw e; }
       if (!r.ok) return r.text().then(function (t) { var e = new Error('HTTP ' + r.status + ' ' + t.slice(0, 200)); e.status = r.status; throw e; });
       return r;
@@ -4409,7 +4446,9 @@ async function loadKMZ(file, silent = false) {
     _busy = true;
     status('드라이브 사진 목록 받는 중...');
     var fds = getFolders();
+    var job = startJob();
     loadIndex(tok, force).then(function (idx) {
+      if (cancelled(job)) return;
       var files = idx.files, where = '';
       if (fds.length) {
         var ok = fds.filter(function (fd) { return idx.folders.some(function (f) { return f[0] === fd.id; }); });
@@ -4438,21 +4477,22 @@ async function loadKMZ(file, silent = false) {
         if (!confirm('이 화면 안에 드라이브 사진 ' + list.length + '장이 있습니다.' + where + '\n모두 내려받아 지도에 올릴까요? (데이터를 많이 쓸 수 있음)\n\n'
           + '취소하고 지도를 확대해 영역을 좁힐 수도 있습니다.')) { done(); return; }
       }
-      return download(list, tok);
+      return download(list, tok, job, b);
     }).catch(function (e) {
+      if (cancelled(job, '사진 불러오기를 중단했습니다.')) return;
       done();
       if (e.auth) { login({ b: b, force: !!force }); return; }
       alert('드라이브 조회 실패: ' + e.message + '\n\n클라이언트 ID·Drive API 사용 설정·테스트 사용자 등록을 확인하세요.\n(드라이브 버튼을 길게 누르면 설정)');
     });
   }
 
-  function download(list, tok) {
+  function download(list, tok, job, b) {
     var got = [], fail = 0, n = 0, idx = 0;
     status('드라이브에서 사진 받는 중... (0/' + list.length + ')');
     function worker() {
-      if (idx >= list.length) return Promise.resolve();
+      if (idx >= list.length || (job && job.cancelled)) return Promise.resolve();
       var f = list[idx++];
-      return api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f[0]) + '?alt=media', tok)
+      return api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f[0]) + '?alt=media', tok, { signal: jobSignal(job) })
         .then(function (r) { return r.blob(); })
         .then(function (bl) {
                 var file = new File([bl], f[1], { type: f[5] || bl.type || 'image/jpeg' });
@@ -4460,19 +4500,22 @@ async function loadKMZ(file, silent = false) {
                 file._gdId = f[0];
                 got.push({ f: f, file: file });
               }, function () { fail++; })
-        .then(function () { n++; status('드라이브에서 사진 받는 중... (' + n + '/' + list.length + ')'); return worker(); });
+        .then(function () { n++; if (!(job && job.cancelled)) status('드라이브에서 사진 받는 중... (' + n + '/' + list.length + ')'); return worker(); });
     }
     return Promise.all([worker(), worker(), worker()]).then(function () {
+      if (cancelled(job, '사진 불러오기를 중단했습니다. (지도에 올린 사진 없음)')) return;
       hideLoading();
       if (!got.length) { lsDel(LS_TOK); _busy = false; alert('사진을 받지 못했습니다. 다시 눌러 로그인 후 시도하세요.'); return; }
       // 촬영 순서대로 올림 (기존 📂 불러오기 처리에 그대로 넘김 → 마커·자동저장 동일)
       got.sort(function (a, c) { return (a.f[4] || '').localeCompare(c.f[4] || ''); });
-      got.forEach(function (g) { _loadedIds[g.f[0]] = 1; });
-      return feedFiles(got.map(function (g) { return g.file; })).then(function () {
-        _busy = false;
+      return feedFiles(got.map(function (g) { return g.file; }), job).then(function (nOk) {
+        got.slice(0, nOk).forEach(function (g) { _loadedIds[g.f[0]] = 1; });   // 취소로 못 올린 사진은 다음 검색 때 다시
+        if (b) fitBounds(b);                              // 묶음별로 움직인 지도를 검색했던 화면으로
+        if (cancelled(job, '사진 불러오기를 중단했습니다. (' + nOk + '/' + got.length + '장 올림)')) return;
+        done();
         if (fail) alert(got.length + '장을 올렸고, ' + fail + '장은 받지 못했습니다.');
       });
-    }).catch(function (e) { done(); alert('올리기 실패: ' + e.message); });
+    }).catch(function (e) { if (cancelled(job)) return; done(); alert('올리기 실패: ' + e.message); });
   }
 
   // ════ GPX / BGPX → KML (map_kmz/map.html 의 _bgpxToGpx·_gpxToKml 과 같은 코드 — 고치면 같이) ════
@@ -4570,8 +4613,8 @@ async function loadKMZ(file, silent = false) {
     };
   }
   function isImage(f) { return /\.(jpe?g|png)$/i.test(f.name) || /^image\//.test(f.type || ''); }
-  async function feedFiles(files) {
-    if (!files.length || !_origLoad) return;
+  async function feedFiles(files, job) {
+    if (!files.length || !_origLoad) return 0;
     var out = [];
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
@@ -4584,9 +4627,21 @@ async function loadKMZ(file, silent = false) {
       var imgs = out.filter(function (f) { return isImage(f) && !f._fromDrive && !f._fromCam; });
       for (var j = 0; j < imgs.length; j++) imgs[j]._gdRec = await enqueue({ blob: imgs[j], name: imgs[j].name, key: imgs[j].name + '|' + imgs[j].size + '|' + (imgs[j].lastModified || 0) });
     }
-    if (!out.length) return;
-    await _origLoad.call(fileInput, { target: { files: out, value: '' } });
+    if (!out.length) return 0;
+    if (!job) {
+      await _origLoad.call(fileInput, { target: { files: out, value: '' } });
+      pump();
+      return out.length;
+    }
+    var nOk = 0, B = 5;
+    for (var k = 0; k < out.length; k += B) {
+      if (job.cancelled) break;
+      await _origLoad.call(fileInput, { target: { files: out.slice(k, k + B), value: '' } });
+      nOk = Math.min(out.length, k + B);
+      if (!job.cancelled && nOk < out.length) status('지도에 사진 올리는 중... (' + nOk + '/' + out.length + ')');
+    }
     pump();
+    return nOk;
   }
 
   // ════ EXIF 기록 워커 — 페이지(메인 스레드)에서 큰 사진을 다루면 지도 백화가 났던 이력 ════

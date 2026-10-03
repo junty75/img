@@ -3873,35 +3873,44 @@ async function loadKMZ(file, silent = false) {
   }
 }
 </script>
-<!-- ═══ 구글 드라이브 영역 사진 찾기 (index.html / index_vworld.html 공용 블록 — 두 파일 동일하게 유지) ═══
-     지금 지도 화면 안에서 찍힌 드라이브 사진을 찾아 바로 지도에 올린다 (목록 없이 — 휴대폰에서 보기 힘듦).
-     - 드라이브는 업로드된 사진의 GPS 를 imageMediaMetadata.location 으로 이미 들고 있어서
-       사진을 받지 않고 좌표 목록만 조회 → 영역 필터 → 영역 안 사진만 원본 다운로드.
-     - 원본은 기존 📂 불러오기 처리(fileInput.onchange)에 그대로 넘긴다 → 마커·저장·EXIF 동작 동일.
-     - 로그인은 팝업 대신 '리디렉트' 방식(OAuth implicit). 설치된 앱(PWA)에서는 팝업의
-       opener 가 끊겨 토큰이 안 돌아오므로(런처 postMessage 와 같은 문제) 페이지 이동으로 받는다.
-       이동 전 화면 영역·날짜를 저장해 두고, 돌아오면 그 영역으로 자동 검색한다.
-     - 클라이언트 ID 는 Google Cloud 콘솔에서 만든 것(공개돼도 되는 값). 리디렉트 URI 로
-       https://junty75.github.io/img/ 와 https://junty75.github.io/Vmap/ 를 등록해야 한다.
-     - 검색 폴더 지정(2026-10-03): 길게 누르면 설정 → 폴더를 눌러 들어가며 고른다. 고른 폴더와
-       하위 폴더 안의 사진만 찾는다. 폴더 목록도 한 번에 받아 캐시하므로 폴더 탐색은 API 호출 없음.
-     - 구글 '포토'는 2025-03 API 정책 변경으로 라이브러리 조회가 불가 — 드라이브만 지원. -->
+<!-- ═══ 구글 드라이브 연동 (index.html / index_vworld.html 공용 블록 — 두 파일 동일하게 유지) ═══
+     1) 영역 사진 찾기: 지금 지도 화면 안에서 찍힌 드라이브 사진을 찾아 바로 지도에 올린다(목록 없이 — 휴대폰에서 보기 힘듦).
+        드라이브는 사진 GPS 를 imageMediaMetadata.location 으로 들고 있어 좌표 목록만 조회 → 영역 필터 → 영역 안 사진만 원본 다운로드.
+        원본은 기존 📂 불러오기 처리(fileInput.onchange)에 그대로 넘긴다 → 마커·저장·EXIF 동작 동일.
+     2) 검색 폴더(2026-10-03): 길게 누르면 설정 → 폴더를 눌러 들어가며 고른다. 그 폴더 + 하위 폴더 안의 사진만 찾는다.
+        폴더 목록도 한 번에 받아 캐시하므로 폴더 탐색은 API 호출 없음(파일 목록만 폴더별로 그때그때 조회).
+     3) 드라이브 파일 열기: 폴더 화면에 KMZ·KML·ZIP·GPX·BGPX·HTM 파일도 보이고, 누르면 불러온다.
+     4) GPX·BGPX: 📂/드라이브 어느 쪽이든 KML 로 바꿔 기존 KMZ 로더에 넘긴다(변환 코드는 map_kmz/map.html 과 동일).
+     5) 📷 촬영: 촬영 → 제목·설명 입력 → EXIF(XPTitle/XPComment, 위치 없으면 현재 GPS) 기록 → 지도에 올림.
+        EXIF 기록은 워커에서 한다 — 페이지에서 큰 사진을 다루면 지도 백화가 났던 이력(loadImageAsMarker 주석).
+     6) 자동 업로드: 📷 사진 + 📂 로 넣은 휴대폰 사진을 설정에서 고른 드라이브 폴더로 올린다.
+        와이파이만 / 와이파이+데이터 / 끔 선택(navigator.connection.type — 안드로이드 크롬만 구분, 아이폰은 구분 불가).
+        대기열은 IndexedDB('gdrive_up') — 앱이 열려 있을 때만 올라가고, 닫으면 다음에 열 때 이어서.
+        드라이브에서 받은 사진은 다시 올리지 않는다(_fromDrive 표시).
+     로그인은 팝업 대신 '리디렉트'(OAuth implicit). 설치된 앱(PWA)은 팝업 opener 가 끊겨 토큰이 안 돌아온다.
+     이동 전 할 일을 gdrive_pending 에 저장하고 돌아오면 이어서 한다. 범위는 drive(읽기+쓰기) — 업로드 폴더가
+     앱이 만들지 않은 사용자 폴더라 drive.file 로는 보장이 안 된다.
+     클라이언트 ID 는 공개돼도 되는 값. 리디렉트 URI: https://junty75.github.io/img/ , /Vmap/
+     구글 '포토'는 2025-03 API 정책 변경으로 라이브러리 조회가 불가 — 드라이브만 지원. -->
 <script>
 (function () {
   // 클라이언트 ID 를 여기에 고정해 두면 사용자 입력 없이 동작 (비워 두면 처음 한 번 입력받음)
   var GDRIVE_CLIENT_ID = '680805135587-9ttr17d5u8t1h93hb05u0je7c62p3b2a.apps.googleusercontent.com';
-  var SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+  var SCOPE = 'https://www.googleapis.com/auth/drive';
   var LS_CID = 'gdrive_client_id', LS_TOK = 'gdrive_token', LS_PEND = 'gdrive_pending',
-      LS_STATE = 'gdrive_state', LS_CACHE = 'gdrive_list_cache2', LS_FOLDER = 'gdrive_folder';
+      LS_STATE = 'gdrive_state', LS_CACHE = 'gdrive_list_cache2', LS_FOLDER = 'gdrive_folder',
+      LS_UPF = 'gdrive_up_folder', LS_UPNET = 'gdrive_up_net';
   try { localStorage.removeItem('gdrive_list_cache'); } catch (e) {}   // 폴더 정보 없는 옛 캐시 (2026-10-03)
-  var CACHE_MS = 6 * 3600 * 1000;      // 목록 캐시 6시간 (새로 올린 사진은 '목록 새로고침')
-  var MAX_SHOW = 300;                   // 썸네일 최대 표시 수
+  var CACHE_MS = 6 * 3600 * 1000;      // 목록 캐시 6시간 (새로 올린 사진은 '목록 새로 받기')
+  var FILE_RE = /\.(kmz|kml|zip|gpx|bgpx|htm|html)$/i;
 
   function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
   function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+  function lsJson(k) { try { return JSON.parse(lsGet(k) || 'null'); } catch (e) { return null; } }
   function clientId() { return lsGet(LS_CID) || GDRIVE_CLIENT_ID || ''; }
   function redirectUri() { return location.origin + location.pathname.replace(/index\.html?$/i, ''); }
+  function esc(t) { return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
   // ── OAuth 리디렉트 복귀 처리 (#access_token=...) — 다른 코드가 해시를 쓰기 전에 즉시 ──
   var _returned = false;
@@ -3909,12 +3918,12 @@ async function loadKMZ(file, silent = false) {
     var h = location.hash || '';
     if (!/(^#|&)(access_token|error)=/.test(h)) return;
     var p = {};
-    h.slice(1).split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) p[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); });
+    h.slice(1).split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) p[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1).replace(/\+/g, ' ')); });
     try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) {}
     var st = lsGet(LS_STATE); lsDel(LS_STATE);
     if (p.state !== st) return;                                   // 우리가 보낸 요청이 아님
     if (p.access_token) {
-      lsSet(LS_TOK, JSON.stringify({ t: p.access_token, exp: Date.now() + (parseInt(p.expires_in, 10) || 3600) * 1000 - 60000 }));
+      lsSet(LS_TOK, JSON.stringify({ t: p.access_token, s: p.scope || '', exp: Date.now() + (parseInt(p.expires_in, 10) || 3600) * 1000 - 60000 }));
       _returned = true;
     } else if (p.error) {
       lsDel(LS_PEND);
@@ -3922,13 +3931,16 @@ async function loadKMZ(file, silent = false) {
     }
   })();
 
-  function getToken() {
-    try { var o = JSON.parse(lsGet(LS_TOK) || 'null'); if (o && o.t && o.exp > Date.now()) return o.t; } catch (e) {}
-    return null;
+  // write=true 면 쓰기 권한(drive) 있는 토큰만 — 읽기 전용 시절 토큰이면 null
+  function getToken(write) {
+    var o = lsJson(LS_TOK);
+    if (!o || !o.t || o.exp <= Date.now()) return null;
+    if (write && !/auth\/drive(\s|$)/.test(o.s || '')) return null;
+    return o.t;
   }
   function login(pending) {
     var cid = clientId();
-    if (!cid) { showSetup(); return; }
+    if (!cid) { showCidForm(); return; }
     var st = Math.random().toString(36).slice(2) + Date.now().toString(36);
     lsSet(LS_STATE, st);
     if (pending) lsSet(LS_PEND, JSON.stringify(pending));
@@ -3977,40 +3989,56 @@ async function loadKMZ(file, silent = false) {
     } catch (e) {}
   }
 
-  // ── 스타일 + 버튼 + 설정 패널 (클라이언트 ID 입력용 — 평소엔 안 뜬다) ──
-  // 휴대폰에서 썸네일 목록은 보기 힘들다는 요청(2026-10-02)으로, 찾은 사진은 고르지 않고 바로 지도에 올린다.
+  // ── 스타일 + 버튼 + 패널 ──
   var css = document.createElement('style');
   css.textContent =
     '#gdriveBtn{top:72px;right:72px;padding:0;}' +
+    '#gdCamBtn{top:184px;right:72px;padding:0;font-size:22px;}' +
+    '#gdriveBtn .gdq{position:absolute;top:-6px;left:-6px;min-width:18px;height:18px;padding:0 4px;box-sizing:border-box;border-radius:9px;background:#e53935;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;display:none;}' +
+    '#gdriveBtn .gdq.show{display:block;}' +
+    '#gdriveBtn.gd-folder::after{content:"\\1F4C1";position:absolute;right:-5px;bottom:-5px;font-size:15px;line-height:1;}' +
     '#gdPanel{position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.45);display:none;align-items:flex-end;justify-content:center;}' +
     '#gdPanel.show{display:flex;}' +
     '#gdBox{background:#fff;color:#222;width:100%;max-width:560px;max-height:88vh;overflow-y:auto;border-radius:14px 14px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom));box-sizing:border-box;font-size:13px;line-height:1.55;box-shadow:0 -4px 16px rgba(0,0,0,.3);}' +
-    '#gdBox input{width:100%;box-sizing:border-box;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:6px;margin:6px 0;}' +
+    '#gdBox input[type=text],#gdBox textarea{width:100%;box-sizing:border-box;font-size:15px;padding:9px;border:1px solid #ccc;border-radius:8px;margin:4px 0 8px;font-family:inherit;}' +
+    '#gdBox textarea{min-height:70px;resize:vertical;}' +
     '#gdBox code{background:#f1f3f4;padding:1px 4px;border-radius:4px;word-break:break-all;}' +
-    '#gdBox button{border:none;border-radius:8px;padding:9px 14px;font-size:14px;font-weight:600;cursor:pointer;background:#eee;color:#222;margin-right:6px;}' +
+    '#gdBox button{border:none;border-radius:8px;padding:9px 14px;font-size:14px;font-weight:600;cursor:pointer;background:#eee;color:#222;}' +
     '#gdBox button.pri{background:#1a73e8;color:#fff;}' +
-    '#gdBox .fl{max-height:48vh;overflow-y:auto;border:1px solid #eee;border-radius:8px;margin:8px 0;}' +
+    '#gdBox .sec{border-top:1px solid #eee;margin-top:12px;padding-top:10px;}' +
+    '#gdBox .fl{max-height:46vh;overflow-y:auto;border:1px solid #eee;border-radius:8px;margin:8px 0;}' +
     '#gdBox .fr{display:flex;align-items:center;gap:8px;padding:11px 10px;border-bottom:1px solid #f0f0f0;font-size:15px;cursor:pointer;}' +
     '#gdBox .fr:active{background:#e8f0fe;}' +
     '#gdBox .fr .nm{flex:1;word-break:break-all;}' +
-    '#gdBox .fr .ct{color:#888;font-size:12px;}' +
+    '#gdBox .fr .ct{color:#888;font-size:12px;white-space:nowrap;}' +
     '#gdBox .path{font-size:14px;font-weight:600;color:#1a73e8;word-break:break-all;}' +
-    '#gdBox .btns{display:flex;flex-wrap:wrap;gap:6px;}' +
-    '#gdBox .btns button{margin:0;}' +
-    '#gdriveBtn.gd-folder::after{content:"\\1F4C1";position:absolute;right:-5px;bottom:-5px;font-size:15px;line-height:1;}';
+    '#gdBox .btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}' +
+    '#gdBox .net label{display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:14px;}' +
+    '#gdBox .prev{display:block;max-width:100%;max-height:30vh;margin:6px auto 10px;border-radius:8px;}';
   document.head.appendChild(css);
 
   var btn = document.createElement('button');
   btn.className = 'btn'; btn.id = 'gdriveBtn';
-  btn.title = '구글 드라이브에서 지금 화면 안에서 찍은 사진을 찾아 지도에 올리기\n(길게 누르면 설정)';
-  btn.innerHTML = '<svg viewBox="0 0 87.3 78" width="26" height="24"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.060 9.060 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.950 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.750 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>';
+  btn.innerHTML = '<svg viewBox="0 0 87.3 78" width="26" height="24"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg><span class="gdq"></span>';
   document.body.appendChild(btn);
+
+  var camBtn = document.createElement('button');
+  camBtn.className = 'btn'; camBtn.id = 'gdCamBtn'; camBtn.title = '사진 찍기 (제목·설명 입력 → 지도에 올림 → 드라이브 자동 업로드)';
+  camBtn.textContent = '📷';
+  document.body.appendChild(camBtn);
+  var camInput = document.createElement('input');
+  camInput.type = 'file'; camInput.accept = 'image/*'; camInput.setAttribute('capture', 'environment');
+  camInput.style.display = 'none';
+  document.body.appendChild(camInput);
 
   var panel = document.createElement('div');
   panel.id = 'gdPanel';
   panel.innerHTML = '<div id="gdBox"></div>';
   document.body.appendChild(panel);
-  panel.addEventListener('click', function (e) { if (e.target === panel) panel.classList.remove('show'); });
+  var _panelGuard = null;          // 바깥을 눌러 닫을 때 확인이 필요한 화면(촬영 메타 입력)
+  panel.addEventListener('click', function (e) { if (e.target === panel && !_panelGuard) closePanel(); });
+  function openPanel(html) { panel.classList.add('show'); $('gdBox').innerHTML = html; $('gdBox').scrollTop = 0; }
+  function closePanel() { panel.classList.remove('show'); _panelGuard = null; }
   var $ = function (id) { return document.getElementById(id); };
 
   var _busy = false;
@@ -4018,16 +4046,18 @@ async function loadKMZ(file, silent = false) {
   function status(t) { try { showLoading(t); } catch (e) {} }
   function done() { try { hideLoading(); } catch (e) {} _busy = false; }
 
-  // ── 검색 폴더 설정 ──
-  function getFolder() { try { return JSON.parse(lsGet(LS_FOLDER) || 'null'); } catch (e) { return null; } }
+  // ── 폴더 설정 (검색 폴더 / 업로드 폴더) ──
+  function getFolder() { return lsJson(LS_FOLDER); }
   function setFolder(f) { if (f) lsSet(LS_FOLDER, JSON.stringify(f)); else lsDel(LS_FOLDER); updBtn(); }
+  function getUpFolder() { return lsJson(LS_UPF); }
+  function getUpNet() { return lsGet(LS_UPNET) || 'off'; }      // off | wifi | any
+  function uploadOn() { return getUpNet() !== 'off' && !!getUpFolder(); }
   function updBtn() {
     var f = getFolder();
     btn.classList.toggle('gd-folder', !!f);
     btn.title = '구글 드라이브에서 지금 화면 안에서 찍은 사진을 찾아 지도에 올리기\n검색 폴더: '
-      + (f ? f.path || f.name : '전체 드라이브') + '\n(길게 누르면 폴더 선택·설정)';
+      + (f ? f.path || f.name : '전체 드라이브') + '\n(길게 누르면 폴더·파일·업로드 설정)';
   }
-  function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   // 폴더 id → 그 폴더와 모든 하위 폴더 id 집합
   function subtree(rootId, folders) {
     var kids = {}, set = {}, q = [rootId];
@@ -4042,50 +4072,75 @@ async function loadKMZ(file, silent = false) {
     return parts.join(' / ');
   }
 
-  // 설정(길게 누르기): 검색 폴더 / 목록 새로 받기 / 클라이언트 ID
+  // ── 설정 (드라이브 버튼 길게 누르기) ──
   function showSetup() {
-    panel.classList.add('show');
     if (!clientId()) { showCidForm(); return; }
-    var f = getFolder();
-    $('gdBox').innerHTML =
-      '<b style="font-size:15px;">구글 드라이브 사진 찾기 설정</b>' +
-      '<div style="margin-top:10px;">검색 폴더 (하위 폴더 포함)</div>' +
-      '<div class="path">📁 ' + esc(f ? f.path || f.name : '전체 드라이브') + '</div>' +
-      '<div class="btns" style="margin-top:10px;"><button class="pri" id="gdPick">폴더 고르기</button>' +
-        (f ? '<button id="gdAllDrive">전체 드라이브로</button>' : '') + '</div>' +
-      '<div class="btns" style="margin-top:14px;"><button id="gdCacheClr">목록 새로 받기</button>' +
-        '<button id="gdCidEdit">클라이언트 ID</button><button id="gdClose">닫기</button></div>' +
-      '<div style="color:#888;margin-top:10px;">드라이브 사진·폴더 목록은 6시간 동안 기억합니다. 그 사이 새로 올린 사진이나 새로 만든 폴더는 "목록 새로 받기" 후 찾으세요.</div>';
-    $('gdPick').onclick = function () { openPicker(f ? f.id : null); };
-    if ($('gdAllDrive')) $('gdAllDrive').onclick = function () { setFolder(null); showSetup(); };
-    $('gdCacheClr').onclick = function () { lsDel(LS_CACHE); panel.classList.remove('show'); alert('다음 검색 때 드라이브 목록을 새로 받습니다.'); };
-    $('gdCidEdit').onclick = showCidForm;
-    $('gdClose').onclick = function () { panel.classList.remove('show'); };
+    var f = getFolder(), uf = getUpFolder(), net = getUpNet();
+    countQueue().then(function (q) {
+      openPanel(
+        '<b style="font-size:15px;">구글 드라이브 설정</b>' +
+        '<div style="margin-top:8px;">사진 찾기 폴더 (하위 폴더 포함)</div>' +
+        '<div class="path">📁 ' + esc(f ? f.path || f.name : '전체 드라이브') + '</div>' +
+        '<div class="btns"><button class="pri" id="gdPick">폴더 고르기 · 파일 열기</button>' +
+          (f ? '<button id="gdAllDrive">전체 드라이브로</button>' : '') + '</div>' +
+        '<div style="color:#888;font-size:12px;margin-top:4px;">폴더 화면에서 KMZ·GPX·BGPX·HTM 파일을 누르면 지도에 불러옵니다.</div>' +
+        '<div class="sec"><b>자동 업로드</b> (📷 촬영 사진 + 📂 로 넣은 휴대폰 사진)' +
+          '<div class="path" style="margin-top:4px;">⬆ ' + esc(uf ? uf.path || uf.name : '업로드 폴더 없음') + '</div>' +
+          '<div class="btns"><button id="gdUpPick">업로드 폴더 고르기</button></div>' +
+          '<div class="net" style="margin-top:8px;">' +
+            '<label><input type="radio" name="gdnet" value="off"' + (net === 'off' ? ' checked' : '') + '>끔</label>' +
+            '<label><input type="radio" name="gdnet" value="wifi"' + (net === 'wifi' ? ' checked' : '') + '>와이파이만</label>' +
+            '<label><input type="radio" name="gdnet" value="any"' + (net === 'any' ? ' checked' : '') + '>와이파이+데이터</label></div>' +
+          '<div style="margin-top:6px;">대기 ' + q.wait + '장' + (q.fail ? ' · 실패 ' + q.fail + '장' : '') + ' · 올림 ' + q.done + '장' +
+            ' <span style="color:#888;font-size:12px;">(지금 연결: ' + netLabel() + ')</span></div>' +
+          '<div class="btns">' + (q.wait + q.fail ? '<button id="gdUpNow">지금 올리기</button>' : '') +
+            '<button id="gdShots">📷 찍은 사진 · 메타 수정</button></div>' +
+        '</div>' +
+        '<div class="sec btns"><button id="gdCacheClr">목록 새로 받기</button>' +
+          '<button id="gdCidEdit">클라이언트 ID</button><button id="gdClose">닫기</button></div>' +
+        '<div style="color:#888;margin-top:8px;font-size:12px;">드라이브 사진·폴더 목록은 6시간 동안 기억합니다. 그 사이 새로 올린 사진이나 새 폴더는 "목록 새로 받기" 후 찾으세요.<br>' +
+          '업로드는 앱이 열려 있을 때만 진행됩니다. 닫으면 다음에 열 때 이어서 올립니다.</div>');
+      $('gdPick').onclick = function () { openPicker('browse', f ? f.id : null); };
+      if ($('gdAllDrive')) $('gdAllDrive').onclick = function () { setFolder(null); showSetup(); };
+      $('gdUpPick').onclick = function () { openPicker('upload', uf && uf.id !== 'root' ? uf.id : null); };
+      Array.prototype.forEach.call(document.querySelectorAll('input[name=gdnet]'), function (r) {
+        r.onchange = function () {
+          lsSet(LS_UPNET, r.value);
+          if (r.value !== 'off' && !getUpFolder()) alert('업로드 폴더를 먼저 골라 주세요.');
+          pump();
+        };
+      });
+      if ($('gdUpNow')) $('gdUpNow').onclick = function () { closePanel(); pump(true); };
+      $('gdShots').onclick = showShots;
+      $('gdCacheClr').onclick = function () { lsDel(LS_CACHE); closePanel(); alert('다음 검색 때 드라이브 목록을 새로 받습니다.'); };
+      $('gdCidEdit').onclick = showCidForm;
+      $('gdClose').onclick = closePanel;
+    });
   }
 
-  // 폴더 고르기: 목록(캐시)을 받아 폴더를 눌러 들어가는 방식 — 탐색 중에는 API 호출 없음
-  function openPicker(startId) {
+  // ── 폴더 고르기 / 파일 열기 ── mode: 'browse'(사진 찾기 폴더 + 파일 열기) | 'upload'(업로드 폴더)
+  // 폴더 트리는 캐시된 색인에서, 파일 목록은 폴더마다 그때그때 조회
+  function openPicker(mode, startId) {
     if (_busy) return;
-    var tok = getToken();
-    if (!tok) { login({ picker: true }); return; }
+    var tok = mode === 'upload' ? getToken(true) : getToken();
+    if (!tok) { login({ picker: mode }); return; }
     _busy = true;
-    panel.classList.remove('show');
+    closePanel();
     status('드라이브 목록 받는 중...');
     loadIndex(tok, false).then(function (idx) {
       done();
-      renderPicker(idx, startId);
+      renderPicker(mode, idx, startId);
     }).catch(function (e) {
       done();
-      if (e.auth) { login({ picker: true }); return; }
+      if (e.auth) { login({ picker: mode }); return; }
       alert('드라이브 폴더 조회 실패: ' + e.message);
     });
   }
-  function renderPicker(idx, cur) {
+  function renderPicker(mode, idx, cur) {
     var byId = {};
     idx.folders.forEach(function (f) { byId[f[0]] = f; });
     if (cur && !byId[cur]) cur = null;
-    // 이 폴더(하위 포함)의 위치 있는 사진 수 — 고르는 데 참고
-    function count(id) {
+    function count(id) {        // 이 폴더(하위 포함)의 위치 있는 사진 수 — 고르는 데 참고
       var set = subtree(id, idx.folders), n = 0;
       idx.files.forEach(function (p) { if (set[p[6]]) n++; });
       return n;
@@ -4093,39 +4148,87 @@ async function loadKMZ(file, silent = false) {
     // 최상위 = 부모가 폴더 목록에 없는 폴더 (내 드라이브 바로 아래 + 공유받은 폴더)
     var kids = idx.folders.filter(function (f) { return cur ? f[2] === cur : !byId[f[2]]; })
       .sort(function (a, c) { return a[1].localeCompare(c[1], 'ko'); });
-    var html = '<b style="font-size:15px;">검색할 폴더 고르기</b>' +
+    var browse = mode === 'browse';
+    openPanel('<b style="font-size:15px;">' + (browse ? '폴더 고르기 · 파일 열기' : '업로드 폴더 고르기') + '</b>' +
       '<div class="path" style="margin-top:6px;">📁 ' + esc(cur ? folderPath(cur, byId) : '내 드라이브 (최상위)') + '</div>' +
-      (cur ? '<div style="color:#666;font-size:12px;">이 폴더와 하위 폴더의 위치 있는 사진: ' + count(cur) + '장</div>' : '') +
-      '<div class="fl">' +
+      (cur && browse ? '<div style="color:#666;font-size:12px;">이 폴더와 하위 폴더의 위치 있는 사진: ' + count(cur) + '장</div>' : '') +
+      '<div class="fl" id="gdList">' +
         (cur ? '<div class="fr" data-up="1"><span>⬆</span><span class="nm">상위 폴더로</span></div>' : '') +
-        (kids.length ? kids.map(function (f) {
+        kids.map(function (f) {
           return '<div class="fr" data-id="' + esc(f[0]) + '"><span>📁</span><span class="nm">' + esc(f[1]) + '</span><span class="ct">›</span></div>';
-        }).join('') : '<div style="padding:12px;color:#888;">하위 폴더 없음</div>') +
+        }).join('') +
+        (browse ? '<div id="gdFiles" style="padding:10px;color:#888;">파일 목록 받는 중...</div>'
+                : (kids.length ? '' : '<div style="padding:12px;color:#888;">하위 폴더 없음</div>')) +
       '</div>' +
       '<div class="btns">' +
-        (cur ? '<button class="pri" id="gdUse">이 폴더에서 찾기</button>' : '') +
-        '<button id="gdUseAll">전체 드라이브</button><button id="gdBack">취소</button></div>';
-    panel.classList.add('show');
-    $('gdBox').innerHTML = html;
-    $('gdBox').scrollTop = 0;
-    Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr'), function (row) {
+        (browse ? (cur ? '<button class="pri" id="gdUse">이 폴더에서 사진 찾기</button>' : '') + '<button id="gdUseAll">전체 드라이브</button>'
+                : '<button class="pri" id="gdUseUp">이 폴더에 올리기</button>') +
+        '<button id="gdBack">취소</button></div>');
+    Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr[data-id],.fr[data-up]'), function (row) {
       row.onclick = function () {
-        if (row.getAttribute('data-up')) renderPicker(idx, byId[cur] && byId[byId[cur][2]] ? byId[cur][2] : null);
-        else renderPicker(idx, row.getAttribute('data-id'));
+        if (row.getAttribute('data-up')) renderPicker(mode, idx, byId[cur] && byId[byId[cur][2]] ? byId[cur][2] : null);
+        else renderPicker(mode, idx, row.getAttribute('data-id'));
       };
     });
-    if ($('gdUse')) $('gdUse').onclick = function () {
-      setFolder({ id: cur, name: byId[cur][1], path: folderPath(cur, byId) });
-      panel.classList.remove('show');
-      alert('검색 폴더: ' + folderPath(cur, byId) + '\n(하위 폴더 포함)\n\n이제 드라이브 버튼을 누르면 이 폴더 안의 사진만 찾습니다.');
-    };
-    $('gdUseAll').onclick = function () { setFolder(null); panel.classList.remove('show'); alert('검색 폴더: 전체 드라이브'); };
     $('gdBack').onclick = showSetup;
+    if (browse) {
+      if ($('gdUse')) $('gdUse').onclick = function () {
+        setFolder({ id: cur, name: byId[cur][1], path: folderPath(cur, byId) });
+        closePanel();
+        alert('사진 찾기 폴더: ' + folderPath(cur, byId) + '\n(하위 폴더 포함)\n\n이제 드라이브 버튼을 누르면 이 폴더 안의 사진만 찾습니다.');
+      };
+      $('gdUseAll').onclick = function () { setFolder(null); closePanel(); alert('사진 찾기 폴더: 전체 드라이브'); };
+      listFiles(cur || 'root').then(function (files) {
+        var box = $('gdFiles'); if (!box) return;
+        if (!files.length) { box.textContent = '이 폴더에 불러올 파일(KMZ·GPX·BGPX·HTM) 없음'; return; }
+        box.outerHTML = files.map(function (f) {
+          var ic = /\.(gpx|bgpx)$/i.test(f.name) ? '〰️' : /\.html?$/i.test(f.name) ? '📄' : '🗺️';
+          var sz = f.size ? (f.size > 1048576 ? (f.size / 1048576).toFixed(1) + 'MB' : Math.ceil(f.size / 1024) + 'KB') : '';
+          return '<div class="fr" data-file="' + esc(f.id) + '"><span>' + ic + '</span><span class="nm">' + esc(f.name) + '</span><span class="ct">' + sz + '</span></div>';
+        }).join('');
+        Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr[data-file]'), function (row) {
+          row.onclick = function () {
+            var f = files.filter(function (x) { return x.id === row.getAttribute('data-file'); })[0];
+            closePanel(); openDriveFile(f);
+          };
+        });
+      }).catch(function (e) {
+        var box = $('gdFiles'); if (box) box.textContent = '파일 목록 실패: ' + (e.auth ? '로그인 만료 — 다시 열어 주세요' : e.message);
+        if (e.auth) lsDel(LS_TOK);
+      });
+    } else {
+      $('gdUseUp').onclick = function () {
+        var f = cur ? { id: cur, name: byId[cur][1], path: folderPath(cur, byId) } : { id: 'root', name: '내 드라이브', path: '내 드라이브' };
+        lsSet(LS_UPF, JSON.stringify(f));
+        if (getUpNet() === 'off') lsSet(LS_UPNET, 'wifi');       // 폴더를 고르면 기본 '와이파이만'으로 켬
+        showSetup();
+        pump();
+      };
+    }
+  }
+  function listFiles(parentId) {
+    var tok = getToken(); if (!tok) { var e = new Error('auth'); e.auth = true; return Promise.reject(e); }
+    var out = [];
+    return listPaged(tok, "'" + parentId + "' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'",
+      'id,name,mimeType,size', function (arr) { arr.forEach(function (f) { if (FILE_RE.test(f.name)) out.push({ id: f.id, name: f.name, size: +f.size || 0 }); }); }
+    ).then(function () { return out.sort(function (a, c) { return a.name.localeCompare(c.name, 'ko'); }); });
+  }
+  function openDriveFile(f) {
+    var tok = getToken(); if (!tok) { login({ picker: 'browse' }); return; }
+    status('드라이브에서 받는 중... ' + f.name);
+    api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f.id) + '?alt=media', tok)
+      .then(function (r) { return r.blob(); })
+      .then(function (bl) {
+        hideLoading();
+        var file = new File([bl], f.name, { type: bl.type || '' });
+        file._fromDrive = true;
+        return feedFiles([file]);
+      })
+      .catch(function (e) { hideLoading(); if (e.auth) { login({ picker: 'browse' }); return; } alert('파일 받기 실패: ' + e.message); });
   }
 
   function showCidForm() {
-    panel.classList.add('show');
-    $('gdBox').innerHTML =
+    openPanel(
       '<b style="font-size:15px;">구글 드라이브 연결 (클라이언트 ID)</b><br>' +
       '1. <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank">Google Cloud 콘솔</a>에서 프로젝트를 만들고 <b>Google Drive API</b> 사용 설정<br>' +
       '2. API 및 서비스 → OAuth 동의 화면: 외부 / 테스트 상태, 테스트 사용자에 본인 Gmail 추가<br>' +
@@ -4133,15 +4236,15 @@ async function loadKMZ(file, silent = false) {
       '&nbsp;&nbsp;· 승인된 JavaScript 원본: <code>' + location.origin + '</code><br>' +
       '&nbsp;&nbsp;· 승인된 리디렉션 URI: <code>' + location.origin + '/img/</code> , <code>' + location.origin + '/Vmap/</code><br>' +
       '4. 만들어진 클라이언트 ID 를 아래에 붙여넣기' +
-      '<input id="gdCid" placeholder="xxxx.apps.googleusercontent.com" value="' + esc(clientId()) + '">' +
+      '<input type="text" id="gdCid" placeholder="xxxx.apps.googleusercontent.com" value="' + esc(clientId()) + '">' +
       '<div class="btns"><button class="pri" id="gdCidSave">저장</button><button id="gdCidClose">닫기</button></div>' +
-      '<div style="color:#888;margin-top:8px;">로그인 때 "확인되지 않은 앱" 경고가 나오면 고급 → 계속 을 누르세요 (본인이 만든 앱).</div>';
-    $('gdCidClose').onclick = function () { panel.classList.remove('show'); };
+      '<div style="color:#888;margin-top:8px;">로그인 때 "확인되지 않은 앱" 경고가 나오면 고급 → 계속 을 누르세요 (본인이 만든 앱).</div>');
+    $('gdCidClose').onclick = closePanel;
     $('gdCidSave').onclick = function () {
       var v = ($('gdCid').value || '').trim();
       if (!/\.apps\.googleusercontent\.com$/.test(v)) { alert('클라이언트 ID 형식이 아닙니다.\n(....apps.googleusercontent.com 으로 끝나야 함)'); return; }
-      if (v !== clientId()) { lsSet(LS_CID, v); lsDel(LS_TOK); lsDel(LS_CACHE); setFolder(null); }
-      panel.classList.remove('show');
+      if (v !== clientId()) { lsSet(LS_CID, v); lsDel(LS_TOK); lsDel(LS_CACHE); setFolder(null); lsDel(LS_UPF); }
+      closePanel();
       alert('저장했습니다. 지도를 찾을 영역에 맞추고 드라이브 버튼을 누르세요.');
     };
   }
@@ -4154,10 +4257,12 @@ async function loadKMZ(file, silent = false) {
   btn.onclick = function () { if (_lpFired) { _lpFired = false; return; } search(false); };
 
   // ── 드라이브 API ──
-  function api(url, tok) {
-    return fetch(url, { headers: { Authorization: 'Bearer ' + tok } }).then(function (r) {
+  function api(url, tok, opt) {
+    opt = opt || {};
+    var headers = opt.headers || {}; headers.Authorization = 'Bearer ' + tok;
+    return fetch(url, { method: opt.method || 'GET', headers: headers, body: opt.body }).then(function (r) {
       if (r.status === 401) { lsDel(LS_TOK); var e = new Error('auth'); e.auth = true; throw e; }
-      if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 200)); });
+      if (!r.ok) return r.text().then(function (t) { var e = new Error('HTTP ' + r.status + ' ' + t.slice(0, 200)); e.status = r.status; throw e; });
       return r;
     });
   }
@@ -4177,10 +4282,8 @@ async function loadKMZ(file, silent = false) {
   }
   function loadIndex(tok, force) {
     if (!force) {
-      try {
-        var c = JSON.parse(lsGet(LS_CACHE) || 'null');
-        if (c && c.cid === clientId() && Date.now() - c.at < CACHE_MS && c.folders) return Promise.resolve(c);
-      } catch (e) {}
+      var c = lsJson(LS_CACHE);
+      if (c && c.cid === clientId() && Date.now() - c.at < CACHE_MS && c.folders) return Promise.resolve(c);
     }
     var files = [], folders = [], scanned = 0;
     return listPaged(tok, "mimeType='application/vnd.google-apps.folder' and trashed=false", 'id,name,parents', function (arr) {
@@ -4206,10 +4309,10 @@ async function loadKMZ(file, silent = false) {
     });
   }
 
-  // ── 검색 → 바로 받아서 지도에 올리기 ──
+  // ── 영역 사진 찾기 → 바로 받아서 지도에 올리기 ──
   function search(force, b) {
     if (_busy) return;
-    if (!clientId()) { showSetup(); return; }
+    if (!clientId()) { showCidForm(); return; }
     b = b || getBounds();
     if (!b) { alert('지도가 아직 준비되지 않았습니다. 잠시 후 다시 누르세요.'); return; }
     var tok = getToken();
@@ -4259,8 +4362,11 @@ async function loadKMZ(file, silent = false) {
       var f = list[idx++];
       return api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f[0]) + '?alt=media', tok)
         .then(function (r) { return r.blob(); })
-        .then(function (bl) { got.push({ f: f, file: new File([bl], f[1], { type: f[5] || bl.type || 'image/jpeg' }) }); },
-              function () { fail++; })
+        .then(function (bl) {
+                var file = new File([bl], f[1], { type: f[5] || bl.type || 'image/jpeg' });
+                file._fromDrive = true;                       // 드라이브에서 온 사진은 다시 업로드하지 않음
+                got.push({ f: f, file: file });
+              }, function () { fail++; })
         .then(function () { n++; status('드라이브에서 사진 받는 중... (' + n + '/' + list.length + ')'); return worker(); });
     }
     return Promise.all([worker(), worker(), worker()]).then(function () {
@@ -4269,22 +4375,400 @@ async function loadKMZ(file, silent = false) {
       // 촬영 순서대로 올림 (기존 📂 불러오기 처리에 그대로 넘김 → 마커·자동저장 동일)
       got.sort(function (a, c) { return (a.f[4] || '').localeCompare(c.f[4] || ''); });
       got.forEach(function (g) { _loadedIds[g.f[0]] = 1; });
-      var fi = document.getElementById('fileInput');
-      return Promise.resolve(fi.onchange({ target: { files: got.map(function (g) { return g.file; }), value: '' } }))
-        .then(function () {
-          _busy = false;
-          if (fail) alert(got.length + '장을 올렸고, ' + fail + '장은 받지 못했습니다.');
-        });
+      return feedFiles(got.map(function (g) { return g.file; })).then(function () {
+        _busy = false;
+        if (fail) alert(got.length + '장을 올렸고, ' + fail + '장은 받지 못했습니다.');
+      });
     }).catch(function (e) { done(); alert('올리기 실패: ' + e.message); });
   }
 
-  // ── 로그인에서 돌아왔으면: 지도·복원 준비를 기다린 뒤 저장한 영역으로 자동 진행 ──
-  var pend = null;
-  try { pend = JSON.parse(lsGet(LS_PEND) || 'null'); } catch (e) {}
+  // ════ GPX / BGPX → KML (map_kmz/map.html 의 _bgpxToGpx·_gpxToKml 과 같은 코드 — 고치면 같이) ════
+  // .bgpx(이진 GPX, 'Bgpx' 헤더): 'Bgpx' + 크기(4) + 가변정수 [2,0,1] + 문자열 2개(트랙 이름, 종류) 뒤
+  //  (2023년 무렵 파일은 머리말이 [0] 하나뿐 — 나머지 구조는 같다. 2026-10-03 track20231114_613.bgpx 로 확인.
+  //   map.html·사진위치표시.py 는 [2,0,1] 만 가정해 옛 파일을 못 읽는다 → 여기선 둘 다 시도해 좌표가 정상인 쪽을 쓴다)
+  //  가변정수 [기준시각,0,1,점수,사진수?,1,점수,위도,경도,고도,시각] 다음 점마다 차분 [?,d위도,d경도,d고도,d시각].
+  //  가변정수 = 큰 쪽부터 7비트씩(0x80 이어짐). 부호 있는 값은 첫 바이트 0x40 이 음수. 위경도 1e-7도, 고도 0.1m, 시각 2020-01-01 UTC 부터 초.
+  function _bgpxToGpx(u8) {
+    var T0 = Date.UTC(2020, 0, 1) / 1000;
+    function pt(la, lo, el, t) {
+      return '<trkpt lat="' + (la / 1e7).toFixed(7) + '" lon="' + (lo / 1e7).toFixed(7) + '"><ele>' + (el / 10).toFixed(1) + '</ele><time>'
+        + new Date((T0 + t) * 1000).toISOString().replace('.000Z', 'Z') + '</time></trkpt>';
+    }
+    function parse(prefix) {        // prefix = 이름 앞 가변정수 개수 (새 형식 3, 옛 형식 1)
+      var pos = 8;
+      function vlq(signed) {
+        if (signed === undefined) signed = true;
+        if (pos >= u8.length) throw new RangeError('bgpx 끝');
+        var b = u8[pos++], neg = signed && (b & 0x40), v = b & (signed ? 0x3f : 0x7f);
+        while (b & 0x80) { if (pos >= u8.length) throw new RangeError('bgpx 끝'); b = u8[pos++]; v = v * 128 + (b & 0x7f); }
+        return neg ? -v : v;
+      }
+      function str() { var n = vlq(false); if (n > 200) throw new Error('이름 길이 이상'); var s = new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(pos, pos + n)); pos += n; return s; }
+      var name = '', pts = [];
+      try {
+        for (var p = 0; p < prefix; p++) vlq(false);
+        name = str(); str();                                              // 트랙 이름 + 종류
+        var h = []; for (var i = 0; i < 11; i++) h.push(vlq(i >= 7));       // 앞 7개(시각·개수)는 부호 없음
+        var n = h[3], lat = h[7], lon = h[8], ele = h[9], t = h[10];
+        if (!n || Math.abs(lat) > 9e8 || Math.abs(lon) > 18e8 || (!lat && !lon)) return null;
+        pts.push(pt(lat, lon, ele, t));
+        for (var k = 1; k < n; k++) {
+          var r = [vlq(), vlq(), vlq(), vlq(), vlq()];
+          lat += r[1]; lon += r[2]; ele += r[3]; t += r[4];
+          pts.push(pt(lat, lon, ele, t));
+        }
+      } catch (e) { if (!(e instanceof RangeError)) return null; }        // 잘린 파일 — 읽은 데까지만
+      return pts.length ? { name: name, pts: pts } : null;
+    }
+    var r = parse(3) || parse(1) || parse(2);
+    if (!r) throw new Error('bgpx 형식을 읽지 못했습니다');
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="bgpx" xmlns="http://www.topografix.com/GPX/1/1">\n<trk><name>'
+      + esc(r.name || '트랙') + '</name><trkseg>\n' + r.pts.join('\n') + '\n</trkseg></trk>\n</gpx>\n';
+  }
+  // GPX → KML: 트랙(trk/trkseg)·경로(rte) → LineString, 웨이포인트(wpt) → Point. gpx_style 색·굵기 확장은 살린다.
+  function _gpxToKml(text) {
+    var xml = new DOMParser().parseFromString(text, 'application/xml');
+    function child(el, tag) { return Array.prototype.filter.call(el.children, function (c) { return c.localName === tag; })[0]; }
+    function all(el, tag) { return Array.prototype.slice.call(el.getElementsByTagNameNS('*', tag)); }
+    function ll(p) { return p.getAttribute('lon') + ',' + p.getAttribute('lat') + ',0'; }
+    var styles = '', pms = '', sn = 0;
+    function line(el, segs, idx) {
+      segs = segs.filter(function (s) { return s.length >= 2; });
+      if (!segs.length) return;
+      var su = '', ex = child(el, 'extensions');
+      if (ex) {
+        var c = ((all(ex, 'color')[0] || {}).textContent || '').trim().replace('#', '');
+        var w = parseFloat((all(ex, 'width')[0] || {}).textContent) || 3;
+        if (/^[0-9a-f]{6}$/i.test(c)) {
+          var id = 'gs' + (sn++);
+          styles += '<Style id="' + id + '"><LineStyle><color>ff' + c.slice(4, 6) + c.slice(2, 4) + c.slice(0, 2) + '</color><width>' + w + '</width></LineStyle></Style>\n';
+          su = '<styleUrl>#' + id + '</styleUrl>';
+        }
+      }
+      var g = segs.map(function (s) { return '<LineString><coordinates>' + s.map(ll).join(' ') + '</coordinates></LineString>'; });
+      var nm = esc((child(el, 'name') || {}).textContent || ('경로' + idx));
+      pms += '<Placemark><name>' + nm + '</name>' + su + (g.length === 1 ? g[0] : '<MultiGeometry>' + g.join('') + '</MultiGeometry>') + '</Placemark>\n';
+    }
+    all(xml, 'trk').forEach(function (t, i) { line(t, all(t, 'trkseg').map(function (s) { return all(s, 'trkpt'); }), i + 1); });
+    all(xml, 'rte').forEach(function (r, i) { line(r, [all(r, 'rtept')], i + 1); });
+    all(xml, 'wpt').forEach(function (p) {
+      pms += '<Placemark><name>' + esc((child(p, 'name') || {}).textContent || '') + '</name><Point><coordinates>' + ll(p) + '</coordinates></Point></Placemark>\n';
+    });
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document>\n' + styles + pms + '</Document></kml>';
+  }
+  async function trackToKmlFile(file) {
+    var u8 = new Uint8Array(await file.arrayBuffer());
+    var gpx = (u8[0] === 0x42 && u8[1] === 0x67) ? _bgpxToGpx(u8) : new TextDecoder('utf-8').decode(u8);   // 'Bg' = bgpx
+    var kml = _gpxToKml(gpx);
+    if (!/<Placemark>/.test(kml)) throw new Error('트랙·웨이포인트가 없습니다');
+    return new File([kml], file.name.replace(/\.(b?gpx)$/i, '') + '.kml', { type: 'application/vnd.google-earth.kml+xml' });
+  }
+
+  // ════ 📂 불러오기 가로채기: GPX/BGPX 변환 + 휴대폰 사진 업로드 대기열 ════
+  // 원래 처리(_origLoad)는 그대로 두고 앞단만 끼운다 — 마커·자동저장 로직은 지도별 원래 코드.
+  var fileInput = document.getElementById('fileInput');
+  var _origLoad = fileInput && fileInput.onchange;
+  if (fileInput) {
+    fileInput.accept = (fileInput.accept || '') + ',.gpx,.bgpx';
+    fileInput.onchange = function (e) {
+      var files = Array.prototype.slice.call(e.target.files || []);
+      try { e.target.value = ''; } catch (er) {}
+      return feedFiles(files);
+    };
+  }
+  function isImage(f) { return /\.(jpe?g|png)$/i.test(f.name) || /^image\//.test(f.type || ''); }
+  async function feedFiles(files) {
+    if (!files.length || !_origLoad) return;
+    var out = [];
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (/\.b?gpx$/i.test(f.name)) {
+        try { out.push(await trackToKmlFile(f)); } catch (er) { alert(f.name + ' 을(를) 읽지 못했습니다.\n(' + er.message + ')'); }
+      } else out.push(f);
+    }
+    // 휴대폰에서 고른 사진 → 업로드 대기열 (드라이브에서 온 것·촬영 버튼 사진은 제외 — 촬영은 따로 넣음)
+    if (uploadOn()) {
+      var imgs = out.filter(function (f) { return isImage(f) && !f._fromDrive && !f._fromCam; });
+      for (var j = 0; j < imgs.length; j++) await enqueue({ blob: imgs[j], name: imgs[j].name, key: imgs[j].name + '|' + imgs[j].size + '|' + (imgs[j].lastModified || 0) });
+    }
+    if (!out.length) return;
+    await _origLoad.call(fileInput, { target: { files: out, value: '' } });
+    pump();
+  }
+
+  // ════ EXIF 기록 워커 — 페이지(메인 스레드)에서 큰 사진을 다루면 지도 백화가 났던 이력 ════
+  // 지도 쪽 writePhotoMeta 와 보조 함수를 그대로 워커에 옮겨 같은 결과를 낸다(_fixExif 정규화 포함).
+  var _exW = null, _exSeq = 0, _exCb = {};
+  function exifWorker() {
+    if (_exW) return _exW;
+    var fns = ['_xpBytes', '_xpStr', '_gpsRat', 'exifNow', '_fixExif', '_exifSafeCarry', 'writePhotoMeta'];
+    var src = 'self.window = self; importScripts("https://cdn.jsdelivr.net/npm/piexifjs");\n'
+      + fns.map(function (n) { return String(window[n] || eval(n)); }).join('\n') + '\n'
+      + 'onmessage = function (e) { var d = e.data; try {'
+      + '  var url = new FileReaderSync().readAsDataURL(new Blob([d.blob], { type: "image/jpeg" }));'   // 형식 표시가 비면 piexif 가 JPEG 아님으로 거부
+      + '  var out = writePhotoMeta(url, d.meta);'
+      + '  var bin = atob(out.slice(out.indexOf(",") + 1)), u8 = new Uint8Array(bin.length);'
+      + '  for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);'
+      + '  postMessage({ id: d.id, blob: new Blob([u8], { type: "image/jpeg" }) });'
+      + '} catch (er) { postMessage({ id: d.id, err: String(er) }); } };';
+    _exW = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    _exW.onmessage = function (e) { var cb = _exCb[e.data.id]; delete _exCb[e.data.id]; if (cb) cb(e.data); };
+    return _exW;
+  }
+  // meta = { title, desc, lat, lng, taken } — 주는 항목만 기록, 나머지 EXIF 는 유지. JPEG 만.
+  function writeMetaBlob(blob, meta) {
+    return new Promise(function (res, rej) {
+      var w; try { w = exifWorker(); } catch (er) { rej(er); return; }
+      var id = ++_exSeq;
+      var to = setTimeout(function () { delete _exCb[id]; rej(new Error('EXIF 기록 시간 초과')); }, 60000);
+      _exCb[id] = function (d) { clearTimeout(to); if (d.err) rej(new Error(d.err)); else res(d.blob); };
+      w.postMessage({ id: id, blob: blob, meta: meta });
+    });
+  }
+
+  // ════ 📷 촬영 → 제목·설명 → EXIF → 지도 + 업로드 대기열 ════
+  var _geoP = null;
+  camBtn.onclick = function () {
+    // 카메라가 열려 있는 동안 현재 위치를 미리 잡아 둔다 (사진에 GPS 가 없을 때 사용)
+    _geoP = new Promise(function (res) {
+      if (!navigator.geolocation) { res(null); return; }
+      navigator.geolocation.getCurrentPosition(function (p) { res({ lat: p.coords.latitude, lng: p.coords.longitude }); },
+        function () { res(null); }, { enableHighAccuracy: true, timeout: 30000, maximumAge: 60000 });
+    });
+    camInput.value = '';
+    camInput.click();
+  };
+  camInput.onchange = function () {
+    var file = camInput.files && camInput.files[0];
+    if (!file) return;
+    askMeta({ title: '', desc: '', preview: file, isNew: true }, function (meta) {
+      if (meta) processShot(file, meta);
+    });
+  };
+  // 제목·설명 입력 창 (촬영 직후 / 찍은 사진 목록에서 수정)
+  function askMeta(o, cb) {
+    var url = o.preview ? URL.createObjectURL(o.preview) : '';
+    _panelGuard = true;
+    openPanel('<b style="font-size:15px;">' + (o.isNew ? '사진 정보 입력' : '사진 정보 수정') + '</b>' +
+      (url ? '<img class="prev" src="' + url + '">' : '') +
+      '<div>제목</div><input type="text" id="gdMtTitle" value="' + esc(o.title) + '" placeholder="예: 3번 맨홀 침하">' +
+      '<div>설명 / 메모</div><textarea id="gdMtDesc" placeholder="자유 메모">' + esc(o.desc) + '</textarea>' +
+      '<div class="btns"><button class="pri" id="gdMtOk">' + (o.isNew ? '지도에 올리기' : '저장') + '</button>' +
+      '<button id="gdMtCancel">' + (o.isNew ? '사진 버리기' : '취소') + '</button></div>' +
+      (o.isNew ? '<div style="color:#888;font-size:12px;margin-top:6px;">제목·설명은 사진 파일(EXIF)에 들어가 탐색기·드라이브에서도 보입니다. 비워 둬도 됩니다.</div>' : ''));
+    setTimeout(function () { try { $('gdMtTitle').focus(); } catch (e) {} }, 150);
+    function finish(v) { if (url) URL.revokeObjectURL(url); closePanel(); cb(v); }
+    $('gdMtOk').onclick = function () { finish({ title: $('gdMtTitle').value.trim(), desc: $('gdMtDesc').value.trim() }); };
+    $('gdMtCancel').onclick = function () {
+      if (o.isNew && !confirm('찍은 사진을 버릴까요?')) return;
+      finish(null);
+    };
+  }
+  function shotName(title) {
+    var d = new Date(), p = function (n) { return String(n).padStart(2, '0'); };
+    var stamp = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    var t = (title || '').replace(/[\\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 60);
+    return (t ? t + '_' : 'IMG_') + stamp + '.jpg';
+  }
+  async function processShot(file, meta) {
+    status('사진 정리 중...');
+    try {
+      var m = { title: meta.title, desc: meta.desc };
+      var fb = null;
+      try { fb = await readPhotoMetaFallback(file); } catch (e) {}
+      if (!fb || fb.lat == null) {
+        var g = await Promise.race([_geoP || Promise.resolve(null), new Promise(function (r) { setTimeout(function () { r(null); }, 8000); })]);
+        if (g) { m.lat = g.lat; m.lng = g.lng; }
+      }
+      if (!fb || !fb.taken) m.taken = exifNow();
+      var out = file;
+      if (/jpe?g$/i.test(file.type) || /\.jpe?g$/i.test(file.name)) {
+        try { out = await writeMetaBlob(file, m); } catch (e) { console.warn('EXIF 기록 실패 — 원본 사용', e); }
+      }
+      var name = shotName(meta.title);
+      var f2 = new File([out], name, { type: 'image/jpeg' });
+      f2._fromCam = true;
+      hideLoading();
+      if (m.lat == null && (!fb || fb.lat == null)) alert('사진 위치를 못 잡았습니다 (GPS 꺼짐?). 지도 가운데에 놓습니다.\n마커를 길게 눌러 위치를 옮길 수 있습니다.');
+      await feedFiles([f2]);
+      await enqueue({ blob: f2, name: name, title: meta.title, desc: meta.desc, cam: true, hold: !uploadOn() });
+      pump();
+    } catch (e) { hideLoading(); alert('사진 처리 실패: ' + e.message); }
+  }
+
+  // ════ 업로드 대기열 (IndexedDB 'gdrive_up') ════
+  // 기록: { id, name, blob, key, cam, title, desc, st: 'wait'|'done'|'fail'|'hold', driveId, err, at }
+  //  - hold: 업로드가 꺼진 동안 찍은 사진(목록·메타 수정용). 업로드를 켜도 자동으로 올리지 않는다.
+  //  - 올리고 나면 blob 은 지운다(휴대폰 저장공간). 이후 메타 수정은 드라이브에서 받아 고쳐 다시 올린다.
+  var _db = null;
+  function upDB() {
+    if (_db) return _db;
+    _db = new Promise(function (res, rej) {
+      var rq = indexedDB.open('gdrive_up', 1);
+      rq.onupgradeneeded = function () { var s = rq.result.createObjectStore('q', { keyPath: 'id', autoIncrement: true }); s.createIndex('key', 'key'); };
+      rq.onsuccess = function () { res(rq.result); };
+      rq.onerror = function () { rej(rq.error); };
+    });
+    return _db;
+  }
+  function tx(mode, fn) {
+    return upDB().then(function (db) {
+      return new Promise(function (res, rej) {
+        var t = db.transaction('q', mode), s = t.objectStore('q'), r = fn(s);
+        t.oncomplete = function () { res(r && r.result); };
+        t.onerror = function () { rej(t.error); };
+      });
+    });
+  }
+  function allRecs() { return tx('readonly', function (s) { return s.getAll(); }).then(function (a) { return a || []; }); }
+  function putRec(r) { return tx('readwrite', function (s) { return s.put(r); }); }
+  async function enqueue(r) {
+    try {
+      if (r.key) {
+        var dup = await tx('readonly', function (s) { return s.index('key').get(r.key); });
+        if (dup) return;                                           // 같은 사진을 또 불러온 경우
+      }
+      r.st = r.hold ? 'hold' : 'wait'; delete r.hold;
+      r.at = Date.now();
+      r.folder = getUpFolder();
+      await putRec(r);
+      updBadge();
+    } catch (e) { console.warn('업로드 대기열 저장 실패', e); }
+  }
+  function countQueue() {
+    return allRecs().then(function (a) {
+      var c = { wait: 0, fail: 0, done: 0 };
+      a.forEach(function (r) { if (c[r.st] != null) c[r.st]++; });
+      return c;
+    }).catch(function () { return { wait: 0, fail: 0, done: 0 }; });
+  }
+  function updBadge() {
+    countQueue().then(function (c) {
+      var n = c.wait + c.fail, el = btn.querySelector('.gdq');
+      el.textContent = n > 99 ? '99+' : String(n);
+      el.classList.toggle('show', n > 0 && uploadOn());
+    });
+  }
+  function netType() { var c = navigator.connection; return c && c.type ? c.type : ''; }
+  function netLabel() {
+    var t = netType();
+    return !navigator.onLine ? '오프라인' : t === 'wifi' || t === 'ethernet' ? '와이파이' : t === 'cellular' ? '데이터' : t ? t : '구분 불가';
+  }
+  // 아이폰·PC 처럼 연결 종류를 알 수 없으면 허용(와이파이로 간주)
+  function netAllowed() {
+    if (!navigator.onLine) return false;
+    var p = getUpNet();
+    if (p === 'off') return false;
+    if (p === 'any') return true;
+    var t = netType();
+    return t !== 'cellular' && t !== 'wimax' && t !== 'bluetooth' && t !== 'none';
+  }
+  var _pumping = false;
+  // force=true(설정의 '지금 올리기'): 로그인이 필요하면 로그인으로 보낸다. 평소엔 조용히 대기.
+  async function pump(force) {
+    if (_pumping) return;
+    updBadge();
+    if (!uploadOn()) { if (force) alert('업로드 폴더와 네트워크(와이파이만/와이파이+데이터)를 먼저 설정하세요.'); return; }
+    if (!netAllowed()) { if (force) alert('지금 연결(' + netLabel() + ')에서는 업로드하지 않도록 설정돼 있습니다.'); return; }
+    var recs = (await allRecs()).filter(function (r) { return (r.st === 'wait' || (force && r.st === 'fail')) && r.blob; });
+    if (!recs.length) return;
+    var tok = getToken(true);
+    if (!tok) { if (force) login({ pump: true }); return; }
+    _pumping = true;
+    var ok = 0, bad = 0;
+    try {
+      for (var i = 0; i < recs.length; i++) {
+        if (!netAllowed()) break;
+        var r = recs[i], fd = r.folder || getUpFolder();
+        try {
+          var id = await uploadBlob(tok, r.blob, r.name, fd && fd.id, r.desc);
+          r.st = 'done'; r.driveId = id; r.blob = null; r.err = '';
+          ok++;
+        } catch (e) {
+          if (e.auth) break;
+          r.st = 'fail'; r.err = e.message; bad++;
+        }
+        await putRec(r);
+        updBadge();
+      }
+    } finally { _pumping = false; updBadge(); }
+    if (force) alert('업로드: ' + ok + '장 완료' + (bad ? ', ' + bad + '장 실패' : ''));
+    if (ok) lsDel(LS_CACHE);          // 새 사진이 영역 검색에 잡히도록
+  }
+  // 드라이브 재개 가능 업로드(resumable) — multipart 는 5MB 한계라 휴대폰 원본이 걸린다
+  async function uploadBlob(tok, blob, name, folderId, desc) {
+    var metaBody = { name: name, parents: [folderId || 'root'] };
+    if (desc) metaBody.description = desc;
+    var r = await api('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id', tok, {
+      method: 'POST', body: JSON.stringify(metaBody),
+      headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Type': blob.type || 'image/jpeg' } });
+    var loc = r.headers.get('Location');
+    if (!loc) throw new Error('업로드 주소를 받지 못함');
+    var r2 = await api(loc, tok, { method: 'PUT', body: blob, headers: { 'Content-Type': blob.type || 'image/jpeg' } });
+    return (await r2.json()).id;
+  }
+
+  // ── 찍은 사진 목록 · 메타 수정 ──
+  async function showShots() {
+    var recs = (await allRecs()).filter(function (r) { return r.cam; }).sort(function (a, c) { return c.at - a.at; }).slice(0, 100);
+    var stTxt = { wait: '⏳ 대기', done: '✅ 올림', fail: '⚠️ 실패', hold: '📱 업로드 안 함' };
+    openPanel('<b style="font-size:15px;">📷 찍은 사진 (최근 100장)</b>' +
+      '<div style="color:#888;font-size:12px;">누르면 제목·설명을 고칩니다. 올린 사진은 드라이브 파일도 함께 고칩니다.</div>' +
+      '<div class="fl">' + (recs.length ? recs.map(function (r) {
+        var d = new Date(r.at);
+        return '<div class="fr" data-rid="' + r.id + '"><span class="nm"><b>' + esc(r.title || r.name) + '</b><br><span style="color:#888;font-size:12px;">'
+          + d.toLocaleString('ko-KR') + (r.desc ? ' · ' + esc(r.desc.slice(0, 40)) : '') + '</span></span><span class="ct">' + (stTxt[r.st] || r.st) + '</span></div>';
+      }).join('') : '<div style="padding:12px;color:#888;">아직 📷 버튼으로 찍은 사진이 없습니다.</div>') + '</div>' +
+      '<div class="btns"><button id="gdShotsBack">뒤로</button></div>');
+    $('gdShotsBack').onclick = showSetup;
+    Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr[data-rid]'), function (row) {
+      row.onclick = function () {
+        var r = recs.filter(function (x) { return String(x.id) === row.getAttribute('data-rid'); })[0];
+        askMeta({ title: r.title || '', desc: r.desc || '', preview: r.blob || null }, function (v) {
+          if (v) editShot(r, v); else showShots();
+        });
+      };
+    });
+  }
+  async function editShot(r, v) {
+    status('사진 정보 고치는 중...');
+    try {
+      if (r.blob) {
+        // 아직 안 올린 사진 — 보관 중인 파일의 EXIF 를 고친다
+        try { r.blob = await writeMetaBlob(r.blob, { title: v.title, desc: v.desc }); } catch (e) { console.warn(e); }
+      } else if (r.driveId) {
+        // 이미 올린 사진 — 드라이브에서 받아 EXIF 를 고쳐 같은 파일로 다시 올린다 (설명은 드라이브 '설명' 칸에도)
+        var tok = getToken(true);
+        if (!tok) { hideLoading(); alert('드라이브 파일을 고치려면 로그인이 필요합니다.\n드라이브 버튼 → 설정 → "지금 올리기" 또는 사진 찾기로 로그인한 뒤 다시 하세요.'); return; }
+        var bl = await (await api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(r.driveId) + '?alt=media', tok)).blob();
+        var nb = await writeMetaBlob(bl, { title: v.title, desc: v.desc });
+        await api('https://www.googleapis.com/upload/drive/v3/files/' + encodeURIComponent(r.driveId) + '?uploadType=media', tok,
+          { method: 'PATCH', body: nb, headers: { 'Content-Type': 'image/jpeg' } });
+        await api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(r.driveId), tok,
+          { method: 'PATCH', body: JSON.stringify({ description: v.desc || '' }), headers: { 'Content-Type': 'application/json; charset=UTF-8' } });
+      }
+      r.title = v.title; r.desc = v.desc;
+      await putRec(r);
+      hideLoading();
+      alert('사진 정보를 고쳤습니다.' + (r.driveId ? '\n(드라이브 파일도 고침)' : '') + '\n\n지도 마커 이름은 마커를 길게 눌러 바꿀 수 있습니다.');
+      showShots();
+    } catch (e) { hideLoading(); alert('수정 실패: ' + e.message); }
+  }
+
+  // 연결이 바뀌거나 앱으로 돌아오면 대기열을 이어서 올린다
+  window.addEventListener('online', function () { pump(); });
+  try { navigator.connection && navigator.connection.addEventListener('change', function () { pump(); }); } catch (e) {}
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) pump(); });
+
+  // ── 로그인에서 돌아왔으면: 지도·복원 준비를 기다린 뒤 하던 일을 이어서 ──
+  var pend = lsJson(LS_PEND);
   lsDel(LS_PEND);
   updBtn();
+  setTimeout(function () { pump(); }, 4000);
   if (_returned && pend && pend.picker) {
-    setTimeout(function () { openPicker(null); }, 800);
+    setTimeout(function () { openPicker(pend.picker, null); }, 800);
+  } else if (_returned && pend && pend.pump) {
+    setTimeout(function () { pump(true); }, 1500);
   } else if (_returned && pend && pend.b) {
     var t0 = Date.now();
     (function wait() {

@@ -853,6 +853,7 @@ window.removeEventListener('popstate', _earlyBackHandler);
 window.addEventListener('popstate', function(ev) {
   _histDepth = (ev.state && ev.state.k) || 0;   // 남은 버퍼 깊이 동기화
   // 주의: 여기서 pushState/forward() 금지 — 위 (1)(2) 함정 참조
+  if (window.gdOnBack && window.gdOnBack()) return;   // 구글 드라이브 창·불러오기가 떠 있으면 그것만 닫는다
   if (drawingMode) {
     if (drawUndo.length > 0) undoLastAction();
     else stopDrawing();
@@ -4072,8 +4073,18 @@ async function loadKMZ(file, silent = false) {
   document.body.appendChild(panel);
   var _panelGuard = null;          // 바깥을 눌러 닫을 때 확인이 필요한 화면(촬영 메타 입력)
   panel.addEventListener('click', function (e) { if (e.target === panel && !_panelGuard) closePanel(); });
-  function openPanel(html) { panel.classList.add('show'); $('gdBox').innerHTML = html; $('gdBox').scrollTop = 0; }
-  function closePanel() { panel.classList.remove('show'); _panelGuard = null; }
+  var _panelBack = null;           // 뒤로가기 때 할 일 (없으면 그냥 닫기) — 입력 중인 화면은 각자의 '닫기/취소' 동작
+  function openPanel(html) { panel.classList.add('show'); _panelBack = null; $('gdBox').innerHTML = html; $('gdBox').scrollTop = 0; }
+  function closePanel() { panel.classList.remove('show'); _panelGuard = null; _panelBack = null; }
+  // 휴대폰 뒤로가기 — 지도 쪽 popstate 처리가 맨 먼저 부른다(히스토리는 지도 쪽 버퍼가 관리, 여기선 건드리지 않음)
+  window.gdOnBack = function () {
+    if (panel.classList.contains('show')) {
+      if (_panelBack) _panelBack(); else closePanel();
+      return true;
+    }
+    if (_job && cancelBtn.style.display !== 'none') { cancelBtn.click(); return true; }   // 드라이브 불러오는 중이면 취소
+    return false;
+  };
   var $ = function (id) { return document.getElementById(id); };
 
   var _busy = false;
@@ -4259,7 +4270,7 @@ async function loadKMZ(file, silent = false) {
                   (cur ? (chosen[cur] ? '<button id="gdUnuse">이 폴더 빼기</button>' : '<button class="pri" id="gdUse">＋ 사진 찾기 폴더에 추가</button>') : '') +
                   '<button id="gdUseAll">전체 드라이브</button>'
                 : '<button class="pri" id="gdUseUp">이 폴더에 올리기</button>') +
-        '<button id="gdBack">취소</button><button id="gdToSetup">설정으로</button></div>');
+        '<button id="gdBack">닫기</button><button id="gdToSetup">설정으로</button></div>');
     Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr[data-id],.fr[data-up]'), function (row) {
       row.onclick = function () {
         if (row.getAttribute('data-up')) renderPicker(mode, idx, byId[cur] && byId[byId[cur][2]] ? byId[cur][2] : null);
@@ -4751,6 +4762,7 @@ async function loadKMZ(file, silent = false) {
     if ($('gdMtQ')) $('gdMtQ').onchange = function () { lsSet(LS_UPQ, this.value); };
     if ($('gdMtSave')) $('gdMtSave').onchange = function () { lsSet(LS_CAMSAVE, this.checked ? '1' : '0'); };
     $('gdMtOk').onclick = function () { finish({ title: $('gdMtTitle').value.trim(), desc: $('gdMtDesc').value.trim() }); };
+    _panelBack = function () { $('gdMtCancel').click(); };    // 찍은 직후면 '사진 버리기' 확인을 거친다
     $('gdMtCancel').onclick = function () {
       if (o.isNew && !confirm('찍은 사진을 버릴까요?')) return;
       finish(null);
@@ -5097,6 +5109,7 @@ async function loadKMZ(file, silent = false) {
       '<div class="fl">' + (rows.join('') || '<div style="padding:12px;color:#888;">지금 화면 안에 사진이 없습니다.</div>') + '</div>' +
       '<div class="btns"><button id="gdMpBack">' + (back ? '뒤로' : '닫기') + '</button></div>');
     $('gdMpBack').onclick = function () { closePanel(); if (back) back(); };
+    _panelBack = $('gdMpBack').onclick;
     Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr[data-i]'), function (row) {
       row.onclick = function () { photoInfo(list[+row.getAttribute('data-i')], function () { showMapPhotos(back); }); };
     });
@@ -5158,6 +5171,7 @@ async function loadKMZ(file, silent = false) {
         }).catch(function () {});
     }
     $('gdPiClose').onclick = function () { closePanel(); if (back) back(); };
+    _panelBack = $('gdPiClose').onclick;                   // 목록에서 열었으면 목록으로
     $('gdPiSave').onclick = function () {
       var v = { title: $('gdPiTitle').value.trim(), desc: $('gdPiDesc').value.trim() };
       var t = inputToTaken($('gdPiTaken').value);

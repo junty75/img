@@ -853,12 +853,67 @@ window.removeEventListener('popstate', _earlyBackHandler);
 window.addEventListener('popstate', function(ev) {
   _histDepth = (ev.state && ev.state.k) || 0;   // 남은 버퍼 깊이 동기화
   // 주의: 여기서 pushState/forward() 금지 — 위 (1)(2) 함정 참조
+  if (_exitArmed) return;                             // 종료 대기로 맨 앞 항목에 온 것 — 다음 뒤로가기는 브라우저가 처리(앱 종료)
+  const _pv = document.getElementById('photoViewer'); // 사진 크게 보기 → 지도로 (드라이브 창 위에 떠 있을 수도 있어 맨 먼저)
+  if (_pv && _pv.classList.contains('show')) { _pv.classList.remove('show'); return; }
   if (window.gdOnBack && window.gdOnBack()) return;   // 구글 드라이브 창·불러오기가 떠 있으면 그것만 닫는다
+  if (_closeTopPopup()) return;                       // 사진 보기·입력창·메뉴가 떠 있으면 그것만 닫는다
   if (drawingMode) {
     if (drawUndo.length > 0) undoLastAction();
     else stopDrawing();
+    return;
   }
+  _armExit();
 });
+
+// 뒤로가기로 닫을 화면들 (위에 뜬 것부터)
+function _closeTopPopup() {
+  const dyn = Array.from(document.querySelectorAll('body > div:not([id])')).filter(el => {
+    const cs = getComputedStyle(el);   // 즉석으로 만든 전체 화면 창(id 없음, 화면 전체 덮음)
+    return cs.position === 'fixed' && cs.display !== 'none' && el.offsetWidth >= innerWidth - 2 && el.offsetHeight >= innerHeight - 2;
+  });
+  if (dyn.length) { dyn[dyn.length - 1].remove(); return true; }   // 위치 공유 등 즉석 확인창
+  const closers = [
+    ['markerEditModal', () => closeMarkerEditModal()],
+    ['markerModal',     () => closeMarkerModal()],
+    ['stylePicker',     () => closeStylePicker()],
+    ['polyMenu',        () => hidePolyMenu()],
+    ['searchResults',   () => hideSearchResults()],
+  ];
+  for (const [id, fn] of closers) {
+    const el = document.getElementById(id);
+    if (el && el.classList.contains('show')) { try { fn(); } catch (e) { el.classList.remove('show'); } return true; }
+  }
+  if (typeof markerPlacingMode !== 'undefined' && markerPlacingMode) {   // 마커 찍기 조준 중 → 취소
+    markerPlacingMode = false;
+    document.getElementById('markerBtn').classList.remove('active');
+    document.getElementById('crosshair').classList.remove('show');
+    return true;
+  }
+  if (typeof markers !== 'undefined') {                // 열린 말풍선
+    let closed = false;
+    markers.forEach(m => { try { if (m.iw && m.iw.getMap && m.iw.getMap()) { m.iw.close(); closed = true; } } catch (e) {} });
+    if (closed) return true;
+  }
+  return false;
+}
+
+// 아무 작업도 없을 때 뒤로가기: 한 번 = 안내만, 이어서 한 번 더 = 앱 종료.
+// 웹앱은 스스로 창을 닫을 수 없다(window.close 는 히스토리가 있으면 막힘) → 쌓아 둔 버퍼를 한 번에
+// 맨 앞 항목으로 되돌려 두면, 다음 뒤로가기는 페이지가 아니라 브라우저가 받아 앱이 닫힌다.
+// 그 사이 화면을 만지면 pointerup 의 _histTopUp 이 버퍼를 다시 채우고 종료 대기가 풀린다.
+let _exitArmed = false, _exitTimer = null;
+function _armExit() {
+  if (_histDepth <= 0) return;
+  _exitArmed = true;
+  showToastMsg('뒤로가기를 한 번 더 누르면 종료됩니다');
+  history.go(-_histDepth);
+}
+const _histTopUp0 = _histTopUp;
+_histTopUp = function () {
+  if (_exitArmed) { _exitArmed = false; document.getElementById('deleteHint').classList.remove('show'); }
+  _histTopUp0();
+};
 
 // 되돌리기: 마지막 동작(탭 점 1개 또는 펜 획 1개)을 취소
 function undoLastAction() {
@@ -996,7 +1051,7 @@ window.addEventListener('beforeinstallprompt', e => {
 
 // ─── 변수 ─────────────────────────────────────────────
 let map, markers = [], polylines = [];
-let locationMode = 0, watchId = null, locationMarker = null; // 0=끄기 1=내위치표시 2=따라가기
+let locationMode = 1, watchId = null, locationMarker = null; // 1=내위치표시(시작 상태) 2=따라가기 — 내 위치는 항상 표시
 let deviceHeading = null;   // 기기 나침반 방향
 let headingInterval = null; // 정지 중 방향 갱신 타이머
 let hasData = false, suppressMapClick = false, suppressLongPress = false;
@@ -1497,6 +1552,8 @@ kakao.maps.load(() => {
     .then(async file => { if (file) await loadKMZ(file, true); })
     .catch(e => console.warn('이전 데이터 복원 실패 — 빈 지도로 시작', e));
   window._restoreReady = Promise.race([_restore, new Promise(r => setTimeout(r, 15000))]);
+  window._restoreReady.then(() => { _restoreDone = true; });
+  _startLocationOnLoad();   // 내 위치 1단계로 시작 (항상 표시 + 처음 한 번 내 위치로)
   _restore.then(() => { try { consumeSharedFiles(); } catch (e) { console.warn('공유파일 처리 실패', e); } });
   _installLinkReceiver();
 
@@ -2066,12 +2123,14 @@ function makeLocationContent(heading) {
     return `<div style="width:30px;height:50px;pointer-events:none;">` +
       `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="50" ` +
       `style="transform:rotate(${rot}deg);transform-origin:15px 25px;overflow:visible;">` +
-      `<polygon points="15,2 6,20 24,20" fill="rgba(229,57,53,0.82)" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>` +
-      `<circle cx="15" cy="25" r="9" fill="#e53935" stroke="white" stroke-width="2.5"/>` +
+      `<circle cx="15" cy="25" r="15" fill="rgba(26,115,232,0.18)"/>` +
+      `<polygon points="15,2 6,20 24,20" fill="rgba(26,115,232,0.85)" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>` +
+      `<circle cx="15" cy="25" r="8" fill="#1a73e8" stroke="white" stroke-width="2.5"/>` +
       `</svg></div>`;
   }
   return `<div style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;pointer-events:none;">` +
-    `<div style="width:18px;height:18px;background:#e53935;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>` +
+    `<div style="width:30px;height:30px;border-radius:50%;background:rgba(26,115,232,0.18);display:flex;align-items:center;justify-content:center;">` +
+    `<div style="width:16px;height:16px;background:#1a73e8;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div></div>` +
     `</div>`;
 }
 
@@ -2096,39 +2155,60 @@ function setupDeviceOrientation() {
   }
 }
 
-// ─── 내 위치 버튼 (3단계) ─────────────────────────────
-// 0=끄기(흰색) → 2=위치따라가기(파란색) → 1=내위치만표시(하늘색) → 0=끄기
+// ─── 내 위치 버튼 (2단계) ─────────────────────────────
+// 내 위치는 항상 표시(지도 열면 바로 GPS 시작). 끄기 단계는 없음.
+//   1단계(하늘색) = 내 위치 표시. 버튼을 누르면 내 위치로 지도 이동
+//   2단계(파란색) = 따라가기. 이미 내 위치가 화면 가운데면 버튼 한 번에 따라가기로
+//   2단계에서 누르면 1단계로(따라가기만 해제)
+// 처음 열면 복원이 끝난 뒤 내 위치로 한 번 이동한다 — 그 전에 손으로 지도를 움직였거나
+// 런처·공유로 파일이 들어와 그쪽으로 화면이 바뀌었으면 이동하지 않는다.
+let _locAutoCenter = true;     // 처음 위치를 잡으면 한 번 이동할지
+let _restoreDone = false;      // 복원이 끝난 뒤의 setBounds = 런처·공유·드라이브가 화면을 바꾼 것
+
 document.getElementById('myLocationBtn').onclick = () => {
-  const nextMode = [2, 0, 1]; // 0→2→1→0 순환
-  locationMode = nextMode[locationMode];
-  applyLocationMode();
+  const pos = locationMarker && locationMarker.getPosition();
+  if (watchId === null) {            // 권한 거부·오류로 멈춰 있으면 다시 시작하고 잡히는 대로 이동
+    _locAutoCenter = false;
+    locationMode = 1; applyLocationMode(); _locCenterNext = true;
+    return;
+  }
+  if (locationMode === 2) { locationMode = 1; applyLocationMode(); return; }
+  if (pos && !_isMapCenteredOn(pos)) { _locAutoCenter = false; map.setCenter(pos); return; }
+  if (!pos) { _locCenterNext = true; return; }   // 아직 위치 못 잡음 → 잡히면 이동
+  locationMode = 2; applyLocationMode();
 };
+let _locCenterNext = false;          // 다음 위치가 잡히면 한 번 이동
+
+// 내 위치가 화면 가운데(20px 안)에 있는지
+function _isMapCenteredOn(ll) {
+  try {
+    const proj = map.getProjection();
+    const a = proj.containerPointFromCoords(ll), b = proj.containerPointFromCoords(map.getCenter());
+    return Math.hypot(a.x - b.x, a.y - b.y) < 20;
+  } catch (e) { return false; }
+}
 
 function applyLocationMode() {
   const btn = document.getElementById('myLocationBtn');
   btn.classList.remove('loc-show', 'loc-follow');
+  btn.classList.add(locationMode === 2 ? 'loc-follow' : 'loc-show');
+  startLocationWatchIfNeeded();
+  if (locationMode === 2 && locationMarker) map.setCenter(locationMarker.getPosition());
+}
 
-  if (locationMode === 0) {
-    // 끄기: GPS 중단, 마커 제거
-    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
-    if (locationMarker) { locationMarker.setMap(null); locationMarker = null; }
-    if (headingInterval) { clearInterval(headingInterval); headingInterval = null; }
-  } else if (locationMode === 1) {
-    // 내위치만 표시
-    btn.classList.add('loc-show');
-    startLocationWatchIfNeeded();
-  } else if (locationMode === 2) {
-    // 위치 따라가기
-    btn.classList.add('loc-follow');
-    startLocationWatchIfNeeded();
-    if (locationMarker) map.setCenter(locationMarker.getPosition());
-  }
+function _startLocationOnLoad() {
+  try {
+    kakao.maps.event.addListener(map, 'dragstart', () => { _locAutoCenter = false; _locAutoPending = false; });
+    const _sb = map.setBounds.bind(map);
+    map.setBounds = function () { if (_restoreDone) { _locAutoCenter = false; _locAutoPending = false; } return _sb.apply(null, arguments); };
+  } catch (e) {}
+  applyLocationMode();
 }
 
 function startLocationWatchIfNeeded() {
   if (watchId !== null) return;
   setupDeviceOrientation();
-  headingInterval = setInterval(() => {
+  if (!headingInterval) headingInterval = setInterval(() => {
     if (locationMarker && deviceHeading !== null) {
       locationMarker.setContent(makeLocationContent(deviceHeading));
     }
@@ -2136,6 +2216,15 @@ function startLocationWatchIfNeeded() {
   watchId = navigator.geolocation.watchPosition(pos => {
     const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
     if (locationMode === 2) map.setCenter(ll); // 따라가기 모드에서만 중심 이동
+    if (_locCenterNext) { _locCenterNext = false; map.setCenter(ll); }
+    if (_locAutoCenter) {                      // 처음 열었을 때 한 번 — 복원이 끝난 뒤에
+      _locAutoCenter = false;
+      _locAutoPending = true;
+      Promise.resolve(window._restoreReady).catch(() => {}).then(() => {
+        if (_locAutoPending && locationMarker) map.setCenter(locationMarker.getPosition());
+        _locAutoPending = false;
+      });
+    }
     // 나침반(바라보는 방향) 우선. GPS heading은 정지 중 무작위로 튀므로 나침반 없을 때만 폴백.
     const h = (deviceHeading !== null)
       ? deviceHeading
@@ -2151,11 +2240,15 @@ function startLocationWatchIfNeeded() {
       locationMarker.setContent(makeLocationContent(h));
     }
   }, () => {
-    alert('위치 정보를 가져올 수 없습니다.');
-    locationMode = 0;
-    applyLocationMode();
+    // 권한 거부·GPS 꺼짐 — 매번 뜨는 경고창 대신 토스트. 버튼을 누르면 다시 시도한다
+    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    _locAutoCenter = false; _locAutoPending = false;
+    locationMode = 1;
+    document.getElementById('myLocationBtn').classList.remove('loc-show', 'loc-follow');
+    showToastMsg('위치 정보를 가져올 수 없습니다 (GPS·위치 권한 확인)');
   }, { enableHighAccuracy: true, maximumAge: 3000 });
 }
+let _locAutoPending = false;
 
 // ─── 위치 공유 (지도 길게 누르기) ─────────────────────
 // 확인창에서 '공유'를 누르면 안드로이드 공유 시트(navigator.share)가 열리고

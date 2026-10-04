@@ -605,7 +605,7 @@ function searchTier(r) {
 let searchSeq = 0;
 async function doSearch() {
   const q = document.getElementById('searchInput').value.trim();
-  if (!q) { hideSearchResults(); return; }
+  if (!q) { hideSearchResults(); clearSearchMarker(); return; }   // 빈칸으로 검색 = 검색 핀 지우기
   const seq = ++searchSeq;
   showSearchMsg('검색 중...');
   const settled = await Promise.allSettled(searchQueries(q).flatMap(qq => [searchAddress(qq), searchPlace(qq)]));
@@ -649,11 +649,22 @@ function renderSearchResults(list) {
   box.classList.add('show');
 }
 
+// 검색한 자리 핀 — map.html 과 같은 카카오 기본 마커. 자동저장·내보내기 대상(markers) 아님
+let searchMarker = null, _lastSearchQ = '';
+function clearSearchMarker() {
+  if (searchMarker) { searchMarker.setMap(null); searchMarker = null; }
+  _lastSearchQ = '';
+}
 function moveToSearchResult(r) {
   hideSearchResults();
   document.getElementById('searchInput').blur();
   if (!map) return;
-  map.setCenter(new kakao.maps.LatLng(r.lat, r.lng));
+  const pos = new kakao.maps.LatLng(r.lat, r.lng);
+  if (searchMarker) searchMarker.setMap(null);
+  searchMarker = new kakao.maps.Marker({ map, position: pos, zIndex: 5 });
+  searchMarker.setClickable(false);   // 지도 탭(마커 찍기·선 그리기)을 가로채지 않게
+  _lastSearchQ = document.getElementById('searchInput').value.trim();
+  map.setCenter(pos);
   if (map.getLevel() > 3) map.setLevel(3);
   scheduleAddrUpdate(r.lat, r.lng);
 }
@@ -668,7 +679,17 @@ function moveToSearchResult(r) {
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); doSearch(); }
     else if (e.key === 'Escape') { hideSearchResults(); input.blur(); }
   });
-  document.getElementById('searchGo').addEventListener('click', () => { input.blur(); doSearch(); });
+  // 검색한 자리에 핀이 있는 채로 같은 검색어(또는 빈칸)로 검색 버튼을 다시 누르면 → 핀·검색어 지우기
+  document.getElementById('searchGo').addEventListener('click', () => {
+    input.blur();
+    const q = input.value.trim();
+    if (searchMarker && (!q || q === _lastSearchQ)) {
+      clearSearchMarker();
+      input.value = ''; syncClear(); hideSearchResults();
+      return;
+    }
+    doSearch();
+  });
   clear.addEventListener('click', () => {
     input.value = '';
     syncClear();

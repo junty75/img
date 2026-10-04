@@ -1553,6 +1553,20 @@ kakao.maps.load(() => {
     .catch(e => console.warn('이전 데이터 복원 실패 — 빈 지도로 시작', e));
   window._restoreReady = Promise.race([_restore, new Promise(r => setTimeout(r, 15000))]);
   window._restoreReady.then(() => { _restoreDone = true; });
+  // 전에 보던 화면 복원 — 복원(setBounds)이 끝난 뒤 덮어쓴다. 런처·공유 파일은 이보다 뒤에 그려져 그쪽이 이긴다.
+  const _lpK = (() => { try { return JSON.parse(localStorage.getItem('lastPosK')); } catch (_) { return null; } })();
+  _restore.then(() => {
+    if (_lpK && isFinite(_lpK.lat) && isFinite(_lpK.lng)) {
+      try { if (isFinite(_lpK.z)) map.setLevel(_lpK.z); map.setCenter(new kakao.maps.LatLng(_lpK.lat, _lpK.lng)); } catch (e) {}
+    }
+    let _lpTimer = null;     // 복원이 끝난 뒤부터 보던 화면 저장
+    kakao.maps.event.addListener(map, 'idle', () => {
+      clearTimeout(_lpTimer);
+      _lpTimer = setTimeout(() => {
+        try { const c = map.getCenter(); localStorage.setItem('lastPosK', JSON.stringify({ lat: c.getLat(), lng: c.getLng(), z: map.getLevel() })); } catch (e) {}
+      }, 500);
+    });
+  });
   _startLocationOnLoad();   // 내 위치 1단계로 시작 (항상 표시 + 처음 한 번 내 위치로)
   _restore.then(() => { try { consumeSharedFiles(); } catch (e) { console.warn('공유파일 처리 실패', e); } });
   _installLinkReceiver();
@@ -2116,22 +2130,19 @@ function openViewer(src, name) {
 }
 
 // ─── 위치 마커 HTML (방향 화살표) ─────────────────────
-function makeLocationContent(heading) {
+// 내 위치 마커 SVG — 보라색(설명=빨강·사진=파랑 원과 구분). 방향 있으면 내비 화살표, 없으면 흰 점 박힌 고리
+function locMarkerSvg(heading) {
   const hasH = heading != null && !isNaN(heading) && heading >= 0;
-  if (hasH) {
-    const rot = Math.round(heading);
-    return `<div style="width:30px;height:50px;pointer-events:none;">` +
-      `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="50" ` +
-      `style="transform:rotate(${rot}deg);transform-origin:15px 25px;overflow:visible;">` +
-      `<circle cx="15" cy="25" r="15" fill="rgba(26,115,232,0.18)"/>` +
-      `<polygon points="15,2 6,20 24,20" fill="rgba(26,115,232,0.85)" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>` +
-      `<circle cx="15" cy="25" r="8" fill="#1a73e8" stroke="white" stroke-width="2.5"/>` +
-      `</svg></div>`;
-  }
-  return `<div style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;pointer-events:none;">` +
-    `<div style="width:30px;height:30px;border-radius:50%;background:rgba(26,115,232,0.18);display:flex;align-items:center;justify-content:center;">` +
-    `<div style="width:16px;height:16px;background:#1a73e8;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div></div>` +
-    `</div>`;
+  const body = hasH
+    ? '<polygon points="20,4 31,32 20,26 9,32" fill="#8e24aa" stroke="white" stroke-width="2.5" stroke-linejoin="round"/>'
+    : '<circle cx="20" cy="20" r="9" fill="#8e24aa" stroke="white" stroke-width="3"/><circle cx="20" cy="20" r="3" fill="white"/>';
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">' +
+    '<circle cx="20" cy="20" r="18" fill="rgba(142,36,170,0.18)" stroke="rgba(142,36,170,0.45)" stroke-width="1"/>' +
+    body + '</svg>';
+}
+function makeLocationContent(heading) {
+  const rot = (heading != null && !isNaN(heading) && heading >= 0) ? Math.round(heading) : 0;
+  return `<div style="width:40px;height:40px;pointer-events:none;transform:rotate(${rot}deg);">` + locMarkerSvg(heading) + `</div>`;
 }
 
 // ─── 기기 나침반 리스너 설정 ──────────────────────────
@@ -2162,7 +2173,7 @@ function setupDeviceOrientation() {
 //   2단계에서 누르면 1단계로(따라가기만 해제)
 // 처음 열면 복원이 끝난 뒤 내 위치로 한 번 이동한다 — 그 전에 손으로 지도를 움직였거나
 // 런처·공유로 파일이 들어와 그쪽으로 화면이 바뀌었으면 이동하지 않는다.
-let _locAutoCenter = true;     // 처음 위치를 잡으면 한 번 이동할지
+let _locAutoCenter = false;    // 처음 실행 때 내 위치로 이동하지 않음(전에 보던 화면 유지) — 버튼을 눌러야 이동
 let _restoreDone = false;      // 복원이 끝난 뒤의 setBounds = 런처·공유·드라이브가 화면을 바꾼 것
 
 document.getElementById('myLocationBtn').onclick = () => {

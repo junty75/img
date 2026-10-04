@@ -220,6 +220,8 @@
   var css = document.createElement('style');
   css.textContent =
     '#gdriveBtn{top:72px;right:72px;padding:0;}' +
+    // 길게 누를 때 크롬이 버튼 글자(📷)를 선택하거나 메뉴를 띄우며 터치를 취소해 버리던 것 막기
+    '#gdriveBtn,#gdCamBtn{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none;}' +
     '#gdCamBtn{top:184px;right:72px;padding:0;font-size:22px;}' +
     '#gdriveBtn .gdq{position:absolute;top:-6px;left:-6px;min-width:18px;height:18px;padding:0 4px;box-sizing:border-box;border-radius:9px;background:#e53935;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;display:none;}' +
     '#gdriveBtn .gdq.show{display:block;}' +
@@ -590,12 +592,42 @@
     };
   }
 
-  // 길게 누르기(0.7초) = 설정 열기, 짧게 = 검색
-  var _lpTimer = null, _lpFired = false;
-  btn.addEventListener('pointerdown', function () { _lpFired = false; _lpTimer = setTimeout(function () { _lpFired = true; showSetup(); }, 700); });
-  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { btn.addEventListener(ev, function () { clearTimeout(_lpTimer); }); });
-  btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-  btn.onclick = function () { if (_lpFired) { _lpFired = false; return; } search(false); };
+  // ── 길게 누르기 (드라이브·📷 버튼 공용) ──
+  // 0.55초 누르고 있으면 onLong, 짧게 떼면 onShort. 길게 누른 뒤 따라오는 click 은 버린다.
+  // 크롬은 0.5초쯤 지나면 글자 선택·메뉴를 띄우며 pointercancel 을 보내 타이머가 꺼졌다 → CSS(user-select·touch-callout·
+  // touch-action) + contextmenu/selectstart 차단으로 막는다. 손가락이 조금 흔들려도(12px 안) 유지.
+  // 길게 누르기로 창을 연 직후, 손을 떼며 생기는 click 이 막 열린 창의 바깥 배경(= 닫기)에 떨어져
+  // 창이 열리자마자 닫히던 문제 → 실행 직후 0.7초 동안은 화면 어디의 click 이든 버린다(캡처 단계).
+  var _swallowClickUntil = 0;
+  document.addEventListener('click', function (e) {
+    if (Date.now() < _swallowClickUntil) { _swallowClickUntil = 0; e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  function longPress(el, onLong, onShort) {
+    var timer = null, fired = false, x0 = 0, y0 = 0, down = false;
+    function stop() { clearTimeout(timer); timer = null; down = false; }
+    el.addEventListener('pointerdown', function (e) {
+      fired = false; down = true; x0 = e.clientX; y0 = e.clientY;
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        timer = null; if (!down) return; fired = true; down = false;
+        _swallowClickUntil = Date.now() + 700;
+        onLong();
+      }, 550);
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (down && (Math.abs(e.clientX - x0) > 12 || Math.abs(e.clientY - y0) > 12)) stop();
+    });
+    ['pointerup', 'pointercancel'].forEach(function (ev) { el.addEventListener(ev, stop); });
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    el.addEventListener('selectstart', function (e) { e.preventDefault(); });
+    el.addEventListener('click', function (e) {
+      if (fired) { fired = false; e.preventDefault(); e.stopImmediatePropagation(); return; }
+      onShort(e);
+    });
+  }
+
+  // 드라이브 버튼: 길게 = 설정 열기, 짧게 = 검색
+  longPress(btn, function () { showSetup(); }, function () { search(false); });
 
   // ── 드라이브 API ──
   function api(url, tok, opt) {
@@ -924,12 +956,9 @@
 
   // ════ 📷 촬영 → 제목·설명 → EXIF → 지도 + 업로드 대기열 ════
   var _geoP = null;
-  var _camLp = null, _camLpFired = false;
-  camBtn.addEventListener('pointerdown', function () { _camLpFired = false; _camLp = setTimeout(function () { _camLpFired = true; showMapPhotos(); }, 700); });
-  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { camBtn.addEventListener(ev, function () { clearTimeout(_camLp); }); });
-  camBtn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-  camBtn.onclick = function () {
-    if (_camLpFired) { _camLpFired = false; return; }
+  // 📷 버튼: 길게 = 지금 화면 안의 사진 목록(만), 짧게 = 촬영
+  longPress(camBtn, function () { showMapPhotos(); }, function () { startCamera(); });
+  function startCamera() {
     // 카메라가 열려 있는 동안 현재 위치를 미리 잡아 둔다 (사진에 GPS 가 없을 때 사용)
     _geoP = new Promise(function (res) {
       if (!navigator.geolocation) { res(null); return; }
@@ -938,7 +967,7 @@
     });
     camInput.value = '';
     camInput.click();
-  };
+  }
   camInput.onchange = function () {
     var file = camInput.files && camInput.files[0];
     if (!file) return;

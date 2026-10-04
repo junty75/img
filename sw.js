@@ -1,11 +1,11 @@
-const CACHE_NAME = 'kmz-viewer-v33';   // 지도 타일·라이브러리 캐시 추가 → 캐시 갱신
+const CACHE_NAME = 'kmz-viewer-v34';   // gdrive.js 분리(공통 파일) → 캐시 갱신
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const TILE_CACHE  = 'map-tiles-v1';   // 지도 타일 (버전 올려도 지우지 않음 — 데이터 절약)
 const LIB_CACHE   = 'map-libs-v1';    // 지도 SDK·CDN 라이브러리
 const KEEP_CACHES = [CACHE_NAME, SHARE_CACHE, TILE_CACHE, LIB_CACHE];
-const STATIC_ASSETS = ['./index.html', './manifest.json'];
+const STATIC_ASSETS = ['./index.html', './gdrive.js', './manifest.json'];
 
-const TILE_MAX = 4000;                 // 타일 최대 개수 (위성 타일 평균 25KB → 약 100MB). 넘으면 오래 저장된 것부터 삭제
+const TILE_MAX = 8000;                 // 타일 최대 개수 (평균 20KB → 약 160MB, '지도 미리 받기' 3단계 한 번 ≈ 2500장). 넘으면 오래 저장된 것부터 삭제
 const DAY = 86400000;
 const TILE_FRESH_DAYS  = 60;           // 버전 없는 타일(브이월드·항공사진)은 60일 지나면 다시 받음
 const CADAS_FRESH_DAYS = 30;           // 지적도는 바뀔 수 있어 30일
@@ -186,6 +186,12 @@ self.addEventListener('fetch', e => {
   if ((url.hostname === 'map.vworld.kr' && url.pathname.startsWith('/js/vworldMapInit')) ||
       (url.hostname === 'dapi.kakao.com' && url.pathname === '/v2/maps/sdk.js')) {
     e.respondWith(networkFirst(e, LIB_CACHE, url.href));
+    return;
+  }
+
+  // 같은 사이트 스크립트(gdrive.js)는 페이지와 같이 네트워크 우선 — 새로 올린 파일이 바로 반영되고, 오프라인이면 저장본
+  if (url.origin === location.origin && url.pathname.endsWith('.js') && !url.pathname.endsWith('/sw.js')) {
+    e.respondWith(networkFirst(e, CACHE_NAME, './' + url.pathname.split('/').pop()));
     return;
   }
 

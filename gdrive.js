@@ -281,7 +281,27 @@
   var $ = function (id) { return document.getElementById(id); };
 
   var _busy = false;
-  var _loadedIds = {};      // 이번 세션에 이미 올린 드라이브 사진 (같은 영역 재검색 시 중복 방지)
+  // 지금 지도에 있는 드라이브 사진인지 — 세션 기억이 아니라 실제 마커로 판단(지운 사진은 다시 올림)
+  // driveId 없는 옛 마커는 같은 이름·약 1km 안이면 같은 사진으로 본다
+  function onMapTest() {
+    var ids = {}, olds = [];
+    try {
+      (markers || []).forEach(function (m) {
+        if (!m || !m.imgSrc) return;
+        if (m.driveId) ids[m.driveId] = 1;
+        else olds.push(m);
+      });
+    } catch (e) {}
+    return function (f) {
+      if (ids[f[0]]) return true;
+      var nm = String(f[1]).replace(/\.[^.]+$/, '');
+      return olds.some(function (m) {
+        if (m.name !== nm) return false;
+        var ll = entryLL(m);
+        return !ll || Math.abs(f[2] - ll.lat) + Math.abs(f[3] - ll.lng) < 0.01;
+      });
+    };
+  }
   function status(t) { try { showLoading(t); } catch (e) {} }
   function done() { try { hideLoading(); } catch (e) {} _busy = false; endJob(); }
 
@@ -711,7 +731,8 @@
         where = '\n(검색 폴더: ' + folderLabel(ok) + ' + 하위 폴더)' + (gone.length ? '\n(못 찾은 폴더: ' + folderLabel(gone) + ')' : '');
       }
       var hit = files.filter(function (f) { return f[2] >= b.s && f[2] <= b.n && f[3] >= b.w && f[3] <= b.e; });
-      var list = hit.filter(function (f) { return !_loadedIds[f[0]]; });
+      var onMap = onMapTest();
+      var list = hit.filter(function (f) { return !onMap(f); });
       if (!hit.length) {
         done();
         alert('이 화면 안에서 찍힌 드라이브 사진이 없습니다.' + where + '\n(위치 있는 사진 ' + files.length + '장 중)\n\n'
@@ -756,7 +777,6 @@
       // 촬영 순서대로 올림 (기존 📂 불러오기 처리에 그대로 넘김 → 마커·자동저장 동일)
       got.sort(function (a, c) { return (a.f[4] || '').localeCompare(c.f[4] || ''); });
       return feedFiles(got.map(function (g) { return g.file; }), job).then(function (nOk) {
-        got.slice(0, nOk).forEach(function (g) { _loadedIds[g.f[0]] = 1; });   // 취소로 못 올린 사진은 다음 검색 때 다시
         if (b) fitBounds(b);                              // 묶음별로 움직인 지도를 검색했던 화면으로
         if (cancelled(job, '사진 불러오기를 중단했습니다. (' + nOk + '/' + got.length + '장 올림)')) return;
         done();

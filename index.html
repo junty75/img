@@ -1095,9 +1095,9 @@ function getScaledLatLng(clientX, clientY) {
 }
 
 // ─── 지도 초기화 ──────────────────────────────────────
-function initMap(center) {
+function initMap(center, level) {
   map = new kakao.maps.Map(document.getElementById('map'), {
-    center, level: 5, mapTypeId: kakao.maps.MapTypeId.HYBRID,
+    center, level: (level == null ? 5 : level), mapTypeId: kakao.maps.MapTypeId.HYBRID,
     minLevel: 0,                 // 최대 확대 한 단계 더 (기본 1 → 0, map.html·index_vworld.html 과 동일 배율)
     disableDoubleClick: true
   });
@@ -1539,7 +1539,12 @@ function _installLinkReceiver() {
 }
 
 kakao.maps.load(() => {
-  initMap(new kakao.maps.LatLng(35.6478, 127.5213));
+  // 전에 보던 화면(lastPosK)이 있으면 처음부터 그 자리로 만든다 — 장수를 먼저 받았다가 옮기면 늦고 데이터 낭비
+  // (index_vworld.html 의 lastPos 와 같은 방식)
+  const _lpK = (() => { try { return JSON.parse(localStorage.getItem('lastPosK')); } catch (_) { return null; } })();
+  const _lpOk = !!(_lpK && Number.isFinite(_lpK.lat) && Number.isFinite(_lpK.lng) && Math.abs(_lpK.lat) <= 90 && Math.abs(_lpK.lng) <= 180);
+  initMap(_lpOk ? new kakao.maps.LatLng(_lpK.lat, _lpK.lng) : new kakao.maps.LatLng(35.6478, 127.5213),
+          (_lpOk && Number.isFinite(_lpK.z) && _lpK.z >= 0 && _lpK.z <= 14) ? _lpK.z : 5);
   _initTabChannel();   // 다른 탭이 '비켜달라'고 하면 받을 수 있게 먼저 열어 둔다
 
   // 이전 데이터 복원.
@@ -1556,9 +1561,8 @@ kakao.maps.load(() => {
   window._restoreReady.then(() => { _restoreDone = true; });
   try { if (!localStorage.getItem('origCleared')) { clearOrigs(); localStorage.setItem('origCleared', '1'); } } catch (e) {}   // 옛 원본 보관소 데이터 한 번 정리
   // 전에 보던 화면 복원 — 복원(setBounds)이 끝난 뒤 덮어쓴다. 런처·공유 파일은 이보다 뒤에 그려져 그쪽이 이긴다.
-  const _lpK = (() => { try { return JSON.parse(localStorage.getItem('lastPosK')); } catch (_) { return null; } })();
   _restore.then(() => {
-    if (_lpK && isFinite(_lpK.lat) && isFinite(_lpK.lng)) {
+    if (_lpOk) {
       try { if (isFinite(_lpK.z)) map.setLevel(_lpK.z); map.setCenter(new kakao.maps.LatLng(_lpK.lat, _lpK.lng)); } catch (e) {}
     }
     let _lpTimer = null;     // 복원이 끝난 뒤부터 보던 화면 저장

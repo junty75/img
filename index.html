@@ -106,7 +106,7 @@
     #drawStyleBtn { top: 128px; right: 72px; display: none; font-size: 18px; }
     #drawStyleBtn.show { display: flex; }
     #drawStyleBtn .dsb-line { width: 26px; border-radius: 3px; background: #FF5733; height: 4px; }
-    #markerBtn { top: 184px; right: 16px; padding: 0; transition: background 0.2s; font-size: 20px; }
+    #markerBtn { display: none; }   /* 2026-10-17 뺌 — 마커는 지도 길게 누르기 메뉴로 (자리는 📷 가 씀) */
     #markerBtn.active { background: #43a047; box-shadow: 0 2px 8px rgba(67,160,71,0.6); }
     /* 오른쪽 한 줄: … 마커 → 지우개(선택삭제) → 빗자루(전체삭제)
        되돌리기는 지우개 왼쪽에, 지우개 모드에서 실제로 지웠을 때만 나타난다 */
@@ -879,6 +879,7 @@ window.addEventListener('popstate', function(ev) {
   if (_pv && _pv.classList.contains('show')) { _pv.classList.remove('show'); return; }
   if (window.gdOnBack && window.gdOnBack()) return;   // 구글 드라이브 창·불러오기가 떠 있으면 그것만 닫는다
   if (_closeTopPopup()) return;                       // 사진 보기·입력창·메뉴가 떠 있으면 그것만 닫는다
+  if (window.measureOnBack && window.measureOnBack()) return;   // 거리·면적 재기: 점 하나 되돌리기
   if (drawingMode) {
     if (drawUndo.length > 0) undoLastAction();
     else stopDrawing();
@@ -1137,6 +1138,10 @@ function initMap(center, level) {
 
   kakao.maps.event.addListener(map, 'click', (e) => {
     if (suppressMapClick) { suppressMapClick = false; return; }
+    if (window._measuring) {   // 거리·면적 재기 (gdrive.js)
+      const ll = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
+      if (ll && window.measureTap(ll.getLat(), ll.getLng())) return;
+    }
     if (drawingMode) {
       // scale 1이면 그대로, scale 확대 중이면 저장된 네이티브 좌표로 보정
       const latLng = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
@@ -1199,7 +1204,7 @@ function initMap(center, level) {
     const latLng = cssScale > 1 ? getScaledLatLng(lastClientX, lastClientY) : e.latLng;
     updateDistanceOverlay(latLng, true);
   });
-  // 지도 빈 곳 길게 누르기 → 위치 공유
+  // 지도 빈 곳 길게 누르기 → 메뉴(마커·문자·거리·면적·공유, gdrive.js openPressMenu)
   // 카카오 SDK 의 touchstart 이벤트는 공식 지원이 아니라 기기에 따라 발생하지 않음 →
   // vworld 와 동일하게 지도 DOM 에 브라우저 표준 pointer 이벤트를 직접 연결한다.
   let mapLongPressTimer = null;
@@ -1220,7 +1225,7 @@ function initMap(center, level) {
       // 손가락 + (터치기기의) 펜/스타일러스 허용 — 터치스크린 없는 PC 마우스는 제외
       const okPtr = e.pointerType === 'touch' || navigator.maxTouchPoints > 0;
       if (!okPtr || !e.isPrimary) return;   // 두 번째 손가락(핀치)은 취소만
-      if (drawingMode || suppressLongPress) return;
+      if (drawingMode || suppressLongPress || window._measuring) return;
       if (e.target.closest && e.target.closest('[data-iw]')) return;   // 사진 팝업 위는 제외
       pressX = e.clientX; pressY = e.clientY;
       mapLongPressTimer = setTimeout(() => {
@@ -1229,7 +1234,7 @@ function initMap(center, level) {
         try {
           const ll = getScaledLatLng(pressX, pressY);
           if (!ll) return;
-          // 선 근처(화면 ~15px)를 길게 누르면 위치공유 대신 선 수정/삭제 메뉴
+          // 선 근처(화면 ~15px)를 길게 누르면 빈 곳 메뉴 대신 선 수정/삭제 메뉴
           // (선을 픽셀 단위로 정확히 안 눌러도 선택되도록 허용 반경 확대)
           const near = findNearPolyK(ll, 15);
           if (near) {
@@ -1237,7 +1242,8 @@ function initMap(center, level) {
             showPolyMenu(pressX, pressY, near.poly, near);
             return;
           }
-          openShareLocation(ll.getLat(), ll.getLng());
+          if (window.openPressMenu) openPressMenu(ll.getLat(), ll.getLng(), pressX, pressY);
+          else openShareLocation(ll.getLat(), ll.getLng());
         } catch(err) {}
       }, 600);
     }, { passive: true });

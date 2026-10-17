@@ -222,7 +222,8 @@
     '#gdriveBtn{top:72px;right:72px;padding:0;}' +
     // 길게 누를 때 크롬이 버튼 글자(📷)를 선택하거나 메뉴를 띄우며 터치를 취소해 버리던 것 막기
     '#gdriveBtn,#gdCamBtn{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none;}' +
-    '#gdCamBtn{top:184px;right:72px;padding:0;font-size:22px;}' +
+    // 📍 마커 버튼을 뺀 자리(2026-10-17, 마커는 지도 길게 누르기 메뉴로)
+    '#gdCamBtn{top:184px;right:16px;padding:0;font-size:22px;}' +
     '#gdriveBtn .gdq{position:absolute;top:-6px;left:-6px;min-width:18px;height:18px;padding:0 4px;box-sizing:border-box;border-radius:9px;background:#e53935;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;display:none;}' +
     '#gdriveBtn .gdq.show{display:block;}' +
     '#gdriveBtn.gd-folder::after{content:"\\1F4C1";position:absolute;right:-5px;bottom:-5px;font-size:15px;line-height:1;}' +
@@ -1501,4 +1502,251 @@
       });
     })();
   }
+})();
+
+// ── 지도 빈 곳 길게 누르기 메뉴 + 거리·면적 재기 (2026-10-17) ──
+// 두 지도 공통. 지도 쪽은 길게 누르면 window.openPressMenu(lat, lng, 화면x, 화면y) 를 부르고,
+// 지도 탭은 window.measureTap(lat, lng) 이 true 면 거기서 끝, 뒤로가기는 window.measureOnBack() 을 먼저 묻는다.
+// 메뉴: 마커 입력(기존 마커 이름 창) · 문자 입력(addTextLabel/addTextLabelV) · 거리 재기 · 면적 재기 · 공유하기(openShareLocation).
+// 잰 선·면은 임시 표시라 자동저장·내보내기 대상이 아니다(✕ 로 지움).
+(function () {
+  function isVw() { return typeof vmap !== 'undefined' && vmap && vmap.getView; }
+  function toProj(lat, lng) { return ol.proj.transform([lng, lat], 'EPSG:4326', vmap.getView().getProjection()); }
+  function saved() {
+    try { document.getElementById('saveBtn').disabled = false; } catch (e) {}
+    try { autoSaveToDB(); } catch (e) {}
+  }
+
+  var css = document.createElement('style');
+  css.textContent =
+    '.pm-bg{position:fixed;inset:0;z-index:9000;background:transparent;}' +
+    '.pm-dot{position:fixed;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:#ff3d00;border:2px solid #fff;box-shadow:0 0 0 2px rgba(255,61,0,.35);pointer-events:none;}' +
+    '.pm-box{position:fixed;background:#fff;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.3);padding:6px 0;min-width:150px;' +
+      '-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}' +
+    '.pm-box button{display:block;width:100%;border:none;background:none;text-align:left;padding:12px 18px;font-size:15px;color:#222;cursor:pointer;white-space:nowrap;}' +
+    '.pm-box button:active{background:#f1f3f4;}' +
+    // 왼쪽 위 주소 줄 아래 — 오른쪽 버튼 줄·아래 +/−·나침반을 가리지 않게
+    '#measBar{position:fixed;left:10px;top:86px;z-index:2500;display:none;flex-direction:column;gap:8px;' +
+      'background:rgba(0,0,0,.82);color:#fff;border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.4;width:calc(100vw - 160px);max-width:300px;box-sizing:border-box;}' +
+    '#measBar.show{display:flex;}' +
+    '#measBar .mb-t{word-break:keep-all;white-space:pre-line;}' +
+    '#measBar .mb-b{display:flex;gap:6px;justify-content:flex-end;}' +
+    '#measBar button{border:none;border-radius:18px;background:#fff;color:#222;font-size:14px;font-weight:600;padding:7px 12px;cursor:pointer;flex:none;}' +
+    '.meas-lbl{background:#fff;color:#d32f2f;border:2px solid #ff3d00;border-radius:6px;padding:2px 6px;font-size:12px;font-weight:700;white-space:nowrap;pointer-events:none;}' +
+    '.meas-pt{width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ff3d00;box-sizing:border-box;pointer-events:none;}';
+  document.head.appendChild(css);
+
+  // ── 거리·면적 계산 ──
+  function dist(a, b) {        // a,b = [lat,lng] → m (하버사인)
+    var R = 6371008.8, r = Math.PI / 180, dLa = (b[0] - a[0]) * r, dLo = (b[1] - a[1]) * r;
+    var s = Math.sin(dLa / 2) * Math.sin(dLa / 2) + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
+    return 2 * R * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+  }
+  function pathLen(p, close) {
+    var d = 0; for (var i = 1; i < p.length; i++) d += dist(p[i - 1], p[i]);
+    if (close && p.length > 2) d += dist(p[p.length - 1], p[0]);
+    return d;
+  }
+  function area(p) {           // 중심 기준 평면 근사 + 신발끈 공식 (측량 범위에선 오차 무시 가능)
+    if (p.length < 3) return 0;
+    var la0 = 0, lo0 = 0; p.forEach(function (q) { la0 += q[0]; lo0 += q[1]; }); la0 /= p.length; lo0 /= p.length;
+    var r = Math.PI / 180, R = 6371008.8, k = Math.cos(la0 * r);
+    var xy = p.map(function (q) { return [(q[1] - lo0) * r * R * k, (q[0] - la0) * r * R]; });
+    var s = 0; for (var i = 0; i < xy.length; i++) { var j = (i + 1) % xy.length; s += xy[i][0] * xy[j][1] - xy[j][0] * xy[i][1]; }
+    return Math.abs(s) / 2;
+  }
+  function fmtLen(d) { return d < 1000 ? Math.round(d) + 'm' : (d / 1000).toFixed(2) + 'km'; }
+  function fmtArea(a) {
+    var py = Math.round(a / 3.305785).toLocaleString() + '평';
+    if (a >= 10000) return (a / 10000).toFixed(2) + 'ha (' + Math.round(a).toLocaleString() + '㎡, ' + py + ')';
+    return Math.round(a).toLocaleString() + '㎡ (' + py + ')';
+  }
+
+  // ── 그리기 어댑터 (카카오 / 브이월드) ──
+  var K = { line: null, poly: null, pts: [], lbl: null };
+  var V = { lyr: null, ov: null };
+  function drawMeas(p, kind, label) {
+    if (isVw()) {
+      if (!V.lyr) {
+        V.lyr = new ol.layer.Vector({ source: new ol.source.Vector(), zIndex: 160 });
+        vmap.addLayer(V.lyr);
+      }
+      var src = V.lyr.getSource(); src.clear();
+      var cs = p.map(function (q) { return toProj(q[0], q[1]); });
+      var stroke = new ol.style.Stroke({ color: '#ff3d00', width: 3 });
+      if (kind === 'area' && cs.length >= 3) {
+        var pf = new ol.Feature(new ol.geom.Polygon([cs.concat([cs[0]])]));
+        pf.setStyle(new ol.style.Style({ stroke: stroke, fill: new ol.style.Fill({ color: 'rgba(255,61,0,0.18)' }) }));
+        src.addFeature(pf);
+      } else if (cs.length >= 2) {
+        var lf = new ol.Feature(new ol.geom.LineString(cs));
+        lf.setStyle(new ol.style.Style({ stroke: stroke }));
+        src.addFeature(lf);
+      }
+      var ptSt = new ol.style.Style({ image: new ol.style.Circle({ radius: 5, fill: new ol.style.Fill({ color: '#fff' }), stroke: new ol.style.Stroke({ color: '#ff3d00', width: 2 }) }) });
+      cs.forEach(function (c) { var f = new ol.Feature(new ol.geom.Point(c)); f.setStyle(ptSt); src.addFeature(f); });
+      if (!V.ov) {
+        var el = document.createElement('div'); el.className = 'meas-lbl';
+        V.ov = new ol.Overlay({ element: el, positioning: 'bottom-center', offset: [0, -10], stopEvent: false });
+        vmap.addOverlay(V.ov);
+      }
+      if (label && cs.length) { V.ov.getElement().textContent = label; V.ov.getElement().style.display = ''; V.ov.setPosition(cs[cs.length - 1]); }
+      else V.ov.getElement().style.display = 'none';
+      return;
+    }
+    var ll = p.map(function (q) { return new kakao.maps.LatLng(q[0], q[1]); });
+    if (K.line) { K.line.setMap(null); K.line = null; }
+    if (K.poly) { K.poly.setMap(null); K.poly = null; }
+    K.pts.forEach(function (o) { o.setMap(null); }); K.pts = [];
+    if (kind === 'area' && ll.length >= 3) {
+      K.poly = new kakao.maps.Polygon({ map: map, path: ll, strokeWeight: 3, strokeColor: '#ff3d00', strokeOpacity: 1, fillColor: '#ff3d00', fillOpacity: 0.18, zIndex: 8 });
+    } else if (ll.length >= 2) {
+      K.line = new kakao.maps.Polyline({ map: map, path: ll, strokeWeight: 3, strokeColor: '#ff3d00', strokeOpacity: 1, zIndex: 8 });
+    }
+    ll.forEach(function (q) {
+      var d = document.createElement('div'); d.className = 'meas-pt';
+      K.pts.push(new kakao.maps.CustomOverlay({ map: map, content: d, position: q, xAnchor: 0.5, yAnchor: 0.5, zIndex: 9 }));
+    });
+    if (K.lbl) { K.lbl.setMap(null); K.lbl = null; }
+    if (label && ll.length) {
+      var e = document.createElement('div'); e.className = 'meas-lbl'; e.textContent = label;
+      K.lbl = new kakao.maps.CustomOverlay({ map: map, content: e, position: ll[ll.length - 1], xAnchor: 0.5, yAnchor: 1.6, zIndex: 10 });
+    }
+  }
+  function clearMeas() {
+    if (isVw()) {
+      if (V.lyr) V.lyr.getSource().clear();
+      if (V.ov) V.ov.getElement().style.display = 'none';
+      return;
+    }
+    if (K.line) K.line.setMap(null);
+    if (K.poly) K.poly.setMap(null);
+    if (K.lbl) K.lbl.setMap(null);
+    K.pts.forEach(function (o) { o.setMap(null); });
+    K = { line: null, poly: null, pts: [], lbl: null };
+  }
+
+  // ── 재기 모드 ──
+  var M = null;   // { kind:'dist'|'area', p:[[lat,lng],...] }
+  var bar = document.createElement('div'); bar.id = 'measBar';
+  bar.innerHTML = '<div class="mb-t"></div><div class="mb-b"><button class="mb-u">↩ 되돌리기</button><button class="mb-x">✕ 끝</button></div>';
+  document.body.appendChild(bar);
+  bar.querySelector('.mb-u').onclick = function () { undoPt(); };
+  bar.querySelector('.mb-x').onclick = function () { stopMeasure(); };
+  function render() {
+    if (!M) return;
+    var p = M.p, txt, lbl = '';
+    if (M.kind === 'area') {
+      if (p.length < 3) txt = '📐 면적 — 지도를 눌러 점 ' + (3 - p.length) + '개 더';
+      else { lbl = fmtArea(area(p)); txt = '📐 면적 ' + lbl + '\n둘레 ' + fmtLen(pathLen(p, true)) + ' · 점 ' + p.length + '개'; }
+    } else {
+      if (p.length < 2) txt = '📏 거리 — 지도를 눌러 점 찍기';
+      else { lbl = fmtLen(pathLen(p)); txt = '📏 총 ' + lbl + ' · 점 ' + p.length + '개'; }
+    }
+    bar.querySelector('.mb-t').textContent = txt;
+    drawMeas(p, M.kind, lbl);
+  }
+  function startMeasure(kind, lat, lng) {
+    try { if (typeof drawingMode !== 'undefined' && drawingMode) stopDrawing(); } catch (e) {}
+    try { if (typeof drawing !== 'undefined' && drawing) endDraw(); } catch (e) {}
+    try { if (typeof eraseMode !== 'undefined' && eraseMode) setEraseMode(false); } catch (e) {}
+    clearMeas();
+    M = { kind: kind, p: [[lat, lng]] };
+    window._measuring = true;
+    bar.classList.add('show');
+    render();
+  }
+  function undoPt() {
+    if (!M) return;
+    M.p.pop();
+    if (!M.p.length) { stopMeasure(); return; }
+    render();
+  }
+  function stopMeasure() {
+    M = null; window._measuring = false;
+    bar.classList.remove('show');
+    clearMeas();
+  }
+  window.measureTap = function (lat, lng) {
+    if (!M || !isFinite(lat) || !isFinite(lng)) return false;
+    M.p.push([lat, lng]); render();
+    return true;
+  };
+  // 뒤로가기 = 점 하나 되돌리기, 다 지우면 재기 끝
+  window.measureOnBack = function () { if (!M) return false; undoPt(); return true; };
+
+  // ── 문자 입력 창 ──
+  function openTextInput(lat, lng) {
+    var bg = document.createElement('div');
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9000;display:flex;align-items:center;justify-content:center;';
+    bg.innerHTML =
+      '<div style="background:white;border-radius:14px;padding:20px;width:290px;box-shadow:0 4px 24px rgba(0,0,0,0.25);">' +
+      '<h3 style="margin:0 0 10px;font-size:16px;color:#333;">🔤 문자 입력</h3>' +
+      '<input class="ti-in" type="text" placeholder="지도에 쓸 글자" style="width:100%;box-sizing:border-box;font-size:15px;padding:10px;border:1px solid #ccc;border-radius:8px;margin-bottom:14px;">' +
+      '<div style="display:flex;gap:8px;">' +
+      '<button class="ti-ok" style="flex:1;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#1a73e8;color:white;">추가</button>' +
+      '<button class="ti-no" style="flex:1;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#f1f3f4;color:#555;">취소</button>' +
+      '</div></div>';
+    document.body.appendChild(bg);
+    var inp = bg.querySelector('.ti-in');
+    setTimeout(function () { inp.focus(); }, 100);
+    function ok() {
+      var t = inp.value.trim();
+      if (!t) { inp.focus(); return; }
+      bg.remove();
+      try {
+        if (isVw()) addTextLabelV(toProj(lat, lng), t, 0, '', 0);
+        else addTextLabel(new kakao.maps.LatLng(lat, lng), t, 0, '', 0);
+        saved();
+      } catch (e) { console.warn('문자 입력 실패', e); }
+    }
+    bg.querySelector('.ti-ok').onclick = ok;
+    bg.querySelector('.ti-no').onclick = function () { bg.remove(); };
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') ok(); if (e.key === 'Escape') bg.remove(); });
+    bg.addEventListener('click', function (e) { if (e.target === bg) bg.remove(); });
+  }
+
+  function addMarkerAt(lat, lng) {
+    try {
+      if (isVw()) { pendingMarkerCoord = toProj(lat, lng); openMarkerModal(); }
+      else openMarkerModal(new kakao.maps.LatLng(lat, lng));
+    } catch (e) { console.warn('마커 입력 실패', e); }
+  }
+
+  // ── 길게 누르기 메뉴 ──
+  window.openPressMenu = function (lat, lng, cx, cy) {
+    // 화면 전체를 덮는 id 없는 창 → 뒤로가기(_closeTopPopup)로 닫힌다
+    var bg = document.createElement('div'); bg.className = 'pm-bg';
+    var dot = document.createElement('div'); dot.className = 'pm-dot';
+    dot.style.left = cx + 'px'; dot.style.top = cy + 'px';
+    var box = document.createElement('div'); box.className = 'pm-box';
+    // 길게 누른 손을 뗄 때의 click 이 메뉴를 바로 닫거나 고르지 않게 — 새로 누른 뒤의 click 만 받는다
+    var armed = false;
+    var items = [
+      ['📍 마커 입력', function () { addMarkerAt(lat, lng); }],
+      ['🔤 문자 입력', function () { openTextInput(lat, lng); }],
+      ['📏 거리 재기', function () { startMeasure('dist', lat, lng); }],
+      ['📐 면적 재기', function () { startMeasure('area', lat, lng); }],
+      ['📤 공유하기', function () { openShareLocation(lat, lng); }]
+    ];
+    items.forEach(function (it) {
+      var b = document.createElement('button'); b.textContent = it[0];
+      b.onclick = function (e) {
+        e.stopPropagation();
+        if (!armed) return;
+        bg.remove(); it[1]();
+      };
+      box.appendChild(b);
+    });
+    bg.appendChild(dot); bg.appendChild(box);
+    document.body.appendChild(bg);
+    // 손가락 옆(가리지 않게)에 띄우고 화면 안으로 맞춤
+    var w = box.offsetWidth, h = box.offsetHeight, W = innerWidth, H = innerHeight;
+    var x = cx + 18; if (x + w > W - 8) x = cx - 18 - w; x = Math.max(8, Math.min(x, W - w - 8));
+    var y = cy - h / 2; y = Math.max(8, Math.min(y, H - h - 8));
+    box.style.left = x + 'px'; box.style.top = y + 'px';
+    bg.addEventListener('pointerdown', function () { armed = true; });
+    bg.addEventListener('click', function (e) { if (armed && e.target === bg) bg.remove(); });
+    bg.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  };
 })();

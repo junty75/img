@@ -1640,7 +1640,7 @@
 
   // ── 🧭 길찾기 (2026-10-17) — 누른 곳이 출발, 지도를 누를 때마다 앞 지점→새 지점을 길 따라 잇는다 ──
   // 길찾기 서버는 OpenStreetMap 도로(OSRM routing.openstreetmap.de → BRouter brouter.de, 키 없음).
-  // PC 지도처럼 카카오 길찾기는 못 쓴다(REST 비밀키 필요 — 휴대폰엔 PC 서버가 없음) → OSM 에 없는 농로 등은 직선으로 남는다.
+  // PC 지도처럼 카카오 길찾기는 못 쓴다(REST 비밀키 필요 — 휴대폰엔 PC 서버가 없음) → OSM 에 없는 농로는 브이월드 도로중심선으로 보충(아래 vwSeg).
   var ROUTE_NAME = { car: '🚗 자동차', foot: '🚶 도보' };
   var _rGen = 0;
   function routeProf() { try { return localStorage.getItem('m_route_prof') === 'foot' ? 'foot' : 'car'; } catch (e) { return 'car'; } }
@@ -1649,7 +1649,148 @@
     try { var r = await fetch(url, { signal: ctl.signal }); return r.ok ? await r.json() : null; }
     catch (e) { return null; } finally { clearTimeout(t); }
   }
+  // ── 브이월드 도로중심선 길찾기 (2026-10-17) ──
+  // OSM 에 없는 농로용. 연속수치지형도 도로중심선(LT_L_N3A0020000)을 JSONP 로 받아(CORS 없음) 앱 안에서 최단경로(A*).
+  // 꼭짓점 = 노드(1m 안 끝점은 하나로), 끝점이 다른 선 중간 2m 안에 닿으면 그 자리를 잘라 잇는다(T자 길).
+  // a·b 는 가장 가까운 선분에 붙인다 — b 쪽은 a 에서 갈 수 있는 선 중 가장 가까운 곳(끊긴 길 조각에 붙지 않게).
+  function vwGraphRoute(feats, a, b) {
+    var lat0 = (a[0] + b[0]) / 2, KX = 111320 * Math.cos(lat0 * Math.PI / 180), KY = 110540;
+    var xy = function (ll) { return [(ll[1] - a[1]) * KX, (ll[0] - a[0]) * KY]; };
+    var ll = function (p) { return [a[0] + p[1] / KY, a[1] + p[0] / KX]; };
+    var P = [], adj = [], grid = {};
+    var gk = function (x, y) { return Math.floor(x / 2) + ',' + Math.floor(y / 2); };
+    function node(p, tol) {
+      var cx = Math.floor(p[0] / 2), cy = Math.floor(p[1] / 2);
+      for (var i = -1; i <= 1; i++) for (var j = -1; j <= 1; j++) {
+        var c = grid[(cx + i) + ',' + (cy + j)]; if (!c) continue;
+        for (var k = 0; k < c.length; k++) { var q = P[c[k]]; if (Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol) return c[k]; }
+      }
+      P.push(p); adj.push([]); var key = gk(p[0], p[1]); (grid[key] = grid[key] || []).push(P.length - 1);
+      return P.length - 1;
+    }
+    var E = [];   // [u,v]
+    function edge(u, v) { if (u === v) return; var w = Math.hypot(P[u][0] - P[v][0], P[u][1] - P[v][1]); adj[u].push([v, w]); adj[v].push([u, w]); E.push([u, v]); }
+    var lines = [];
+    feats.forEach(function (f) {
+      var g = f.geometry; if (!g) return;
+      var ls = g.type === 'MultiLineString' ? g.coordinates : g.type === 'LineString' ? [g.coordinates] : [];
+      ls.forEach(function (l) { if (l.length >= 2) lines.push(l.map(function (c) { return xy([c[1], c[0]]); })); });
+    });
+    // 끝점부터 노드로(1m 병합), 그다음 중간 꼭짓점(같은 자리만)
+    var ends = lines.map(function (l) { return [node(l[0], 1), node(l[l.length - 1], 1)]; });
+    lines.forEach(function (l, i) {
+      var prev = ends[i][0];
+      for (var k = 1; k < l.length; k++) {
+        var cur = k === l.length - 1 ? ends[i][1] : node(l[k], 0.01);
+        edge(prev, cur); prev = cur;
+      }
+    });
+    if (!E.length) return null;
+    // 가장 가까운 선분 위 점
+    function proj(p, e) {
+      var A = P[e[0]], B = P[e[1]], dx = B[0] - A[0], dy = B[1] - A[1], L = dx * dx + dy * dy;
+      var t = L ? Math.max(0, Math.min(1, ((p[0] - A[0]) * dx + (p[1] - A[1]) * dy) / L)) : 0;
+      var q = [A[0] + t * dx, A[1] + t * dy];
+      return { q: q, t: t, d: Math.hypot(q[0] - p[0], q[1] - p[1]) };
+    }
+    // T자 길: 연결이 하나뿐인 끝점이 다른 선분 중간 2m 안이면 그 선분을 잘라 잇는다
+    for (var n = 0, nP = P.length; n < nP; n++) {
+      if (adj[n].length !== 1) continue;
+      for (var ei = 0; ei < E.length; ei++) {
+        var e = E[ei]; if (!e || e[0] === n || e[1] === n) continue;
+        var r = proj(P[n], e);
+        if (r.d <= 2 && r.t > 0 && r.t < 1) { splitAt(ei, n); break; }
+      }
+    }
+    function unlink(u, v) { adj[u] = adj[u].filter(function (x) { return x[0] !== v; }); adj[v] = adj[v].filter(function (x) { return x[0] !== u; }); }
+    function splitAt(ei, m) { var e = E[ei]; unlink(e[0], e[1]); E[ei] = null; edge(e[0], m); edge(m, e[1]); }
+    function nearestEdge(p, ok) {
+      var best = null;
+      for (var i = 0; i < E.length; i++) {
+        var e = E[i]; if (!e || (ok && !ok(e))) continue;
+        var r = proj(p, e); if (!best || r.d < best.d) { best = r; best.i = i; }
+      }
+      return best;
+    }
+    function insert(s) {   // 선분 위 점을 노드로
+      var e = E[s.i];
+      if (s.t <= 0) return e[0]; if (s.t >= 1) return e[1];
+      P.push(s.q); adj.push([]); var m = P.length - 1; splitAt(s.i, m); return m;
+    }
+    var pa = xy(a), pb = xy(b);
+    var sa = nearestEdge(pa); var na = insert(sa);
+    // a 에서 갈 수 있는 곳 전부 (다익스트라)
+    var D = new Float64Array(P.length).fill(Infinity), prv = new Int32Array(P.length).fill(-1), done = new Uint8Array(P.length);
+    D[na] = 0;
+    var heap = [[0, na]];
+    function push(x) { heap.push(x); var i = heap.length - 1; while (i) { var p = (i - 1) >> 1; if (heap[p][0] <= x[0]) break; heap[i] = heap[p]; i = p; } heap[i] = x; }
+    function pop() { var top = heap[0], x = heap.pop(); if (heap.length) { var i = 0, n = heap.length; for (;;) { var l = 2 * i + 1, r = l + 1, m = i; if (l < n && heap[l][0] < (m === i ? x[0] : heap[m][0])) m = l; if (r < n && heap[r][0] < (m === i ? x[0] : heap[m][0])) m = r; if (m === i) break; heap[i] = heap[m]; i = m; } heap[i] = x; } return top; }
+    while (heap.length) {
+      var t = pop(), u = t[1]; if (done[u]) continue; done[u] = 1;
+      adj[u].forEach(function (x) { var nd = D[u] + x[1]; if (nd < D[x[0]]) { D[x[0]] = nd; prv[x[0]] = u; push([nd, x[0]]); } });
+    }
+    var sb = nearestEdge(pb, function (e) { return D[e[0]] < Infinity; });
+    if (!sb) return null;
+    var e = E[sb.i], A = P[e[0]], B = P[e[1]];
+    var ca = D[e[0]] + Math.hypot(sb.q[0] - A[0], sb.q[1] - A[1]), cb = D[e[1]] + Math.hypot(sb.q[0] - B[0], sb.q[1] - B[1]);
+    var path = [sb.q], v = ca <= cb ? e[0] : e[1];
+    if (Math.hypot(P[v][0] - sb.q[0], P[v][1] - sb.q[1]) > 0.01) path.push(P[v]);
+    while (prv[v] >= 0) { v = prv[v]; path.push(P[v]); }
+    path.reverse();
+    return { pts: path.map(ll), gapA: sa.d, gapB: sb.d };
+  }
+  var VW_DATA_KEY = (typeof VWORLD_KEY !== 'undefined' && VWORLD_KEY) || '55FD7275-A6F5-3B69-9966-CD4BFA2FD35F';   // github.io 도메인 등록 키(브이월드 판과 같음)
+  var _vwCache = [];   // 최근 받은 상자 [url, feats] — 경로 다시 잇기 때 다시 안 받게
+  function vwJsonp(url, ms) {
+    return new Promise(function (res) {
+      var cb = '_vwcb' + Date.now().toString(36) + Math.floor(Math.random() * 1e6), s = document.createElement('script');
+      var end = function (v) { clearTimeout(t); try { delete window[cb]; } catch (e) { window[cb] = undefined; } s.remove(); res(v); };
+      var t = setTimeout(function () { window[cb] = function () {}; end(null); }, ms);
+      window[cb] = function (j) { end(j); };
+      s.onerror = function () { end(null); };
+      s.src = url + '&callback=' + cb;
+      document.head.appendChild(s);
+    });
+  }
+  async function vwRoads(box) {   // box=[minLng,minLat,maxLng,maxLat] → features 또는 null
+    var base = 'https://api.vworld.kr/req/data?service=data&request=GetFeature&data=LT_L_N3A0020000&key=' + VW_DATA_KEY
+      + '&domain=' + encodeURIComponent(location.origin) + '&geomFilter=BOX(' + box.map(function (v) { return v.toFixed(6); }).join(',')
+      + ')&crs=EPSG:4326&format=json&size=1000';
+    var hit = _vwCache.find(function (c) { return c[0] === base; }); if (hit) return hit[1];
+    var all = [];
+    for (var pg = 1; pg <= 4; pg++) {
+      var j = await vwJsonp(base + '&page=' + pg, 10000), r = j && j.response;
+      if (!r) return null;
+      if (r.status === 'NOT_FOUND') break;
+      if (r.status !== 'OK') return null;
+      all = all.concat(r.result.featureCollection.features || []);
+      if (pg >= +(r.page && r.page.total || 1)) break;
+    }
+    _vwCache.push([base, all]); if (_vwCache.length > 8) _vwCache.shift();
+    return all;
+  }
+  async function vwSeg(a, b) {    // 브이월드 도로중심선으로 a→b → { pts, gap } 또는 null
+    var d = dist(a, b);
+    if (d > 4000 || navigator.onLine === false) return null;    // 너무 멀면 받는 양이 많아 안 한다
+    var m = Math.max(250, d * 0.2), dLat = m / 110540, dLng = m / (111320 * Math.cos(a[0] * Math.PI / 180));
+    var box = [Math.min(a[1], b[1]) - dLng, Math.min(a[0], b[0]) - dLat, Math.max(a[1], b[1]) + dLng, Math.max(a[0], b[0]) + dLat];
+    try {
+      var f = await vwRoads(box); if (!f || !f.length) return null;
+      var r = vwGraphRoute(f, a, b); if (!r || r.pts.length < 2) return null;
+      return { pts: r.pts, gap: r.gapA + r.gapB };
+    } catch (e) { console.warn('[route] vworld', e); return null; }
+  }
+  // 구간 a→b: OSM 길이 찍은 점에서 30m 넘게 떨어지면(또는 못 찾으면) 브이월드 도로중심선으로도 찾아 빈 거리가 짧은 쪽을 쓴다.
+  // 브이월드 실패·오프라인이면 OSM 결과 그대로.
   async function fetchSeg(a, b, prof) {   // a,b=[lat,lng] → [[lat,lng],..] 또는 null
+    var o = await fetchOsm(a, b, prof);
+    var og = o ? dist(o[0], a) + dist(o[o.length - 1], b) : Infinity;
+    if (og <= 30) return o;
+    var v = await vwSeg(a, b);
+    if (v && v.gap < og) { console.log('[route] 브이월드 도로중심선 사용 — 빈 거리 ' + Math.round(og) + 'm → ' + Math.round(v.gap) + 'm'); return v.pts; }
+    return o;
+  }
+  async function fetchOsm(a, b, prof) {
     var j = await getJson('https://routing.openstreetmap.de/routed-' + prof + '/route/v1/driving/'
       + a[1] + ',' + a[0] + ';' + b[1] + ',' + b[0] + '?overview=full&geometries=geojson', 15000);
     if (j && j.code === 'Ok' && j.routes && j.routes[0] && j.routes[0].geometry.coordinates.length >= 2)

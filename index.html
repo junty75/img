@@ -1157,6 +1157,8 @@ function initMap(center, level) {
   });
 
   // 거리 오버레이 업데이트 함수 (PC mousemove + 모바일 공용)
+  // 선 수정(polyEditBtn, 전역)에서도 부르므로 밖에 내놓는다 — 예전엔 ReferenceError 로 수정 시작 때 총거리가 안 떴다 (2026-10-17)
+  window.updateDistanceOverlay = updateDistanceOverlay;
   function updateDistanceOverlay(latLng, isPreview) {
     if (!drawingMode || currentPath.length === 0) return;
     const last = currentPath[currentPath.length - 1];
@@ -1751,6 +1753,8 @@ document.getElementById('polyEditBtn').onclick = () => {
   drawingMode = true;
   setMarkersClickThrough(true);
   currentPath = [...(entry.path || poly.getPath())];
+  // 기존 절점도 뒤로가기로 하나씩 지워지게(선그리기와 같게) — 예전엔 되돌릴 게 없어 바로 수정 끝 (2026-10-17)
+  drawUndo = currentPath.map(() => ({ type: 'point' }));
   currentDrawColor = (entry && entry.color) || currentDrawColor;
   currentDrawWidth = (entry && entry.width) || currentDrawWidth;
   currentPolyline = new kakao.maps.Polyline({

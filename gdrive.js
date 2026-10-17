@@ -1507,8 +1507,9 @@
 // ── 지도 빈 곳 길게 누르기 메뉴 + 거리·면적 재기 (2026-10-17) ──
 // 두 지도 공통. 지도 쪽은 길게 누르면 window.openPressMenu(lat, lng, 화면x, 화면y) 를 부르고,
 // 지도 탭은 window.measureTap(lat, lng) 이 true 면 거기서 끝, 뒤로가기는 window.measureOnBack() 을 먼저 묻는다.
-// 메뉴: 마커 입력(기존 마커 이름 창) · 문자 입력(addTextLabel/addTextLabelV) · 거리 재기 · 면적 재기 · 공유하기(openShareLocation).
-// 잰 선·면은 임시 표시라 자동저장·내보내기 대상이 아니다(✕ 로 지움).
+// 메뉴: 마커 입력(기존 마커 이름 창) · 문자 입력(addTextLabel/addTextLabelV) · 거리 재기 · 면적 재기 · 길찾기 · 공유하기(openShareLocation).
+// 재기·길찾기는 💾 저장 때만 보통 선 + 값 글자로 남는다(✕ 취소 = 지움).
+// 문자 위를 길게 누르면 메뉴 대신 문자 수정 창(수정·삭제) — findTextAt (2026-10-17).
 (function () {
   function isVw() { return typeof vmap !== 'undefined' && vmap && vmap.getView; }
   function toProj(lat, lng) { return ol.proj.transform([lng, lat], 'EPSG:4326', vmap.getView().getProjection()); }
@@ -1530,7 +1531,9 @@
       'background:rgba(0,0,0,.82);color:#fff;border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.4;width:calc(100vw - 160px);max-width:300px;box-sizing:border-box;}' +
     '#measBar.show{display:flex;}' +
     '#measBar .mb-t{word-break:keep-all;white-space:pre-line;}' +
-    '#measBar .mb-b{display:flex;gap:6px;justify-content:flex-end;}' +
+    '#measBar .mb-b{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;}' +
+    // 문자 라벨을 길게 누를 때 크롬이 글자를 선택해 버리던 것 막기
+    '#map,#vmap{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}' +
     '#measBar button{border:none;border-radius:18px;background:#fff;color:#222;font-size:14px;font-weight:600;padding:7px 12px;cursor:pointer;flex:none;}' +
     '.meas-lbl{background:#fff;color:#d32f2f;border:2px solid #ff3d00;border-radius:6px;padding:2px 6px;font-size:12px;font-weight:700;white-space:nowrap;pointer-events:none;}' +
     '.meas-pt{width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ff3d00;box-sizing:border-box;pointer-events:none;}';
@@ -1565,7 +1568,8 @@
   // ── 그리기 어댑터 (카카오 / 브이월드) ──
   var K = { line: null, poly: null, pts: [], lbl: null };
   var V = { lyr: null, ov: null };
-  function drawMeas(p, kind, label) {
+  function drawMeas(p, kind, label, dots) {   // dots: 동그라미 찍을 점(기본 = 모든 점, 길찾기 = 찍은 지점만)
+    dots = dots || p;
     if (isVw()) {
       if (!V.lyr) {
         V.lyr = new ol.layer.Vector({ source: new ol.source.Vector(), zIndex: 160 });
@@ -1584,7 +1588,7 @@
         src.addFeature(lf);
       }
       var ptSt = new ol.style.Style({ image: new ol.style.Circle({ radius: 5, fill: new ol.style.Fill({ color: '#fff' }), stroke: new ol.style.Stroke({ color: '#ff3d00', width: 2 }) }) });
-      cs.forEach(function (c) { var f = new ol.Feature(new ol.geom.Point(c)); f.setStyle(ptSt); src.addFeature(f); });
+      dots.forEach(function (q) { var f = new ol.Feature(new ol.geom.Point(toProj(q[0], q[1]))); f.setStyle(ptSt); src.addFeature(f); });
       if (!V.ov) {
         var el = document.createElement('div'); el.className = 'meas-lbl';
         V.ov = new ol.Overlay({ element: el, positioning: 'bottom-center', offset: [0, -10], stopEvent: false });
@@ -1603,9 +1607,9 @@
     } else if (ll.length >= 2) {
       K.line = new kakao.maps.Polyline({ map: map, path: ll, strokeWeight: 3, strokeColor: '#ff3d00', strokeOpacity: 1, zIndex: 8 });
     }
-    ll.forEach(function (q) {
+    dots.forEach(function (q) {
       var d = document.createElement('div'); d.className = 'meas-pt';
-      K.pts.push(new kakao.maps.CustomOverlay({ map: map, content: d, position: q, xAnchor: 0.5, yAnchor: 0.5, zIndex: 9 }));
+      K.pts.push(new kakao.maps.CustomOverlay({ map: map, content: d, position: new kakao.maps.LatLng(q[0], q[1]), xAnchor: 0.5, yAnchor: 0.5, zIndex: 9 }));
     });
     if (K.lbl) { K.lbl.setMap(null); K.lbl = null; }
     if (label && ll.length) {
@@ -1627,11 +1631,59 @@
   }
 
   // ── 재기 모드 ──
-  var M = null;   // { kind:'dist'|'area', p:[[lat,lng],...] }
+  var M = null;   // { kind:'dist'|'area'|'route', p:[[lat,lng],...] } — 길찾기는 wps(찍은 지점)·segs(구간별 점 수)·busy 도
   var bar = document.createElement('div'); bar.id = 'measBar';
-  bar.innerHTML = '<div class="mb-t"></div><div class="mb-b"><button class="mb-u">↩</button><button class="mb-s">💾 저장</button><button class="mb-x">✕ 취소</button></div>';
+  bar.innerHTML = '<div class="mb-t"></div><div class="mb-b"><button class="mb-p" style="display:none"></button><button class="mb-u">↩</button><button class="mb-s">💾 저장</button><button class="mb-x">✕ 취소</button></div>';
   document.body.appendChild(bar);
   bar.querySelector('.mb-u').onclick = function () { undoPt(); };
+  bar.querySelector('.mb-p').onclick = function () { setRouteProf(routeProf() === 'car' ? 'foot' : 'car'); };
+
+  // ── 🧭 길찾기 (2026-10-17) — 누른 곳이 출발, 지도를 누를 때마다 앞 지점→새 지점을 길 따라 잇는다 ──
+  // 길찾기 서버는 OpenStreetMap 도로(OSRM routing.openstreetmap.de → BRouter brouter.de, 키 없음).
+  // PC 지도처럼 카카오 길찾기는 못 쓴다(REST 비밀키 필요 — 휴대폰엔 PC 서버가 없음) → OSM 에 없는 농로 등은 직선으로 남는다.
+  var ROUTE_NAME = { car: '🚗 자동차', foot: '🚶 도보' };
+  var _rGen = 0;
+  function routeProf() { try { return localStorage.getItem('m_route_prof') === 'foot' ? 'foot' : 'car'; } catch (e) { return 'car'; } }
+  async function getJson(url, ms) {
+    var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, ms);
+    try { var r = await fetch(url, { signal: ctl.signal }); return r.ok ? await r.json() : null; }
+    catch (e) { return null; } finally { clearTimeout(t); }
+  }
+  async function fetchSeg(a, b, prof) {   // a,b=[lat,lng] → [[lat,lng],..] 또는 null
+    var j = await getJson('https://routing.openstreetmap.de/routed-' + prof + '/route/v1/driving/'
+      + a[1] + ',' + a[0] + ';' + b[1] + ',' + b[0] + '?overview=full&geometries=geojson', 15000);
+    if (j && j.code === 'Ok' && j.routes && j.routes[0] && j.routes[0].geometry.coordinates.length >= 2)
+      return j.routes[0].geometry.coordinates.map(function (q) { return [q[1], q[0]]; });
+    j = await getJson('https://brouter.de/brouter?lonlats=' + a[1] + ',' + a[0] + '|' + b[1] + ',' + b[0]
+      + '&profile=' + (prof === 'foot' ? 'shortest' : 'car-fast') + '&alternativeidx=0&format=geojson', 20000);
+    var c = j && j.features && j.features[0] && j.features[0].geometry && j.features[0].geometry.coordinates;
+    return c && c.length >= 2 ? c.map(function (q) { return [q[1], q[0]]; }) : null;
+  }
+  // 한 구간 받아서 M.p 에 붙이기 (요청 순서대로 — M.q 줄)
+  function queueSeg(a, b) {
+    var gen = _rGen;
+    M.busy++;
+    M.q = M.q.then(async function () {
+      var pts = await fetchSeg(a, b, routeProf());
+      if (gen !== _rGen || !M) return;
+      var seg = pts ? pts.slice() : [];
+      if (seg.length && dist(seg[0], a) < 1) seg.shift();
+      var gap = seg.length ? dist(seg[seg.length - 1], b) : 0;
+      if (!seg.length || gap > 1) seg.push(b);
+      M.fail = !pts; M.gap = pts && gap > 30 ? gap : 0;
+      M.p = M.p.concat(seg); M.segs.push(seg.length); M.busy--;
+      render();
+    });
+  }
+  function setRouteProf(v) {
+    try { localStorage.setItem('m_route_prof', v); } catch (e) {}
+    if (!M || M.kind !== 'route') return;
+    _rGen++;                                   // 받던 구간 버리고 처음부터 새 옵션으로
+    var w = M.wps;
+    M.p = [w[0]]; M.segs = []; M.busy = 0; M.q = Promise.resolve();
+    for (var i = 1; i < w.length; i++) queueSeg(w[i - 1], w[i]);
+    render();
+  }
   bar.querySelector('.mb-s').onclick = function () { saveMeasure(); };
   bar.querySelector('.mb-x').onclick = function () { stopMeasure(); };
 
@@ -1640,10 +1692,11 @@
   var MEAS_COLOR = '#FF3D00', MEAS_WIDTH = 3;
   function saveMeasure() {
     if (!M) return;
-    var p = M.p.slice(), isArea = M.kind === 'area';
+    var p = M.p.slice(), isArea = M.kind === 'area', isRoute = M.kind === 'route';
+    if (isRoute && M.busy) { alert('경로를 찾는 중입니다. 잠시 뒤에 저장하세요.'); return; }
     if (p.length < (isArea ? 3 : 2)) { alert(isArea ? '점을 3개 이상 찍어야 저장됩니다.' : '점을 2개 이상 찍어야 저장됩니다.'); return; }
     var val = isArea ? fmtArea(area(p)) : fmtLen(pathLen(p));
-    var name = (isArea ? '면적 ' : '거리 ') + val;
+    var name = (isArea ? '면적 ' : isRoute ? '경로 ' : '거리 ') + val;
     var line = isArea ? p.concat([p[0]]) : p;
     var at = p[p.length - 1];
     if (isArea) {   // 면적 글자는 꼭짓점 평균 자리에
@@ -1671,6 +1724,18 @@
   function render() {
     if (!M) return;
     var p = M.p, txt, lbl = '';
+    var pb = bar.querySelector('.mb-p');
+    pb.style.display = M.kind === 'route' ? '' : 'none';
+    if (M.kind === 'route') {
+      pb.textContent = ROUTE_NAME[routeProf()];
+      if (p.length >= 2) lbl = fmtLen(pathLen(p));
+      txt = '🧭 길찾기' + (M.busy ? ' — 길 찾는 중…' : '') + '\n'
+        + (M.wps.length < 2 ? '지도를 눌러 다음 지점을 찍으세요' : '총 ' + (lbl || '0m') + ' · 지점 ' + M.wps.length + '개')
+        + (M.fail ? '\n⚠️ 길을 못 찾아 마지막 구간은 직선' : M.gap ? '\n⚠️ 끝 ' + Math.round(M.gap) + 'm 는 지도에 길이 없어 직선' : '');
+      bar.querySelector('.mb-t').textContent = txt;
+      drawMeas(p, 'dist', lbl, M.wps);
+      return;
+    }
     if (M.kind === 'area') {
       if (p.length < 3) txt = '📐 면적 — 지도를 눌러 점 ' + (3 - p.length) + '개 더';
       else { lbl = fmtArea(area(p)); txt = '📐 면적 ' + lbl + '\n둘레 ' + fmtLen(pathLen(p, true)) + ' · 점 ' + p.length + '개'; }
@@ -1687,58 +1752,124 @@
     try { if (typeof eraseMode !== 'undefined' && eraseMode) setEraseMode(false); } catch (e) {}
     clearMeas();
     M = { kind: kind, p: [[lat, lng]] };
+    if (kind === 'route') { _rGen++; M.wps = [[lat, lng]]; M.segs = []; M.busy = 0; M.q = Promise.resolve(); }
     window._measuring = true;
     bar.classList.add('show');
     render();
   }
   function undoPt() {
     if (!M) return;
+    if (M.kind === 'route') {                  // 길찾기: 마지막 지점과 그 구간 통째로
+      if (M.busy) return;                      // 받는 중에는 기다림
+      if (M.segs.length) { M.p.splice(M.p.length - M.segs.pop()); M.wps.pop(); M.fail = false; M.gap = 0; render(); }
+      else stopMeasure();
+      return;
+    }
     M.p.pop();
     if (!M.p.length) { stopMeasure(); return; }
     render();
   }
   function stopMeasure() {
+    _rGen++;
     M = null; window._measuring = false;
     bar.classList.remove('show');
     clearMeas();
   }
   window.measureTap = function (lat, lng) {
     if (!M || !isFinite(lat) || !isFinite(lng)) return false;
+    if (M.kind === 'route') {
+      var a = M.wps[M.wps.length - 1], b = [lat, lng];
+      M.wps.push(b); queueSeg(a, b); render();
+      return true;
+    }
     M.p.push([lat, lng]); render();
     return true;
   };
   // 뒤로가기 = 점 하나 되돌리기, 다 지우면 재기 끝
   window.measureOnBack = function () { if (!M) return false; undoPt(); return true; };
 
-  // ── 문자 입력 창 ──
-  function openTextInput(lat, lng) {
+  // ── 문자 찾기·바꾸기 (길게 누른 곳의 문자 → 수정 창) ──
+  // 카카오 라벨은 pointer-events:none 이라 누르면 지도가 받는다 → 화면 좌표로 직접 찾는다.
+  function findTextAt(cx, cy) {
+    var best = null, bd = 1e9;
+    try {
+      if (isVw()) {
+        if (typeof textLabelsV === 'undefined') return null;
+        var r = vmap.getViewport().getBoundingClientRect();
+        textLabelsV.forEach(function (o) {
+          var px = vmap.getPixelFromCoordinate(o.coord); if (!px) return;
+          var dx = Math.abs(cx - (r.left + px[0])), dy = Math.abs(cy - (r.top + px[1]));
+          var hw = Math.max(24, String(o.name).length * 9);   // 캔버스 글자라 크기를 어림 (13px 굵은 글씨)
+          if (dx <= hw && dy <= 22 && dx + dy < bd) { bd = dx + dy; best = o; }
+        });
+        return best;
+      }
+      if (typeof textLabels === 'undefined') return null;
+      textLabels.forEach(function (o) {
+        if (!o.ov.getMap() || o.el.style.display === 'none') return;
+        var b = o.el.getBoundingClientRect(), m = 12;
+        if (cx < b.left - m || cx > b.right + m || cy < b.top - m || cy > b.bottom + m) return;
+        var d = Math.abs(cx - (b.left + b.right) / 2) + Math.abs(cy - (b.top + b.bottom) / 2);
+        if (d < bd) { bd = d; best = o; }
+      });
+    } catch (e) {}
+    return best;
+  }
+  // t 가 빈 문자열이면 삭제. 같은 자리·각도·색·크기로 다시 만든다
+  function replaceText(o, t) {
+    try {
+      if (isVw()) {
+        textLabelLyr.getSource().removeFeature(o.feat);
+        textLabelsV.splice(textLabelsV.indexOf(o), 1);
+        if (t) addTextLabelV(o.coord, t, o.rot, o.color, o.h, o.ax, o.ay);
+        try { _syncSaveBtnV(); } catch (e) {}
+      } else {
+        o.ov.setMap(null);
+        textLabels.splice(textLabels.indexOf(o), 1);
+        if (t) addTextLabel(o.pos, t, o.rot, o.color, o.h, o.ax, o.ay);
+        try { _syncSaveBtn(); } catch (e) {}
+      }
+      autoSaveToDB();
+    } catch (e) { console.warn('문자 수정 실패', e); }
+  }
+
+  // ── 문자 입력 창 (edit = 기존 문자 객체면 수정 창: 수정·삭제·취소) ──
+  function openTextInput(lat, lng, edit) {
     var bg = document.createElement('div');
     bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9000;display:flex;align-items:center;justify-content:center;';
+    var btn = 'flex:1;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;';
     bg.innerHTML =
       '<div style="background:white;border-radius:14px;padding:20px;width:290px;box-shadow:0 4px 24px rgba(0,0,0,0.25);">' +
-      '<h3 style="margin:0 0 10px;font-size:16px;color:#333;">🔤 문자 입력</h3>' +
+      '<h3 style="margin:0 0 10px;font-size:16px;color:#333;">' + (edit ? '🔤 문자 수정' : '🔤 문자 입력') + '</h3>' +
       '<input class="ti-in" type="text" placeholder="지도에 쓸 글자" style="width:100%;box-sizing:border-box;font-size:15px;padding:10px;border:1px solid #ccc;border-radius:8px;margin-bottom:14px;">' +
       '<div style="display:flex;gap:8px;">' +
-      '<button class="ti-ok" style="flex:1;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#1a73e8;color:white;">추가</button>' +
-      '<button class="ti-no" style="flex:1;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;background:#f1f3f4;color:#555;">취소</button>' +
+      '<button class="ti-ok" style="' + btn + 'background:#1a73e8;color:white;">' + (edit ? '수정' : '추가') + '</button>' +
+      (edit ? '<button class="ti-del" style="' + btn + 'background:#e53935;color:white;">삭제</button>' : '') +
+      '<button class="ti-no" style="' + btn + 'background:#f1f3f4;color:#555;">취소</button>' +
       '</div></div>';
     document.body.appendChild(bg);
     var inp = bg.querySelector('.ti-in');
-    setTimeout(function () { inp.focus(); }, 100);
+    if (edit) inp.value = edit.name || '';
+    setTimeout(function () { inp.focus(); if (edit) inp.select(); }, 100);
     function ok() {
       var t = inp.value.trim();
       if (!t) { inp.focus(); return; }
       bg.remove();
+      if (edit) { if (t !== edit.name) replaceText(edit, t); return; }
       try {
         if (isVw()) addTextLabelV(toProj(lat, lng), t, 0, '', 0);
         else addTextLabel(new kakao.maps.LatLng(lat, lng), t, 0, '', 0);
         saved();
       } catch (e) { console.warn('문자 입력 실패', e); }
     }
+    if (edit) bg.querySelector('.ti-del').onclick = function () { bg.remove(); replaceText(edit, ''); };
     bg.querySelector('.ti-ok').onclick = ok;
     bg.querySelector('.ti-no').onclick = function () { bg.remove(); };
     inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') ok(); if (e.key === 'Escape') bg.remove(); });
-    bg.addEventListener('click', function (e) { if (e.target === bg) bg.remove(); });
+    // 길게 눌러 연 수정 창은 손을 뗄 때의 click 이 바깥(=닫기)에 떨어진다 → 새로 누른 뒤의 click 만 받는다
+    var armed = !edit;
+    bg.addEventListener('pointerdown', function () { armed = true; });
+    bg.addEventListener('click', function (e) { if (armed && e.target === bg) bg.remove(); });
   }
 
   function addMarkerAt(lat, lng) {
@@ -1750,6 +1881,8 @@
 
   // ── 길게 누르기 메뉴 ──
   window.openPressMenu = function (lat, lng, cx, cy) {
+    var tx = findTextAt(cx, cy);                        // 문자 위를 길게 누름 → 수정 창
+    if (tx) { openTextInput(lat, lng, tx); return; }
     // 화면 전체를 덮는 id 없는 창 → 뒤로가기(_closeTopPopup)로 닫힌다
     var bg = document.createElement('div'); bg.className = 'pm-bg';
     var dot = document.createElement('div'); dot.className = 'pm-dot';
@@ -1762,6 +1895,7 @@
       ['🔤 문자 입력', function () { openTextInput(lat, lng); }],
       ['📏 거리 재기', function () { startMeasure('dist', lat, lng); }],
       ['📐 면적 재기', function () { startMeasure('area', lat, lng); }],
+      ['🧭 길찾기', function () { startMeasure('route', lat, lng); }],
       ['📤 공유하기', function () { openShareLocation(lat, lng); }]
     ];
     items.forEach(function (it) {

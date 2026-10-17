@@ -1629,10 +1629,45 @@
   // ── 재기 모드 ──
   var M = null;   // { kind:'dist'|'area', p:[[lat,lng],...] }
   var bar = document.createElement('div'); bar.id = 'measBar';
-  bar.innerHTML = '<div class="mb-t"></div><div class="mb-b"><button class="mb-u">↩ 되돌리기</button><button class="mb-x">✕ 끝</button></div>';
+  bar.innerHTML = '<div class="mb-t"></div><div class="mb-b"><button class="mb-u">↩</button><button class="mb-s">💾 저장</button><button class="mb-x">✕ 취소</button></div>';
   document.body.appendChild(bar);
   bar.querySelector('.mb-u').onclick = function () { undoPt(); };
+  bar.querySelector('.mb-s').onclick = function () { saveMeasure(); };
   bar.querySelector('.mb-x').onclick = function () { stopMeasure(); };
+
+  // 💾 저장 — 잰 것을 보통 선(면적은 닫힌 선) + 값 글자로 바꿔 넣는다 → 자동저장·내보내기·지우개 그대로 (2026-10-17)
+  // 면의 채움색은 선 구조라 저장되지 않는다.
+  var MEAS_COLOR = '#FF3D00', MEAS_WIDTH = 3;
+  function saveMeasure() {
+    if (!M) return;
+    var p = M.p.slice(), isArea = M.kind === 'area';
+    if (p.length < (isArea ? 3 : 2)) { alert(isArea ? '점을 3개 이상 찍어야 저장됩니다.' : '점을 2개 이상 찍어야 저장됩니다.'); return; }
+    var val = isArea ? fmtArea(area(p)) : fmtLen(pathLen(p));
+    var name = (isArea ? '면적 ' : '거리 ') + val;
+    var line = isArea ? p.concat([p[0]]) : p;
+    var at = p[p.length - 1];
+    if (isArea) {   // 면적 글자는 꼭짓점 평균 자리에
+      var la = 0, lo = 0; p.forEach(function (q) { la += q[0]; lo += q[1]; });
+      at = [la / p.length, lo / p.length];
+    }
+    stopMeasure();
+    try {
+      if (isVw()) {
+        var lyr = mkLineLyr(line.map(function (q) { return toProj(q[0], q[1]); }), MEAS_COLOR, MEAS_WIDTH);
+        lyr._name = name;
+        addLyr(lyr); polylines.push(lyr);
+        addTextLabelV(toProj(at[0], at[1]), val, 0, MEAS_COLOR, 0);
+      } else {
+        var path = line.map(function (q) { return new kakao.maps.LatLng(q[0], q[1]); });
+        var poly = new kakao.maps.Polyline({ map: map, path: path, strokeWeight: MEAS_WIDTH, strokeColor: MEAS_COLOR, strokeOpacity: 1 });
+        var entry = { poly: poly, name: name, path: path, color: MEAS_COLOR, width: MEAS_WIDTH };
+        attachPolylineDelete(poly, entry);
+        polylines.push(entry);
+        addTextLabel(new kakao.maps.LatLng(at[0], at[1]), val, 0, MEAS_COLOR, 0);
+      }
+      saved();
+    } catch (e) { console.warn('재기 저장 실패', e); }
+  }
   function render() {
     if (!M) return;
     var p = M.p, txt, lbl = '';

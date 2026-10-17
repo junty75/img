@@ -1678,12 +1678,127 @@
   function setRouteProf(v) {
     try { localStorage.setItem('m_route_prof', v); } catch (e) {}
     if (!M || M.kind !== 'route') return;
-    _rGen++;                                   // 받던 구간 버리고 처음부터 새 옵션으로
+    rebuildRoute();
+  }
+  // 찍은 지점(M.wps) 전체를 처음부터 다시 잇기 — 받던 구간은 버린다
+  function rebuildRoute() {
+    _rGen++;
     var w = M.wps;
-    M.p = [w[0]]; M.segs = []; M.busy = 0; M.q = Promise.resolve();
+    M.p = [w[0]]; M.segs = []; M.busy = 0; M.q = Promise.resolve(); M.fail = false; M.gap = 0;
     for (var i = 1; i < w.length; i++) queueSeg(w[i - 1], w[i]);
     render();
   }
+
+  // ── 길찾기 중 길게 누르기 → 경로 편집 메뉴 (2026-10-17) ──
+  // 경유지 추가(돌아가는 거리가 가장 적게 늘어나는 구간에) · 지점 삭제(가장 가까운 지점) · 출발지 변경 · 도착지 변경 → 처음부터 다시 잇기
+  var _swallowTap = false;   // 길게 누른 손을 뗄 때 지도가 받는 탭은 지점으로 넣지 않는다
+  document.addEventListener('pointerdown', function () { _swallowTap = false; }, true);
+  function viaIndex(w, p) {
+    if (w.length < 2) return w.length;
+    var best = 1, bd = 1e18;
+    for (var i = 0; i < w.length - 1; i++) {
+      var add = dist(w[i], p) + dist(p, w[i + 1]) - dist(w[i], w[i + 1]);
+      if (add < bd) { bd = add; best = i + 1; }
+    }
+    return best;
+  }
+  function routeEdit(kind, p) {
+    if (!M || M.kind !== 'route') return;
+    var w = M.wps;
+    if (kind === 'via') w.splice(viaIndex(w, p), 0, p);
+    else if (kind === 'del') {
+      if (w.length <= 1) { alert('지울 지점이 없습니다.'); return; }
+      var k = 0; w.forEach(function (q, i) { if (dist(q, p) < dist(w[k], p)) k = i; });
+      w.splice(k, 1);
+    }
+    else if (kind === 'start') w[0] = p;
+    else if (w.length < 2) w.push(p); else w[w.length - 1] = p;
+    rebuildRoute();
+  }
+  function openRouteMenu(lat, lng, cx, cy) {
+    _swallowTap = true;
+    var p = [lat, lng];
+    var bg = document.createElement('div'); bg.className = 'pm-bg';
+    var dot = document.createElement('div'); dot.className = 'pm-dot';
+    dot.style.left = cx + 'px'; dot.style.top = cy + 'px';
+    var box = document.createElement('div'); box.className = 'pm-box';
+    var head = document.createElement('div');
+    head.style.cssText = 'padding:6px 18px 8px;color:#666;font-size:12px;border-bottom:1px solid #eee;';
+    head.textContent = '🧭 길찾기 · 지점 ' + M.wps.length + '개';
+    box.appendChild(head);
+    var armed = false;
+    [['📍 경유지 추가', 'via'], ['❌ 지점 삭제', 'del'], ['🚩 출발지 변경', 'start'], ['🏁 도착지 변경', 'end'], ['✕ 취소', '']].forEach(function (it) {
+      var b = document.createElement('button'); b.textContent = it[0];
+      b.onclick = function (e) { e.stopPropagation(); if (!armed) return; bg.remove(); if (it[1]) routeEdit(it[1], p); };
+      box.appendChild(b);
+    });
+    bg.appendChild(dot); bg.appendChild(box);
+    document.body.appendChild(bg);
+    var w = box.offsetWidth, h = box.offsetHeight, W = innerWidth, H = innerHeight;
+    var x = cx + 18; if (x + w > W - 8) x = cx - 18 - w; x = Math.max(8, Math.min(x, W - w - 8));
+    var y = cy - h / 2; y = Math.max(8, Math.min(y, H - h - 8));
+    box.style.left = x + 'px'; box.style.top = y + 'px';
+    bg.addEventListener('pointerdown', function () { armed = true; });
+    bg.addEventListener('click', function (e) { if (armed && e.target === bg) bg.remove(); });
+    bg.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
+
+  // ── 저장한 경로 다시 고치기 (2026-10-17) ──
+  // 저장할 때 찍은 지점·옵션을 선에 붙여 둔다(카카오 entry.rwps/rprof, 브이월드 lyr._rwps/_rprof → 자동저장·KMZ 의 ExtendedData).
+  // 선 메뉴의 '🧭 경로 고치기' → 그 지점들로 길찾기를 다시 열고, 💾 저장하면 옛 선·값 글자를 바꾼다(✕ 취소면 그대로).
+  function routeDataOf(o) {
+    if (!o) return null;
+    var w = isVw() ? o._rwps : o.rwps, pf = isVw() ? o._rprof : o.rprof;
+    return w && w.length >= 2 ? { wps: w.map(function (q) { return q.slice(); }), prof: pf === 'foot' ? 'foot' : 'car' } : null;
+  }
+  function lastPtOf(o) {   // 선의 끝점 [lat,lng]
+    try {
+      if (isVw()) { var cs = coordParts(o); var c = cs[cs.length - 1]; var ll = fromMerc(c[c.length - 1]); return [ll[1], ll[0]]; }
+      var p = o.path[o.path.length - 1]; return [p.getLat(), p.getLng()];
+    } catch (e) { return null; }
+  }
+  // 저장 때 같이 넣은 값 글자 찾기 (같은 글자 + 선 끝점 10m 안)
+  function findValueLabel(o) {
+    var nm = String(isVw() ? o._name : o.name || ''), val = nm.replace(/^경로\s*/, ''), end = lastPtOf(o);
+    if (!val || !end) return null;
+    var list = isVw() ? (typeof textLabelsV !== 'undefined' ? textLabelsV : []) : (typeof textLabels !== 'undefined' ? textLabels : []);
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i]; if (t.name !== val) continue;
+      var q;
+      if (isVw()) { var ll = fromMerc(t.coord); q = [ll[1], ll[0]]; } else q = [t.pos.getLat(), t.pos.getLng()];
+      if (dist(q, end) < 10) return t;
+    }
+    return null;
+  }
+  function removeLine(o) {
+    try {
+      if (isVw()) { removeLyr(o); polylines = polylines.filter(function (x) { return x !== o; }); }
+      else { o.poly.setMap(null); polylines = polylines.filter(function (x) { return x !== o; }); }
+    } catch (e) {}
+  }
+  function startRouteEdit(o) {
+    var d = routeDataOf(o);
+    if (!d) return;
+    try { localStorage.setItem('m_route_prof', d.prof); } catch (e) {}
+    startMeasure('route', d.wps[0][0], d.wps[0][1]);
+    M.wps = d.wps; M.replace = o;
+    rebuildRoute();
+  }
+  // 선 메뉴(#polyMenu)에 '🧭 경로 고치기' — 찍은 지점이 있는 선일 때만 보인다
+  (function () {
+    var pm = document.getElementById('polyMenu'); if (!pm) return;
+    var rb = document.createElement('button'); rb.id = 'polyRouteBtn'; rb.textContent = '🧭 경로 고치기'; rb.style.display = 'none';
+    pm.insertBefore(rb, document.getElementById('polyEditBtn'));
+    var cur = function () { try { return isVw() ? polyTarget : (polyMenuTarget && polyMenuTarget.entry); } catch (e) { return null; } };
+    rb.onclick = function () { var o = cur(); hidePolyMenu(); if (o) startRouteEdit(o); };
+    var orig = window.showPolyMenu;
+    if (typeof orig === 'function') window.showPolyMenu = function () {
+      var r = orig.apply(this, arguments);
+      var o = cur(); if (!isVw() && !o && polyMenuTarget) o = polylines.find(function (x) { return x.poly === polyMenuTarget.poly; });
+      rb.style.display = routeDataOf(o) ? '' : 'none';
+      return r;
+    };
+  })();
   bar.querySelector('.mb-s').onclick = function () { saveMeasure(); };
   bar.querySelector('.mb-x').onclick = function () { stopMeasure(); };
 
@@ -1703,17 +1818,26 @@
       var la = 0, lo = 0; p.forEach(function (q) { la += q[0]; lo += q[1]; });
       at = [la / p.length, lo / p.length];
     }
+    var rdata = isRoute ? { wps: M.wps.map(function (q) { return q.slice(); }), prof: routeProf() } : null;
+    var old = isRoute ? M.replace : null;
     stopMeasure();
     try {
+      if (old) {                                   // 경로 고치기 — 옛 선과 그 값 글자를 바꾼다
+        var ol = findValueLabel(old);
+        removeLine(old);
+        if (ol) replaceText(ol, '');
+      }
       if (isVw()) {
         var lyr = mkLineLyr(line.map(function (q) { return toProj(q[0], q[1]); }), MEAS_COLOR, MEAS_WIDTH);
         lyr._name = name;
+        if (rdata) { lyr._rwps = rdata.wps; lyr._rprof = rdata.prof; }
         addLyr(lyr); polylines.push(lyr);
         addTextLabelV(toProj(at[0], at[1]), val, 0, MEAS_COLOR, 0);
       } else {
         var path = line.map(function (q) { return new kakao.maps.LatLng(q[0], q[1]); });
         var poly = new kakao.maps.Polyline({ map: map, path: path, strokeWeight: MEAS_WIDTH, strokeColor: MEAS_COLOR, strokeOpacity: 1 });
         var entry = { poly: poly, name: name, path: path, color: MEAS_COLOR, width: MEAS_WIDTH };
+        if (rdata) { entry.rwps = rdata.wps; entry.rprof = rdata.prof; }
         attachPolylineDelete(poly, entry);
         polylines.push(entry);
         addTextLabel(new kakao.maps.LatLng(at[0], at[1]), val, 0, MEAS_COLOR, 0);
@@ -1730,7 +1854,7 @@
       pb.textContent = ROUTE_NAME[routeProf()];
       if (p.length >= 2) lbl = fmtLen(pathLen(p));
       txt = '🧭 길찾기' + (M.busy ? ' — 길 찾는 중…' : '') + '\n'
-        + (M.wps.length < 2 ? '지도를 눌러 다음 지점을 찍으세요' : '총 ' + (lbl || '0m') + ' · 지점 ' + M.wps.length + '개')
+        + (M.wps.length < 2 ? '지도를 눌러 다음 지점을 찍으세요' : '총 ' + (lbl || '0m') + ' · 지점 ' + M.wps.length + '개 · 길게 누르면 편집')
         + (M.fail ? '\n⚠️ 길을 못 찾아 마지막 구간은 직선' : M.gap ? '\n⚠️ 끝 ' + Math.round(M.gap) + 'm 는 지도에 길이 없어 직선' : '');
       bar.querySelector('.mb-t').textContent = txt;
       drawMeas(p, 'dist', lbl, M.wps);
@@ -1753,6 +1877,7 @@
     clearMeas();
     M = { kind: kind, p: [[lat, lng]] };
     if (kind === 'route') { _rGen++; M.wps = [[lat, lng]]; M.segs = []; M.busy = 0; M.q = Promise.resolve(); }
+    window._routeMode = kind === 'route';   // 길찾기 중엔 길게 누르기 = 경로 편집 메뉴
     window._measuring = true;
     bar.classList.add('show');
     render();
@@ -1771,13 +1896,14 @@
   }
   function stopMeasure() {
     _rGen++;
-    M = null; window._measuring = false;
+    M = null; window._measuring = false; window._routeMode = false;
     bar.classList.remove('show');
     clearMeas();
   }
   window.measureTap = function (lat, lng) {
     if (!M || !isFinite(lat) || !isFinite(lng)) return false;
     if (M.kind === 'route') {
+      if (_swallowTap) { _swallowTap = false; return true; }   // 길게 누른 손을 뗀 탭
       var a = M.wps[M.wps.length - 1], b = [lat, lng];
       M.wps.push(b); queueSeg(a, b); render();
       return true;
@@ -1881,6 +2007,7 @@
 
   // ── 길게 누르기 메뉴 ──
   window.openPressMenu = function (lat, lng, cx, cy) {
+    if (M && M.kind === 'route') { openRouteMenu(lat, lng, cx, cy); return; }   // 길찾기 중 → 경로 편집 메뉴
     var tx = findTextAt(cx, cy);                        // 문자 위를 길게 누름 → 수정 창
     if (tx) { openTextInput(lat, lng, tx); return; }
     // 화면 전체를 덮는 id 없는 창 → 뒤로가기(_closeTopPopup)로 닫힌다

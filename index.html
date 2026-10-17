@@ -1227,7 +1227,7 @@ function initMap(center, level) {
       // 손가락 + (터치기기의) 펜/스타일러스 허용 — 터치스크린 없는 PC 마우스는 제외
       const okPtr = e.pointerType === 'touch' || navigator.maxTouchPoints > 0;
       if (!okPtr || !e.isPrimary) return;   // 두 번째 손가락(핀치)은 취소만
-      if (drawingMode || suppressLongPress || window._measuring) return;
+      if (drawingMode || suppressLongPress || (window._measuring && !window._routeMode)) return;   // 길찾기 중엔 길게 누르기 = 경로 편집
       if (e.target.closest && e.target.closest('[data-iw]')) return;   // 사진 팝업 위는 제외
       pressX = e.clientX; pressY = e.clientY;
       mapLongPressTimer = setTimeout(() => {
@@ -1238,7 +1238,7 @@ function initMap(center, level) {
           if (!ll) return;
           // 선 근처(화면 ~15px)를 길게 누르면 빈 곳 메뉴 대신 선 수정/삭제 메뉴
           // (선을 픽셀 단위로 정확히 안 눌러도 선택되도록 허용 반경 확대)
-          const near = findNearPolyK(ll, 15);
+          const near = window._routeMode ? null : findNearPolyK(ll, 15);   // 길찾기 중엔 경로 편집 메뉴가 우선
           if (near) {
             suppressMapClick = true;
             showPolyMenu(pressX, pressY, near.poly, near);
@@ -3491,7 +3491,9 @@ function _lineKmlPlacemark(en, styles) {
     su = `<styleUrl>#${styles.get(key)}</styleUrl>`;
   }
   const geom = segs.length === 1 ? segs[0] : `<MultiGeometry>${segs.join('')}</MultiGeometry>`;
-  return `\n  <Placemark>\n    <name>${safeName}</name>${su}\n    ${geom}\n  </Placemark>`;
+  // 🧭 길찾기로 저장한 선은 찍은 지점·옵션도 (gdrive.js '경로 고치기')
+  const rw = (en.rwps && en.rwps.length >= 2 ? `<ExtendedData><Data name="rwps"><value>${en.rwps.map(q => q[0].toFixed(7) + ',' + q[1].toFixed(7)).join(';')}</value></Data><Data name="rprof"><value>${en.rprof || 'car'}</value></Data></ExtendedData>` : '');
+  return `\n  <Placemark>\n    <name>${safeName}</name>${su}${rw}\n    ${geom}\n  </Placemark>`;
 }
 // styles(Map: 'RRGGBB_w' -> id) -> KML <Style> 정의 (KML 색은 aabbggrr)
 function _lineKmlStyleDefs(styles) {
@@ -3811,6 +3813,11 @@ async function loadKMZ(file, silent = false) {
           if (parts.length > 1) poly._parts = parts;   // 단일 경로는 점 편집 가능 — getPath()로 최신 경로 사용
           _deferPolys.push(poly);   // setBounds 후 한 번에 setMap
           const entry = { poly, name: pmName, path: parts.length === 1 ? parts[0] : parts.flat(), parts: parts.length > 1 ? parts : null, color, width: sw };
+          for (const d of Array.from(pm.getElementsByTagName('Data'))) {   // 🧭 길찾기 선의 찍은 지점·옵션
+            const v = (d.getElementsByTagName('value')[0]?.textContent || '').trim();
+            if (d.getAttribute('name') === 'rwps') entry.rwps = v.split(';').map(s => s.split(',').map(Number)).filter(q => q.length === 2 && isFinite(q[0]) && isFinite(q[1]));
+            else if (d.getAttribute('name') === 'rprof') entry.rprof = v;
+          }
           attachPolylineDelete(poly, entry);
           polylines.push(entry);
         }

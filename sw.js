@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kmz-viewer-v36';   // 지도 표시 먼저 · 폴더 저장은 뒤에서 (2026-10-22)
+const CACHE_NAME = 'kmz-viewer-v37';   // 카카오 새 타일 주소(kakaocdn) 저장 (2026-10-22)
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const TILE_CACHE  = 'map-tiles-v1';   // 지도 타일 (버전 올려도 지우지 않음 — 데이터 절약)
 const LIB_CACHE   = 'map-libs-v1';    // 지도 SDK·CDN 라이브러리
@@ -35,6 +35,9 @@ function tileKind(u) {
   const h = u.hostname, p = u.pathname;
   if (h === 'mts.daumcdn.net' && p.startsWith('/api/v1/tile/')) return 'tile';
   if (/^map\d*\.daumcdn\.net$/.test(h)) return 'tile';
+  // 2026-10-22: 카카오가 타일 주소를 kakaocdn.net 으로 옮김(map.kakaocdn.net/map_skyview…, mts.kakaocdn.net/api/v1/tile/…) — 예전엔 이걸 몰라 카카오 앱 타일이 저장 안 됐다
+  if (h === 'mts.kakaocdn.net' && p.startsWith('/api/v1/tile/')) return 'tile';
+  if (/^map\d*\.kakaocdn\.net$/.test(h)) return 'tile';
   if (h === 'cdn.vworld.kr' && p.startsWith('/2d/')) return 'tile';
   if (h === 'xdworld.vworld.kr') return 'tile';
   if (h === '2d.vworld.kr' && p.includes('/2DCache/tile')) return 'tile';
@@ -47,6 +50,7 @@ function tileKind(u) {
 function isLib(u) {
   const h = u.hostname, p = u.pathname;
   if (h === 't1.daumcdn.net' && p.startsWith('/mapjsapi/')) return true;
+  if (h === 't1.kakaocdn.net' && p.startsWith('/mapjsapi/')) return true;   // 카카오 SDK 본체도 kakaocdn 으로 옮김
   if (h === 'map.vworld.kr' && /\.(js|css|png|gif|jpe?g|svg)$/i.test(p)) return true;
   if (h === 'cdn.jsdelivr.net' || h === 'unpkg.com') return true;
   return false;

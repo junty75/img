@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kmz-viewer-v34';   // gdrive.js 분리(공통 파일) → 캐시 갱신
+const CACHE_NAME = 'kmz-viewer-v35';   // ⚙ 설정 · 지도 저장 폴더 (2026-10-22)
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const TILE_CACHE  = 'map-tiles-v1';   // 지도 타일 (버전 올려도 지우지 않음 — 데이터 절약)
 const LIB_CACHE   = 'map-libs-v1';    // 지도 SDK·CDN 라이브러리
@@ -101,8 +101,66 @@ async function putTile(key, res) {
   if (++_puts % 100 === 0) await trimTiles();
 }
 
+// ── 지도 저장 폴더 (gdrive.js ⚙ 설정, 2026-10-22) ──
+// 사용자가 고른 휴대폰 폴더에 타일을 파일로 둔다. 폴더 손잡이·권한은 페이지에 있으므로 페이지에 묻는다:
+//   'fsget' {url} → {buf,type,t} | {miss} | {off}   /   'fsput' {url, buf} (받은 타일을 폴더에 씀)
+// 켜짐 여부는 페이지가 'fs-on' 으로 알려 주고, 서비스워커가 새로 뜨면 IndexedDB 'jty-fs' 의 'on' 을 읽는다.
+// 내용을 못 읽는 서버(카카오 — CORS 없음)는 폴더에 못 넣으므로 묻지 않고 예전 방식(브라우저 캐시).
+let _fsOn = null;
+self.addEventListener('message', e => { if (e.data && e.data.t === 'fs-on') _fsOn = !!e.data.on; });
+function fsOnState() {
+  if (_fsOn !== null) return Promise.resolve(_fsOn);
+  return new Promise(res => {
+    try {
+      const r = indexedDB.open('jty-fs', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => {
+        try {
+          const q = r.result.transaction('kv', 'readonly').objectStore('kv').get('on');
+          q.onsuccess = () => { _fsOn = !!q.result; res(_fsOn); };
+          q.onerror = () => res(false);
+        } catch (err) { res(false); }
+      };
+      r.onerror = () => res(false);
+    } catch (err) { res(false); }
+  });
+}
+function askPage(client, msg, ms) {
+  return new Promise(res => {
+    const ch = new MessageChannel();
+    const t = setTimeout(() => res(null), ms);
+    ch.port1.onmessage = ev => { clearTimeout(t); res(ev.data); };
+    client.postMessage(msg, [ch.port2]);
+  });
+}
+const tileType = u => /\.png($|\?)/i.test(u.href) ? 'image/png' : 'image/jpeg';
+async function handleTileFolder(e, u, kind) {
+  if (!CORS_HOSTS.includes(u.hostname) || !e.clientId || !(await fsOnState())) return null;
+  const client = await self.clients.get(e.clientId);
+  if (!client) return null;
+  const r = await askPage(client, { t: 'fsget', url: u.href }, 2500);
+  if (!r || r.off) return null;                                   // 권한 없음 등 → 예전 방식
+  const freshDays = kind === 'cadastral' ? CADAS_FRESH_DAYS : TILE_FRESH_DAYS;
+  const fromFolder = () => new Response(r.buf, { headers: { 'Content-Type': r.type || tileType(u) } });
+  if (r.buf && ((Date.now() - (r.t || 0)) / DAY < freshDays || !self.navigator.onLine)) return fromFolder();
+  try {
+    const res = await netFetch(e.request, u);
+    if (res.ok && res.type !== 'opaque') {
+      const b = await res.clone().arrayBuffer();
+      client.postMessage({ t: 'fsput', url: u.href, buf: b }, [b]);
+    }
+    return res;
+  } catch (err) {
+    if (r.buf) return fromFolder();
+    const cached = await (await caches.open(TILE_CACHE)).match(u.href, { ignoreVary: true });
+    if (cached) return cached;
+    throw err;
+  }
+}
+
 // 타일: 캐시 우선. 저장본이 오래됐고 인터넷이 되면 새로 받고, 못 받으면 저장본 사용
 async function handleTile(e, u, kind) {
+  try { const f = await handleTileFolder(e, u, kind); if (f) return f; } catch (err) {}
   const key = u.href;
   const c = await caches.open(TILE_CACHE);
   const cached = await c.match(key, { ignoreVary: true });

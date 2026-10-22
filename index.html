@@ -273,6 +273,8 @@
       color: white; font-size: 15px;
     }
     #loading.show { display: flex; }
+    #loading.quiet { background: transparent; }
+    #loading.quiet > * { visibility: hidden; }
     .spinner {
       width: 40px; height: 40px;
       border: 4px solid rgba(255,255,255,0.3);
@@ -1553,6 +1555,7 @@ kakao.maps.load(() => {
   const _lpOk = !!(_lpK && Number.isFinite(_lpK.lat) && Number.isFinite(_lpK.lng) && Math.abs(_lpK.lat) <= 90 && Math.abs(_lpK.lng) <= 180);
   initMap(_lpOk ? new kakao.maps.LatLng(_lpK.lat, _lpK.lng) : new kakao.maps.LatLng(35.6478, 127.5213),
           (_lpOk && Number.isFinite(_lpK.z) && _lpK.z >= 0 && _lpK.z <= 14) ? _lpK.z : 5);
+  window._bootLastPosK = _lpOk ? _lpK : null;   // 복원 때 데이터 범위로 옮기지 않게(loadKMZ)
   _initTabChannel();   // 다른 탭이 '비켜달라'고 하면 받을 수 있게 먼저 열어 둔다
 
   // 이전 데이터 복원.
@@ -1563,7 +1566,7 @@ kakao.maps.load(() => {
   //   → 수신은 바로 걸고, 받은 데이터는 복원이 끝난 뒤에 그린다(_restoreReady 대기).
   //   복원이 영영 안 끝나는 경우까지 대비해 15초 뒤에는 그냥 그린다.
   const _restore = loadKMZfromDB()
-    .then(async file => { if (file) await loadKMZ(file, true); })
+    .then(async file => { if (file) { _quietLoad = true; try { await loadKMZ(file, true); } finally { _quietLoad = false; } } })
     .catch(e => console.warn('이전 데이터 복원 실패 — 빈 지도로 시작', e));
   window._restoreReady = Promise.race([_restore, new Promise(r => setTimeout(r, 15000))]);
   window._restoreReady.then(() => { _restoreDone = true; });
@@ -1574,12 +1577,16 @@ kakao.maps.load(() => {
       try { if (isFinite(_lpK.z)) map.setLevel(_lpK.z); map.setCenter(new kakao.maps.LatLng(_lpK.lat, _lpK.lng)); } catch (e) {}
     }
     let _lpTimer = null;     // 복원이 끝난 뒤부터 보던 화면 저장
+    const _savePosK = () => {
+      clearTimeout(_lpTimer);
+      try { const c = map.getCenter(); localStorage.setItem('lastPosK', JSON.stringify({ lat: c.getLat(), lng: c.getLng(), z: map.getLevel() })); } catch (e) {}
+    };
     kakao.maps.event.addListener(map, 'idle', () => {
       clearTimeout(_lpTimer);
-      _lpTimer = setTimeout(() => {
-        try { const c = map.getCenter(); localStorage.setItem('lastPosK', JSON.stringify({ lat: c.getLat(), lng: c.getLng(), z: map.getLevel() })); } catch (e) {}
-      }, 500);
+      _lpTimer = setTimeout(_savePosK, 500);
     });
+    // 옮기자마자 앱을 내리면 0.5초 저장이 안 될 수 있다 → 화면을 떠날 때 바로 저장
+    document.addEventListener('visibilitychange', () => { if (document.hidden) _savePosK(); });
   });
   _startLocationOnLoad();   // 내 위치 1단계로 시작 (항상 표시 + 처음 한 번 내 위치로)
   _restore.then(() => { try { consumeSharedFiles(); } catch (e) { console.warn('공유파일 처리 실패', e); } });
@@ -2161,15 +2168,51 @@ function makeLocationContent(heading) {
   return `<div style="width:40px;height:40px;pointer-events:none;transform:rotate(${rot}deg);">` + locMarkerSvg(heading) + `</div>`;
 }
 
+/* 기기 나침반 — '화면 위쪽'이 가리키는 방위(도, 북=0 시계방향). (2026-10-21)
+   예전엔 360-alpha 만 썼다 → ① 폰을 세워 들면(beta≈90) alpha 가 크게 튀고
+   ② 가로 화면이면 90° 틀리고 ③ 값이 떨려서 화살표가 흔들렸다.
+   → 화면 위쪽 축의 수평 성분 + (세운 만큼) 뒷면(카메라) 축의 수평 성분을 합쳐
+     눕히든 세우든 앞쪽을 가리키게 하고, 화면 회전각을 반영, 원형 평균으로 떨림을 줄인다. */
+let _orientOn = false, _hdX = null, _hdY = null, _shownHeading = null;
+function _screenAngle() {
+  try { if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle; } catch (e) {}
+  return typeof window.orientation === 'number' ? window.orientation : 0;
+}
+function _headingFromEuler(a, b, g) {   // W3C ZXY 오일러각(alpha,beta,gamma) → 방위
+  const r = Math.PI / 180;
+  const sa = Math.sin(a * r), ca = Math.cos(a * r), sb = Math.sin(b * r), cb = Math.cos(b * r),
+        sg = Math.sin(g * r), cg = Math.cos(g * r), s = _screenAngle() * r, ss = Math.sin(s), cs = Math.cos(s);
+  // 기기 X(오른쪽)·Y(위쪽)·-Z(뒷면) 축의 동(E)·북(N)·위(U) 성분
+  const xE = ca * cg - sa * sb * sg,  xN = sa * cg + ca * sb * sg,  xU = -cb * sg;
+  const yE = -sa * cb,                yN = ca * cb,                 yU = sb;
+  const zE = -ca * sg - sa * sb * cg, zN = -sa * sg + ca * sb * cg;
+  // 화면 위쪽 = 화면 회전각만큼 돌린 기기 축. 세운 정도(w)만큼 뒷면 방향을 더한다
+  const uE = ss * xE + cs * yE, uN = ss * xN + cs * yN, w = Math.abs(ss * xU + cs * yU);
+  const E = uE + w * zE, N = uN + w * zN;
+  if (Math.hypot(E, N) < 1e-6) return null;
+  return (Math.atan2(E, N) * 180 / Math.PI + 360) % 360;
+}
+function _feedHeading(h) {
+  if (h == null || !isFinite(h)) return;
+  const x = Math.sin(h * Math.PI / 180), y = Math.cos(h * Math.PI / 180);
+  if (_hdX === null) { _hdX = x; _hdY = y; }
+  else { _hdX += (x - _hdX) * 0.2; _hdY += (y - _hdY) * 0.2; }   // 원형 평균(0°/360° 경계에서도 안 튐)
+  deviceHeading = (Math.atan2(_hdX, _hdY) * 180 / Math.PI + 360) % 360;
+}
+function _angDiff(a, b) { if (a == null || b == null) return 360; const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
 // ─── 기기 나침반 리스너 설정 ──────────────────────────
 function setupDeviceOrientation() {
   const addListeners = () => {
+    if (_orientOn) return;   // 위치를 다시 시작할 때마다 리스너가 겹쳐 붙지 않게
+    _orientOn = true;
+    // Android: deviceorientationabsolute (절대 방위각)
     window.addEventListener('deviceorientationabsolute', e => {
-      if (e.alpha != null) deviceHeading = (360 - e.alpha) % 360;
+      if (e.alpha != null) _feedHeading(_headingFromEuler(e.alpha, e.beta || 0, e.gamma || 0));
     }, true);
+    // iOS: webkitCompassHeading, Android 폴백: deviceorientation(absolute 일 때만)
     window.addEventListener('deviceorientation', e => {
-      if (e.webkitCompassHeading != null) deviceHeading = e.webkitCompassHeading;
-      else if (e.absolute && e.alpha != null) deviceHeading = (360 - e.alpha) % 360;
+      if (e.webkitCompassHeading != null) _feedHeading((e.webkitCompassHeading + _screenAngle() + 360) % 360);
+      else if (e.absolute && e.alpha != null) _feedHeading(_headingFromEuler(e.alpha, e.beta || 0, e.gamma || 0));
     }, true);
   };
   if (typeof DeviceOrientationEvent !== 'undefined' &&
@@ -2240,10 +2283,11 @@ function startLocationWatchIfNeeded() {
   if (watchId !== null) return;
   setupDeviceOrientation();
   if (!headingInterval) headingInterval = setInterval(() => {
-    if (locationMarker && deviceHeading !== null) {
+    if (locationMarker && deviceHeading !== null && _angDiff(deviceHeading, _shownHeading) >= 2) {
+      _shownHeading = deviceHeading;
       locationMarker.setContent(makeLocationContent(deviceHeading));
     }
-  }, 500);
+  }, 250);
   watchId = navigator.geolocation.watchPosition(pos => {
     const ll = new kakao.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
     if (locationMode === 2) map.setCenter(ll); // 따라가기 모드에서만 중심 이동
@@ -3196,11 +3240,17 @@ function changeMapType(value) {
   }
 }
 
+// 앱을 다시 열 때의 자동 복원은 '조용히' — 어두운 로딩 창을 바로 띄우지 않는다(지도를 다시 불러오는 것처럼 보였다).
+// 화면은 투명하게 막아 두고(복원 중 손대면 자동저장이 반쪽 데이터를 쓸 수 있음) 1.5초 넘게 걸릴 때만 보통 로딩 창.
+let _quietLoad = false, _quietT = null;
 function showLoading(msg) {
   document.getElementById('loadingMsg').textContent = msg || '불러오는 중...';
-  document.getElementById('loading').classList.add('show');
+  const el = document.getElementById('loading');
+  if (_quietLoad && !el.classList.contains('show')) { el.classList.add('quiet'); clearTimeout(_quietT); _quietT = setTimeout(() => el.classList.remove('quiet'), 1500); }
+  else if (!_quietLoad) { clearTimeout(_quietT); el.classList.remove('quiet'); }
+  el.classList.add('show');
 }
-function hideLoading() { document.getElementById('loading').classList.remove('show'); }
+function hideLoading() { clearTimeout(_quietT); document.getElementById('loading').classList.remove('show', 'quiet'); }
 
 // ─── 삭제 힌트 ────────────────────────────────────────
 let hintShown = false;
@@ -3688,6 +3738,9 @@ async function _loadHtmData(D) {
 async function loadKMZ(file, silent = false) {
   if (!silent) showLoading('KMZ 압축 해제 중...');
   else showLoading('이전 데이터 복원 중...');
+  // 앱을 다시 열 때(자동 복원) 전에 보던 화면이 있으면 데이터 범위로 옮기지 않는다
+  // (예전엔 데이터 범위로 갔다가 보던 화면으로 되돌아와 지도를 두 번 받았다)
+  const _keepView = silent && !!window._bootLastPosK;
 
   // DB 자동 복원(silent)일 때만 기존 데이터 초기화
   // 사용자가 직접 불러올 때는 기존 마커/선 유지하고 추가
@@ -3894,7 +3947,7 @@ async function loadKMZ(file, silent = false) {
       }
     }
 
-    if (!bounds.isEmpty()) map.setBounds(bounds);
+    if (!bounds.isEmpty() && !_keepView) map.setBounds(bounds);
     // 화면(줌) 확정 후 한 번만 그림. 묶음선(_parts)은 컬링이 화면 교차 구간만 붙임.
     _deferPolys.forEach(p => { if (!p._parts) p.setMap(map); });
     cullBundlePolys();

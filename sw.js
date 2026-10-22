@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kmz-viewer-v35';   // ⚙ 설정 · 지도 저장 폴더 (2026-10-22)
+const CACHE_NAME = 'kmz-viewer-v36';   // 지도 표시 먼저 · 폴더 저장은 뒤에서 (2026-10-22)
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const TILE_CACHE  = 'map-tiles-v1';   // 지도 타일 (버전 올려도 지우지 않음 — 데이터 절약)
 const LIB_CACHE   = 'map-libs-v1';    // 지도 SDK·CDN 라이브러리
@@ -134,46 +134,56 @@ function askPage(client, msg, ms) {
   });
 }
 const tileType = u => /\.png($|\?)/i.test(u.href) ? 'image/png' : 'image/jpeg';
-async function handleTileFolder(e, u, kind) {
+// 폴더를 쓸 수 있는 요청이면 그 페이지(client), 아니면 null
+async function folderClient(e, u) {
   if (!CORS_HOSTS.includes(u.hostname) || !e.clientId || !(await fsOnState())) return null;
-  const client = await self.clients.get(e.clientId);
-  if (!client) return null;
-  const r = await askPage(client, { t: 'fsget', url: u.href }, 2500);
-  if (!r || r.off) return null;                                   // 권한 없음 등 → 예전 방식
-  const freshDays = kind === 'cadastral' ? CADAS_FRESH_DAYS : TILE_FRESH_DAYS;
-  const fromFolder = () => new Response(r.buf, { headers: { 'Content-Type': r.type || tileType(u) } });
-  if (r.buf && ((Date.now() - (r.t || 0)) / DAY < freshDays || !self.navigator.onLine)) return fromFolder();
-  try {
-    const res = await netFetch(e.request, u);
-    if (res.ok && res.type !== 'opaque') {
-      const b = await res.clone().arrayBuffer();
-      client.postMessage({ t: 'fsput', url: u.href, buf: b }, [b]);
-    }
-    return res;
-  } catch (err) {
-    if (r.buf) return fromFolder();
-    const cached = await (await caches.open(TILE_CACHE)).match(u.href, { ignoreVary: true });
-    if (cached) return cached;
-    throw err;
-  }
+  return (await self.clients.get(e.clientId)) || null;
 }
+const FOLDER_WAIT_MS = 1000;           // 인터넷 타일이 이만큼 안 오면 폴더본으로 먼저 보여 줌 (PC 지도와 같은 1초)
 
-// 타일: 캐시 우선. 저장본이 오래됐고 인터넷이 되면 새로 받고, 못 받으면 저장본 사용
+// 타일 (2026-10-22 고침 — 표시 먼저, 폴더는 뒤에서):
+//  ① 브라우저 캐시 → ② 인터넷. 폴더는 화면을 기다리게 하지 않는다 —
+//  인터넷이 1초 안에 안 오거나·끊겼을 때만 폴더에서 읽고, 받은 타일은 응답한 뒤 페이지에 넘겨 뒤에서 폴더에 쓴다.
+//  (예전 판은 타일마다 폴더를 먼저 뒤져 휴대폰에서 지도가 많이 느려졌다)
 async function handleTile(e, u, kind) {
-  try { const f = await handleTileFolder(e, u, kind); if (f) return f; } catch (err) {}
   const key = u.href;
   const c = await caches.open(TILE_CACHE);
   const cached = await c.match(key, { ignoreVary: true });
   const freshDays = kind === 'cadastral' ? CADAS_FRESH_DAYS : TILE_FRESH_DAYS;
   if (cached && (ageDays(cached) < freshDays || !self.navigator.onLine)) return cached;
-  try {
-    const res = await netFetch(e.request, u);
+  let folder = null;
+  try { folder = await folderClient(e, u); } catch (err) {}
+  const fromFolder = async () => {
+    if (!folder) return null;
+    const r = await askPage(folder, { t: 'fsget', url: key }, 2500);
+    return r && r.buf ? new Response(r.buf, { headers: { 'Content-Type': r.type || tileType(u) } }) : null;
+  };
+  if (!self.navigator.onLine) {
+    const f = await fromFolder(); if (f) return f;
+    if (cached) return cached;
+  }
+  const net = netFetch(e.request, u).then(res => {
     if (storable(res)) e.waitUntil(putTile(key, res.clone()).catch(() => {}));
+    if (folder && res.ok && res.type !== 'opaque') {
+      const cl = res.clone();
+      e.waitUntil(cl.arrayBuffer().then(b => folder.postMessage({ t: 'fsput', url: key, buf: b }, [b])).catch(() => {}));
+    }
     return res;
-  } catch (err) {
+  });
+  if (!folder) {
+    try { return await net; } catch (err) { if (cached) return cached; throw err; }
+  }
+  let first;
+  try { first = await Promise.race([net, new Promise(r => setTimeout(() => r('slow'), FOLDER_WAIT_MS))]); }
+  catch (err) {                                          // 인터넷 실패 → 폴더 → 옛 캐시
+    const f = await fromFolder().catch(() => null); if (f) return f;
     if (cached) return cached;
     throw err;
   }
+  if (first !== 'slow') return first;
+  const f = await fromFolder().catch(() => null);       // 1초 넘게 걸림 → 폴더본 먼저, 인터넷은 뒤에서 마저 받아 저장
+  if (f) { e.waitUntil(net.catch(() => {})); return f; }
+  try { return await net; } catch (err) { if (cached) return cached; throw err; }
 }
 
 // 라이브러리: 캐시 우선. 버전 없는 주소는 7일 지나면 저장본을 주고 뒤에서 갱신

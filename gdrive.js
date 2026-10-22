@@ -1496,7 +1496,8 @@
   //  · 지도 저장 폴더 = 사용자가 고른 휴대폰 폴더(File System Access API, 크롬 안드로이드). 브레이브 등 지원 안 하면 안내만, 예전처럼 브라우저 안 저장.
   //    폴더 안 '지도타일/<서버>/<주소 경로>' 에 타일 파일로 저장 — 사용자가 직접 옮기기·지우기 가능.
   //    그 폴더에 PC 지도저장 파일(*.mbtiles, 사진위치표시 '🛰 지도저장')을 넣으면 브이월드 위성 타일을 거기서도 읽는다(읽기만).
-  //  · 타일 요청은 서비스워커(sw.js)가 가로채 이 페이지에 묻는다: 'fsget'(폴더에 있나) → 없으면 인터넷 → 'fsput'(폴더에 씀).
+  //  · 타일은 서비스워커(sw.js)가 브라우저 캐시 → 인터넷 순으로 먼저 보여 주고, 받은 타일을 'fsput' 으로 넘기면 여기서 줄 세워 뒤에서 폴더에 쓴다.
+  //    인터넷이 1초 넘게 늦거나 끊겼을 때만 'fsget' 으로 폴더에서 읽는다(2026-10-22 — 타일마다 폴더를 먼저 뒤져 휴대폰에서 느렸던 것 고침).
   //    카카오 지도 타일은 카카오 서버가 내용을 못 읽게 막아서(CORS 없음) 폴더에 못 넣는다 → 예전처럼 브라우저 안 저장.
   //  · 폴더 손잡이(FileSystemDirectoryHandle)는 IndexedDB 'jty-fs' 에, 켜짐 표시('on')도 거기 — sw.js 가 읽는다.
   //    권한은 브라우저가 기억 못 하면 앱을 열 때마다 처음 화면을 누를 때 한 번 다시 묻는다.
@@ -1760,9 +1761,29 @@
         else port.postMessage({ miss: true });
       }).catch(function () { port.postMessage({ miss: true }); });
     } else if (d.t === 'fsput' && d.buf) {
-      if (_fsDir && _fsPerm === 'granted') fsWrite(d.url, d.buf);
+      if (_fsDir && _fsPerm === 'granted') fsQueue(d.url, d.buf);
     }
   });
+  // 폴더 쓰기는 줄 세워 한 장씩, 화면이 한가할 때 (2026-10-22 — 지도 그리기와 다투지 않게).
+  // 이번 실행에 이미 쓴 주소는 다시 안 쓴다. 너무 밀리면(지나간 화면) 오래된 것부터 버린다.
+  var _fsQ = [], _fsQBusy = false, _fsDone = new Set();
+  function fsQueue(url, buf) {
+    if (_fsDone.has(url)) return;
+    _fsQ.push([url, buf]);
+    if (_fsQ.length > 1500) _fsQ.splice(0, _fsQ.length - 1500);
+    fsPump();
+  }
+  function fsPump() {
+    if (_fsQBusy || !_fsQ.length) return;
+    _fsQBusy = true;
+    var idle = window.requestIdleCallback || function (f) { return setTimeout(f, 50); };
+    idle(function () {
+      var it = _fsQ.shift();
+      if (!it || _fsDone.has(it[0])) { _fsQBusy = false; fsPump(); return; }
+      _fsDone.add(it[0]);
+      fsWrite(it[0], it[1]).then(function () { _fsQBusy = false; fsPump(); });
+    }, { timeout: 2000 });
+  }
   // 시작: 기억한 폴더 꺼내기 → 권한 확인. 브라우저가 권한을 기억 못 했으면 처음 화면을 누를 때 한 번 묻는다
   fsKv('dir').then(function (h) {
     if (!h) { fsKv('on', false); fsTellSw(false); return; }

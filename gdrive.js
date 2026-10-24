@@ -1530,7 +1530,7 @@
     return navigator.storage.getDirectory().then(function (root) { return root.getDirectoryHandle(FS_ROOT, { create: true }); })
       .then(function (d) { _fsDir = d; return _mbOpenAll(); })
       .catch(function (e) { console.warn('[지도 파일] 앱 저장소를 못 엶', e); })
-      .then(function () { var on = _mb.length > 0; fsKv('on', on); fsTellSw(on); });
+      .then(function () { var on = _mb.length > 0; fsKv('on', on); fsTellSw(on); osmLayerSync(); });
   }
   // 바깥 지도 파일(.mbtiles) 골라 앱 안으로 복사 — 큰 파일이라 통째로 메모리에 올리지 않고 흘려 쓴다
   function fsImport() {
@@ -1633,9 +1633,16 @@
           // PC 지도 다운로더(htm/img/지도다운로더)의 그 밖 층 — jty_layers(layer, z, x, row, data), 숫자는 타일 주소 그대로
           if (v[0] === 'table' && v[1] === 'jty_layers') m.layTblRoot = v[3];
           if (v[0] === 'index' && v[2] === 'jty_layers' && /^sqlite_autoindex_jty_layers/i.test(v[1])) m.layIdxRoot = v[3];
+          if (v[0] === 'table' && v[1] === 'metadata') m.metaRoot = v[3];
         });
         if (!(m.layTblRoot && m.layIdxRoot)) m.layTblRoot = m.layIdxRoot = 0;
-        return ((m.tblRoot && m.idxRoot) || m.layTblRoot) ? m : null;
+        if (!((m.tblRoot && m.idxRoot) || m.layTblRoot)) return null;
+        m.layers = {};                   // metadata 'jty_layers' = {층: {minzoom, maxzoom, …}} — 해외 일반지도(osm) 줌 범위에 씀
+        if (!m.layTblRoot || !m.metaRoot) return m;
+        return _mbScanAll(m, m.metaRoot).then(function (rows) {
+          rows.forEach(function (r) { if (r.vals[0] === 'jty_layers') { try { m.layers = JSON.parse(r.vals[1]) || {}; } catch (e) {} } });
+          return m;
+        }, function () { return m; });
       });
     });
   }
@@ -1765,7 +1772,10 @@
     return null;
   }
   function mbRead(url) {
-    var t = _tileKey(url); if (!t || !_mb.length) return Promise.resolve(null);
+    return _mbFind(_tileKey(url));
+  }
+  function _mbFind(t) {                // t = {lays, z, x, y}
+    if (!t || !_mb.length) return Promise.resolve(null);
     var tries = [];                    // [지도 파일, 층] — 우선 층부터 모든 파일
     t.lays.forEach(function (lay) { _mb.forEach(function (m) { if (lay === 'vw_sat' ? m.tblRoot : m.layTblRoot) tries.push([m, lay]); }); });
     var i = 0;
@@ -1784,6 +1794,54 @@
     return Promise.resolve(next());
   }
   window._jtyMbRead = mbRead; window._jtyFsStat = _fsStat;   // 시험용
+
+  // ── 해외 일반지도(OSM) — 지도 다운로더가 Protomaps 데이터로 그려 넣은 'osm' 층 (브이월드 앱만, 2026-10-24) ──
+  //  인터넷 타일이 아니라 지도 파일에만 있으므로 sw 를 거치지 않고 페이지가 직접 읽어 OpenLayers 층으로 그린다.
+  //  512px(HD) 그림 → tilePixelRatio 2. 한국 안(대략 33~38.7N, 124.5~131.9E)에서는 숨김 — 국내는 브이월드 지도가 낫다.
+  //  카카오 앱은 카카오 격자(EPSG:5181)라 한국 밖을 못 그려 안 함.
+  var _osmLyr = null, OSM_EMPTY = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  function _osmZooms() {
+    var zs = null;
+    _mb.forEach(function (m) {
+      var L = m.layers && m.layers.osm; if (!L) return;
+      zs = zs ? [Math.min(zs[0], L.minzoom), Math.max(zs[1], L.maxzoom)] : [L.minzoom, L.maxzoom];
+    });
+    return zs;
+  }
+  function _osmVis() {
+    if (!_osmLyr) return;
+    var c = ol.proj.transform(vmap.getView().getCenter(), vmap.getView().getProjection(), 'EPSG:4326');
+    var inKr = c[1] > 33 && c[1] < 38.7 && c[0] > 124.5 && c[0] < 131.9;
+    if (_osmLyr.getVisible() === inKr) _osmLyr.setVisible(!inKr);
+  }
+  function osmLayerSync(tries) {
+    if (!isVw() || typeof ol === 'undefined') {           // 브이월드 지도가 아직 안 만들어졌으면 잠깐 기다림 (카카오 앱이면 끝내 안 생김)
+      if ((tries || 0) < 60 && typeof map === 'undefined') setTimeout(function () { osmLayerSync((tries || 0) + 1); }, 1000);
+      return;
+    }
+    if (_osmLyr) { try { vmap.removeLayer(_osmLyr); } catch (e) {} _osmLyr = null; }
+    var zs = _osmZooms(); if (!zs) return;
+    var attr;
+    try { attr = (typeof ol.Attribution === 'function') ? [new ol.Attribution({ html: '© OpenStreetMap contributors, Protomaps' })] : ['© OpenStreetMap contributors, Protomaps']; } catch (e) {}
+    var src = new ol.source.XYZ({
+      url: 'jtymb:{z}/{x}/{y}', minZoom: zs[0], maxZoom: zs[1], tilePixelRatio: 2, wrapX: false, attributions: attr,
+      tileLoadFunction: function (tile, u) {
+        var img = tile.getImage(), a = /(\d+)\/(\d+)\/(\d+)$/.exec(u);
+        if (!a) { img.src = OSM_EMPTY; return; }
+        _mbFind({ lays: ['osm'], z: +a[1], x: +a[2], y: +a[3] }).then(function (r) {
+          if (!r) { img.src = OSM_EMPTY; return; }
+          var ou = URL.createObjectURL(new Blob([r.buf], { type: r.type }));
+          img.addEventListener('load', function () { URL.revokeObjectURL(ou); }, { once: true });
+          img.src = ou;
+        }, function () { img.src = OSM_EMPTY; });
+      }
+    });
+    _osmLyr = new ol.layer.Tile({ source: src, zIndex: 3 });   // 브이월드 배경(0~2) 위, 항공사진(49·50)·도형(100+) 아래
+    vmap.addLayer(_osmLyr);
+    if (!osmLayerSync._hooked) { osmLayerSync._hooked = true; vmap.on('moveend', _osmVis); }
+    _osmVis();
+  }
+  window._jtyOsmLayer = function () { return _osmLyr; };   // 시험용
 
   // ── 서비스워커 질문 받기 ──
   if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', function (e) {
@@ -1824,9 +1882,10 @@
                }).join('') : '<span style="color:#888;">없음</span>') + '</div>';
           if (_fsStat.hit) h += '<div style="margin-top:2px;">이번에 지도 파일에서 읽음 ' + _fsStat.hit + '장</div>';
           h += '<div class="btns"><button class="pri" id="gsMbAdd">➕ 지도 파일 가져오기</button></div>' +
-               '<div style="color:#888;font-size:12px;margin-top:4px;">고른 파일을 앱 안에 복사해 두고, 인터넷이 느리거나 끊기면 브이월드 위성 영상을 거기서 보여 줍니다. ' +
+               '<div style="color:#888;font-size:12px;margin-top:4px;">고른 파일을 앱 안에 복사해 두고, 인터넷이 느리거나 끊기면 지도(브이월드·카카오 위성·하이브리드·일반)를 거기서 보여 줍니다. ' +
+               '해외 일반지도(OSM)는 브이월드 앱에서 한국 밖을 볼 때 나옵니다. ' +
                '같은 이름을 다시 가져오면 새 파일로 바꿉니다(PC 는 같은 파일에 계속 더하므로 새로 받은 곳까지 합쳐짐). 복사한 뒤 휴대폰의 원본은 지워도 됩니다.' +
-               (isVw() ? '' : '<br>※ 카카오 지도 앱에서는 위성 영상이 카카오 것이라 쓰이지 않습니다. 브이월드 앱(/Vmap/)에서 쓰입니다.') + '</div>';
+               (isVw() ? '' : '<br>※ 카카오 앱은 카카오 타일(PC 지도 다운로더에서 카카오로 받은 것)만 씁니다. 브이월드 타일·해외 지도는 브이월드 앱(/Vmap/)에서.') + '</div>';
         }
         return h + '</div>';
       },

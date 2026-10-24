@@ -2501,6 +2501,7 @@
       ['📏 거리 재기', function () { startMeasure('dist', lat, lng); }],
       ['📐 면적 재기', function () { startMeasure('area', lat, lng); }],
       ['🧭 길찾기', function () { startMeasure('route', lat, lng); }],
+      ['🗺 지적도 불러오기', function () { window.loadCadastralAt(lat, lng); }],
       ['📤 공유하기', function () { openShareLocation(lat, lng); }]
     ];
     items.forEach(function (it) {
@@ -2524,4 +2525,127 @@
     bg.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   };
 
+})();
+
+// ── 🗺 지적도 불러오기 (2026-10-24) — PC 지도의 '지적도 삽입'과 같은 결과 ──
+// 길게 누르기 메뉴 → 누른 곳이 든 리의 연속지적도 = 노랑 1px 묶음선 한 항목 「○○리 지적도」 + 지번 문자(높이 2m).
+// 데이터는 지적도_생성.py 가 연속지적도 SHP 를 리별로 나눈 /img/cad/<PNU 10자리>.json (브이월드 판도 같은 사이트의 /img/cad/ 를 씀).
+//   index.json = {q, src, li:[{li, emd, ri, n, kb, b:[남,서,북,동](위경도×q)}]}
+//   리 파일 = {li, emd, ri, p:[[지번, 중심위도, 중심경도, 링(첫 점+차이값, [위,경,위,경…])…]…]}
+// 받은 파일은 캐시 'cad-v1' 에 두어 다시 받지 않는다(index.json 은 하루 한 번 새로, 리 파일 주소에 src 를 붙여 새 데이터면 새로 받음).
+// 지도에는 KML 로 만들어 loadKMZ 로 넣는다(자동저장·내보내기·지우개 그대로). 넣은 뒤 보던 화면 그대로.
+(function () {
+  var CAD_BASE = location.origin + '/img/cad/', CAD_CACHE = 'cad-v1';
+  var _idx = null;
+  function isVw() { return typeof vmap !== 'undefined' && vmap && vmap.getView; }
+  async function cget(url, key, fresh) {
+    var c = null; try { c = await caches.open(CAD_CACHE); } catch (e) {}
+    if (c && !fresh) { var hit = await c.match(key); if (hit) return hit.json(); }
+    try {
+      var r = await fetch(url, { cache: 'no-cache' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (c) { try { await c.put(key, r.clone()); } catch (e) {} }
+      return await r.json();
+    } catch (e) {
+      if (c) { var old = await c.match(key); if (old) return old.json(); }
+      throw e;
+    }
+  }
+  async function getIndex() {
+    if (_idx) return _idx;
+    var d = new Date(), day = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    _idx = await cget(CAD_BASE + 'index.json?d=' + day, CAD_BASE + 'index.json', true);
+    return _idx;
+  }
+  function rings(p) {           // 리 파일 한 필지 → 링 [[위,경]…] (정수)
+    var out = [];
+    for (var k = 3; k < p.length; k++) {
+      var f = p[k], r = [], a = 0, b = 0;
+      for (var i = 0; i < f.length; i += 2) { a += f[i]; b += f[i + 1]; r.push([a, b]); }
+      out.push(r);
+    }
+    return out;
+  }
+  function inRings(y, x, rs) {
+    var ins = false;
+    rs.forEach(function (r) {
+      for (var i = 0, j = r.length - 1; i < r.length; j = i++) {
+        var yi = r[i][0], xi = r[i][1], yj = r[j][0], xj = r[j][1];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) ins = !ins;
+      }
+    });
+    return ins;
+  }
+  function hasItem(name) {
+    try { return polylines.some(function (p) { return (p.name || p._name) === name; }); } catch (e) { return false; }
+  }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function toKml(name, d, q) {
+    var f = function (v) { return (v / q).toFixed(7); };
+    var s = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>' + esc(name) + '</name>\n'
+      + '<Style id="cad"><LineStyle><color>ff00d4ff</color><width>1</width></LineStyle></Style>\n'
+      + '<Placemark><name>' + esc(name) + '</name><styleUrl>#cad</styleUrl><MultiGeometry>';
+    var parts = [s];
+    d.p.forEach(function (p) {
+      rings(p).forEach(function (r) {
+        parts.push('<LineString><coordinates>' + r.map(function (c) { return f(c[1]) + ',' + f(c[0]) + ',0'; }).join(' ') + '</coordinates></LineString>');
+      });
+    });
+    parts.push('</MultiGeometry></Placemark>\n');
+    d.p.forEach(function (p) {
+      if (!p[0]) return;
+      parts.push('<Placemark><name>' + esc(p[0]) + '</name><ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>0</value></Data>'
+        + '<Data name="color"><value>#FFFF00</value></Data><Data name="h"><value>2</value></Data><Data name="ax"><value>0.5</value></Data><Data name="ay"><value>0.5</value></Data>'
+        + '</ExtendedData><Point><coordinates>' + f(p[2]) + ',' + f(p[1]) + ',0</coordinates></Point></Placemark>\n');
+    });
+    parts.push('</Document></kml>');
+    return parts.join('');
+  }
+  function viewSave() {
+    if (isVw()) { var v = vmap.getView(); return { c: v.getCenter().slice(), z: v.getZoom(), r: v.getRotation() }; }
+    return { c: map.getCenter(), z: map.getLevel() };
+  }
+  function viewRestore(st) {
+    if (isVw()) { var v = vmap.getView(); v.setZoom(st.z); v.setCenter(st.c); v.setRotation(st.r); }
+    else { map.setLevel(st.z); map.setCenter(st.c); }
+  }
+  var _busy = false;
+  window.loadCadastralAt = async function (lat, lng) {
+    if (_busy) return;
+    _busy = true;
+    try {
+      showLoading('🗺 지적도 찾는 중...');
+      var ix = await getIndex(), q = ix.q || 1e6, y = Math.round(lat * q), x = Math.round(lng * q);
+      var cand = ix.li.filter(function (e) { return e.b[0] <= y && y <= e.b[2] && e.b[1] <= x && x <= e.b[3]; })
+        .sort(function (a, c) { return (a.b[2] - a.b[0]) * (a.b[3] - a.b[1]) - (c.b[2] - c.b[0]) * (c.b[3] - c.b[1]); });
+      if (!cand.length) { hideLoading(); showToastMsg('🗺 이 위치의 지적도가 없습니다 (' + (ix.src || '') + ' 범위 밖)'); return; }
+      var pick = null, near = null, nearD = Infinity;
+      for (var i = 0; i < cand.length && !pick; i++) {
+        var e = cand[i];
+        showLoading('🗺 지적도 받는 중... ' + (e.ri || e.li) + ' (' + e.kb + 'KB)');
+        var d = await cget(CAD_BASE + e.li + '.json?v=' + encodeURIComponent(ix.src || ''), CAD_BASE + e.li + '.json?v=' + encodeURIComponent(ix.src || ''));
+        for (var k = 0; k < d.p.length; k++) {
+          var p = d.p[k], dd = (p[1] - y) * (p[1] - y) + (p[2] - x) * (p[2] - x);
+          if (dd < nearD) { nearD = dd; near = { e: e, d: d }; }
+          if (dd < 4e6 && inRings(y, x, rings(p))) { pick = { e: e, d: d }; break; }   // 중심이 약 2km 안인 필지만 판정
+        }
+      }
+      pick = pick || near;
+      if (!pick) { hideLoading(); showToastMsg('🗺 이 위치의 지적도를 찾지 못했습니다'); return; }
+      var name = ((pick.e.ri || pick.e.li) + ' 지적도').trim();       // 「장수리 지적도」 (PC 지도와 같은 이름)
+      if (hasItem(name)) { hideLoading(); showToastMsg('🗺 이미 불러온 지적도입니다 — ' + name); return; }
+      showLoading('🗺 ' + name + ' 그리는 중... (' + pick.d.p.length.toLocaleString() + '필지)');
+      var file = new File([toKml(name, pick.d, q)], name + '.kml', { type: 'application/vnd.google-earth.kml+xml' });
+      var v = viewSave();
+      try { await loadKMZ(file); }
+      finally { viewRestore(v); setTimeout(function () { viewRestore(v); }, 300); }
+      try { autoSaveToDB(); } catch (er) {}
+      console.log('[cad]', name, pick.d.p.length, '필지', pick.e.li);
+      showToastMsg('🗺 ' + name + ' — ' + pick.d.p.length.toLocaleString() + '필지');
+    } catch (er) {
+      hideLoading();
+      console.warn('[cad] 실패', er);
+      showToastMsg('🗺 지적도를 받지 못했습니다' + (navigator.onLine === false ? ' (인터넷 연결 없음)' : '') + ' — ' + (er && er.message || er));
+    } finally { _busy = false; }
+  };
 })();

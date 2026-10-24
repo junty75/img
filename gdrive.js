@@ -1539,7 +1539,11 @@
       .then(function () { return _mbOpenAll(); })
       .then(function () { if (!_merging && !lsGet(LS_MBDL)) return _fsDir.removeEntry(FS_TMP).catch(function () {}); })   // 끊긴 가져오기의 복사본 (드라이브 이어 받기 중이면 둠)
       .catch(function (e) { console.warn('[지도 파일] 앱 저장소를 못 엶', e); })
-      .then(function () { fsOnUpdate(); if (_mb.length) fsMergeLeft(); });
+      .then(function () {
+        fsOnUpdate();
+        if (_mb.length) fsMergeLeft();
+        else if (lsGet(LS_MBDL)) toast('드라이브에서 받다 멈춘 지도 파일이 있습니다.<br>⚙ 설정 → 「이어 받기」', 5000);
+      });
   }
   function fsOnUpdate() {
     var on = !!(_pk && _pk.n) || _mb.length > 0;
@@ -1663,41 +1667,115 @@
   }
   async function fsDriveImport(f, resume) {
     if (_merging) { toast('지도 파일을 합치는 중입니다. 끝난 뒤 다시 해 주세요.', 3000); return; }
+    var dl = lsJson(LS_MBDL);
+    if (!resume && dl && dl.id === f.id && dl.size === f.size && dl.t === f.t) resume = true;   // 받다 멈춘 같은 파일 → 받은 곳부터
     if (!resume && netType() === 'cellular' && !confirm('지금 모바일 데이터입니다. ' + (f.size / P2).toFixed(0) + 'MB 를 받을까요?')) return;
     closePanel();
     try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
-    var job = startJob(), label = '드라이브에서 받는 중<br>' + esc(f.name), why = null;
+    if (!resume) {
+      try { await fsRoomCheck(f.size, f.name, true); } catch (e) { alert('못 가져왔습니다: ' + f.name + '\n(' + (e.why || fsErrText(e)) + ')'); return; }
+    }
+    var job = startJob(), label = '드라이브에서 받는 중<br>' + esc(f.name), why = null, keep = false;
     _merging = true;
+    wakeOn();
     try {
-      if (!resume) await fsRoomCheck(f.size, f.name, true);
+      lsSet(LS_MBDL, JSON.stringify(f));                            // 끊겨도(앱이 멈추거나 다시 열려도) 이어 받게
       var got = await fsDriveDownload(f, job, label, resume);
       if (got === 'login') return;                                  // 로그인하러 떠남 — 돌아와 이어 받음
-      lsDel(LS_MBDL);
       if (job.cancelled) throw { name: '취소' };
+      lsDel(LS_MBDL);
       var tf = await (await _fsDir.getFileHandle(FS_TMP)).getFile();
-      var m = await _mbOpen(tf);
-      if (!m) throw { why: '지도 파일 형식 아님' };
-      m.name = f.name;
-      await pkMerge(m, job, label.replace('받는 중', '합치는 중'));
-      await pkCompact(job);
-    } catch (e) { why = e; if (!job.cancelled) console.warn('[지도 파일] 드라이브 가져오기 실패', f.name, e); }
-    if (!lsGet(LS_MBDL)) { try { await _fsDir.removeEntry(FS_TMP); } catch (e) {} }
+      await fsMergeBlob(tf, f.name, job, label.replace('받는 중', '합치는 중'));
+    } catch (e) { why = e; keep = !job.cancelled && !!lsGet(LS_MBDL); if (!job.cancelled) console.warn('[지도 파일] 드라이브 가져오기 실패', f.name, e); }
+    wakeOff();
+    if (!keep) { lsDel(LS_MBDL); try { await _fsDir.removeEntry(FS_TMP); } catch (e) {} }
     _merging = false;
     fsOnUpdate();
     if (cancelled(job, '가져오기를 멈췄습니다.')) { lsDel(LS_MBDL); try { await _fsDir.removeEntry(FS_TMP); } catch (e) {} return; }
     done();
-    if (why) alert('못 가져왔습니다: ' + f.name + '\n(' + (why.why || fsErrText(why)) + ')');
+    if (why) alert('못 가져왔습니다: ' + f.name + '\n(' + (why.why || fsErrText(why)) + ')' +
+                   (keep ? '\n\n받은 데까지는 남겨 두었습니다. 다시 「가져오기」를 누르면 받은 곳부터 이어 받습니다.' : ''));
     else toast('🗺 ' + esc(f.name) + ' 을(를) 합친 지도에 넣었습니다.', 4000);
     showSettings();
   }
+  async function fsMergeBlob(b, name, job, label) {
+    var m = await _mbOpen(b);
+    if (!m) throw { why: '지도 파일 형식 아님' };
+    m.name = name;
+    await pkMerge(m, job, label);
+    await pkCompact(job);
+  }
+  // 받는 동안 화면이 저절로 꺼지지 않게 (Screen Wake Lock — 숨겨지면 풀리므로 다시 보일 때 다시 잡음)
+  var _wake = null, _wakeWant = false;
+  function wake() {
+    if (!_wakeWant || _wake || document.hidden || !navigator.wakeLock) return;
+    navigator.wakeLock.request('screen').then(function (l) { _wake = l; l.addEventListener('release', function () { _wake = null; }); }).catch(function () {});
+  }
+  function wakeOn() { _wakeWant = true; wake(); }
+  function wakeOff() { _wakeWant = false; if (_wake) { try { _wake.release(); } catch (e) {} _wake = null; } }
+  // 받는 대로 바로 파일에 남기는 쓰기 — 전용 워커의 createSyncAccessHandle(그 자리에 바로 씀 → 앱이 멈추거나 다시 열려도 받은 데까지 남음).
+  // 안 되면 createWritable(닫을 때 한꺼번에 — 중간에 끊기면 그동안 받은 것은 없어짐, 2026-10-24 '처음부터 다시 받아짐'의 원인)
+  var TMP_WORKER = 'var h=null;onmessage=async function(e){var d=e.data,r={id:d.id};try{' +
+    "if(d.t==='open'){var dir=await (await navigator.storage.getDirectory()).getDirectoryHandle(d.dir,{create:true});" +
+    "h=await (await dir.getFileHandle(d.name,{create:true})).createSyncAccessHandle();h.truncate(d.at);r.size=h.getSize();}" +
+    "else if(d.t==='w'){h.write(new Uint8Array(d.buf),{at:d.at});if(d.flush)h.flush();}" +
+    "else if(d.t==='close'){if(h){h.flush();h.close();h=null;}}" +
+    "}catch(err){r.err=(err&&err.name)+': '+(err&&err.message);}postMessage(r);};";
+  async function tmpWriter(at) {
+    var wk = null;
+    try {
+      wk = new Worker(URL.createObjectURL(new Blob([TMP_WORKER], { type: 'text/javascript' })));
+      var seq = 0, waits = {};
+      wk.onmessage = function (e) { var cb = waits[e.data.id]; delete waits[e.data.id]; if (cb) cb(e.data); };
+      var call = function (m, tr) {
+        return new Promise(function (res, rej) { m.id = ++seq; waits[m.id] = function (r) { if (r.err) rej(new Error(r.err)); else res(r); }; wk.postMessage(m, tr || []); });
+      };
+      await call({ t: 'open', dir: FS_ROOT, name: FS_TMP, at: at });
+      var pos = at, since = 0, closed = false;
+      var close = function () { if (closed) return Promise.resolve(); closed = true; return call({ t: 'close' }).then(function () { wk.terminate(); }, function () { wk.terminate(); }); };
+      return {
+        sync: true,
+        write: function (u) {
+          var b = (u.byteOffset === 0 && u.byteLength === u.buffer.byteLength) ? u.buffer : u.slice().buffer, p = pos;
+          pos += u.byteLength; since += u.byteLength;
+          var fl = since >= 8 * P2; if (fl) since = 0;
+          return call({ t: 'w', buf: b, at: p, flush: fl }, [b]);
+        },
+        close: close, abort: close                                  // 멈춰도 받은 데까지 남김
+      };
+    } catch (e) {
+      try { wk && wk.terminate(); } catch (e2) {}
+      console.warn('[지도 파일] 바로 쓰기(동기 손잡이) 안 됨 → 닫을 때 한꺼번에 쓰기', e);
+      var fh = await _fsDir.getFileHandle(FS_TMP, { create: true }), w = await fh.createWritable({ keepExistingData: at > 0 });
+      if (at) { await w.truncate(at); await w.seek(at); }
+      return { sync: false, write: function (u) { return w.write(u); }, close: function () { return w.close(); }, abort: function () { return w.abort(); } };
+    }
+  }
+  // 다시 잇기 전 기다림 — 화면이 다시 켜지거나 인터넷이 돌아오면 바로
+  function fsWaitNet(ms) {
+    return new Promise(function (res) {
+      var t = setTimeout(fin, ms);
+      function fin() { clearTimeout(t); document.removeEventListener('visibilitychange', vis); window.removeEventListener('online', fin); res(); }
+      function vis() { if (!document.hidden) fin(); }
+      document.addEventListener('visibilitychange', vis); window.addEventListener('online', fin);
+    });
+  }
   // FS_TMP 에 받기 → 받은 바이트 수, 로그인하러 떠나면 'login'
   async function fsDriveDownload(f, job, label, resume) {
-    var fh = await _fsDir.getFileHandle(FS_TMP, { create: true });
     var got = 0;
-    if (resume) { got = (await fh.getFile()).size; if (got > f.size) got = 0; }
-    var w = await fh.createWritable({ keepExistingData: got > 0 });
-    if (got) await w.seek(got);
-    var tries = 0, t0 = 0, tS = Date.now(), g0 = got;
+    if (resume) {
+      try { got = (await (await _fsDir.getFileHandle(FS_TMP)).getFile()).size; } catch (e) { got = 0; }
+      if (got > f.size) got = 0;
+    }
+    var w = await tmpWriter(got);
+    var tries = 0, t0 = 0, tS = Date.now(), g0 = got, ac = null, last = Date.now();
+    // 화면이 다시 켜졌는데 그동안 안 받아졌으면 멈춘 연결을 끊고 바로 다시 잇는다. 20초 넘게 안 오면 그때도
+    var onVis = function () { if (document.hidden) return; wake(); if (ac && Date.now() - last > 5000) ac.abort(); };
+    var dog = setInterval(function () { if (ac && Date.now() - last > 20000) ac.abort(); }, 5000);
+    var onJobAbort = function () { if (ac) ac.abort(); };
+    document.addEventListener('visibilitychange', onVis);
+    if (job.ac) job.ac.signal.addEventListener('abort', onJobAbort);
+    if (resume && got) status(label + '<br>받은 곳(' + (got / P2).toFixed(0) + 'MB)부터 이어 받는 중...');
     try {
       while (got < f.size) {
         if (job.cancelled) throw { name: '취소' };
@@ -1709,34 +1787,51 @@
           login({ mbtilesResume: 1 });
           return 'login';
         }
+        ac = new AbortController(); last = Date.now();
         try {
           var r = await api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f.id) + '?alt=media', tok,
-                            { headers: got ? { Range: 'bytes=' + got + '-' } : {}, signal: jobSignal(job) });
+                            { headers: got ? { Range: 'bytes=' + got + '-' } : {}, signal: ac.signal });
           if (got && r.status !== 206) throw { name: 'Range 안 됨' };
-          var rd = r.body.getReader();
+          var rd = r.body.getReader(), parts = [], pl = 0;
+          var flush = async function () {                           // 1MB 씩 모아 씀 — got 은 파일에 쓴 만큼만 (이어 받을 자리)
+            if (!pl) return;
+            var u = parts[0], n = pl;
+            if (parts.length > 1) { u = new Uint8Array(pl); var o = 0; parts.forEach(function (x) { u.set(x, o); o += x.byteLength; }); }
+            parts = []; pl = 0;
+            await w.write(u); got += n;
+          };
           for (;;) {
             var c = await rd.read();
             if (c.done) break;
-            await w.write(c.value); got += c.value.byteLength; tries = 0;
+            last = Date.now();
+            parts.push(c.value); pl += c.value.byteLength;
+            if (pl >= P2) { await flush(); tries = 0; }
             if (Date.now() - t0 > 500) {
               t0 = Date.now();
               var sp = (got - g0) / Math.max(1, (Date.now() - tS) / 1000);
               status(label + '<br>' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB · ' + (sp / P2).toFixed(1) + 'MB/초' +
-                     (sp > 0 ? ' · 남은 ' + Math.ceil((f.size - got) / sp / 60) + '분' : ''));
+                     (sp > 0 ? ' · 남은 ' + Math.ceil((f.size - got) / sp / 60) + '분' : '') + '<br><span style="font-size:12px;">화면을 끄면 멈추고, 다시 켜면 이어 받습니다</span>');
             }
           }
+          await flush();
+          if (got < f.size) throw { name: '끊김' };                 // 중간에 끝남 → 받은 곳부터 다시
         } catch (e) {
           if (job.cancelled) throw { name: '취소' };
           if (e && e.auth) continue;                               // 토큰 지움 → 위에서 다시 로그인
           if (e && (e.name === 'Range 안 됨' || e.status === 404 || e.status === 403)) throw e;
           if (++tries > 30) throw e;
           status(label + '<br>연결이 끊겨 다시 잇는 중... (' + tries + ')<br>' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB');
-          await new Promise(function (res) { setTimeout(res, Math.min(30000, 2000 * tries)); });
+          await fsWaitNet(Math.min(30000, 2000 * tries));
         }
       }
       await w.close(); w = null;
       return got;
-    } finally { if (w) { try { await w.abort(); } catch (e) {} } }
+    } finally {
+      clearInterval(dog);
+      document.removeEventListener('visibilitychange', onVis);
+      if (job.ac) job.ac.signal.removeEventListener('abort', onJobAbort);
+      if (w) { try { await w.abort(); } catch (e) {} }
+    }
   }
   // 예전처럼 따로 복사해 둔 .mbtiles(2026-10-24 오전 판)가 남아 있으면 합친 지도로 옮기고 지운다 — 열고 3초 뒤, 취소하면 다음에 이어서
   var _merging = false;

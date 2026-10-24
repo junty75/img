@@ -1493,7 +1493,8 @@
   // ══════════════════════════════════════════════════
   //  ⚙ 설정 버튼 + 지도 파일 가져오기 (2026-10-22, 2026-10-24 바꿈)
   //  · ⚙ 버튼(📷 왼쪽) → 설정 창. 지금 항목: 지도 파일 · 지도 미리 받기. 다른 설정도 여기에 덧붙인다(SETTINGS_SECTIONS).
-  //  · 지도 파일 = PC 지도저장 파일(*.mbtiles, 사진위치표시 '🛰 지도저장')을 골라 앱 안 저장소(OPFS '지도타일')에 복사해 둔 것.
+  //  · 지도 파일 = PC 지도저장 파일(*.mbtiles, 사진위치표시 '🛰 지도저장')을 골라 앱 안 저장소(OPFS '지도타일')의 「합친 지도」 한 파일에 합쳐 넣은 것
+  //    (2026-10-24 오후 — 처음 판은 가져온 파일마다 따로 복사했다. 남아 있으면 열 때 합친다. 아래 '합친 지도 한 파일').
   //    브이월드 위성 타일을 거기서 읽는다(읽기만). 2026-10-24: PC 지도 다운로더(htm/img/지도다운로더) 파일의 카카오 위성·하이브리드·일반,
   //    브이월드 하이브리드·일반(jty_layers 표)도 읽는다 → 카카오 앱도 오프라인 지도 파일을 쓴다. 같은 이름을 다시 가져오면 새 파일로 바꾼다(PC 는 같은 파일에 계속 더하므로 = 합치기).
   //  · 2026-10-24: 예전 '지도 저장 폴더'(사용자가 고른 휴대폰 폴더, File System Access)는 뺐다 —
@@ -1524,78 +1525,285 @@
       });
     }).catch(function () { return null; });
   }
-  // 앱 안 저장소 열기 → 지도 파일 읽을 준비. 켜짐 = 읽을 지도 파일이 하나라도 있음
+  // 앱 안 저장소 열기 → 합친 지도 + (아직 안 합친) 지도 파일 읽을 준비. 켜짐 = 읽을 타일이 있음
   function fsInit() {
     if (!fsSupported()) return Promise.resolve();
     return navigator.storage.getDirectory().then(function (root) { return root.getDirectoryHandle(FS_ROOT, { create: true }); })
-      .then(function (d) { _fsDir = d; return _mbOpenAll(); })
+      .then(function (d) { _fsDir = d; return pkOpen().catch(function (e) { console.warn('[지도 파일] 합친 지도를 못 엶', e); }); })
+      .then(function () { return _mbOpenAll(); })
       .catch(function (e) { console.warn('[지도 파일] 앱 저장소를 못 엶', e); })
-      .then(function () { var on = _mb.length > 0; fsKv('on', on); fsTellSw(on); osmLayerSync(); });
+      .then(function () { fsOnUpdate(); if (_mb.length) fsMergeLeft(); });
   }
-  // 바깥 지도 파일(.mbtiles) 골라 앱 안으로 복사 — 큰 파일이라 통째로 메모리에 올리지 않고 흘려 쓴다
+  function fsOnUpdate() {
+    var on = !!(_pk && _pk.n) || _mb.length > 0;
+    fsKv('on', on); fsTellSw(on); osmLayerSync();
+  }
+  function fsErrText(e) { return (e && e.name === 'QuotaExceededError') ? '저장 공간 부족' : ((e && (e.name || e.message)) || '오류'); }
+  // 바깥 지도 파일(.mbtiles) 골라 합친 지도 한 파일에 넣기 — 큰 파일이라 통째로 메모리에 올리지 않고 조금씩 읽어 붙인다
   function fsImport() {
     if (!_fsDir) { alert('이 브라우저는 앱 안 저장소를 지원하지 않습니다.\n(크롬에서 열면 쓸 수 있습니다)'); return; }
+    if (_merging) { toast('지도 파일을 합치는 중입니다. 끝난 뒤 다시 해 주세요.', 3000); return; }
     var inp = document.createElement('input');
     inp.type = 'file'; inp.accept = '.mbtiles'; inp.multiple = true;
-    inp.onchange = function () {
+    inp.onchange = async function () {
       var files = Array.prototype.filter.call(inp.files || [], function (f) { return /\.mbtiles$/i.test(f.name); });
       if (!files.length) { if (inp.files && inp.files.length) alert('.mbtiles 파일만 가져올 수 있습니다.'); return; }
       try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}   // 저장 공간이 모자라도 브라우저가 지우지 않게
-      var job = startJob(), ok = [], bad = [], i = 0;
-      function next() {
-        if (cancelled(job, '가져오기를 멈췄습니다.')) return fsInit();
-        if (i >= files.length) {
-          done();
-          return fsInit().then(function () {
-            toast((ok.length ? '🗺 지도 파일 ' + ok.length + '개 가져옴' : '') + (bad.length ? (ok.length ? '<br>' : '') + '못 가져옴: ' + bad.map(esc).join(', ') : ''), 4000);
-            showSettings();
-          });
-        }
-        var f = files[i++];
-        return _mbOpen(f).then(function (m) {          // 먼저 PC 지도저장 파일 모양인지 확인
-          if (!m) { bad.push(f.name + '(형식)'); return; }
-          return fsCopy(f, job, i, files.length).then(function () { ok.push(f.name); },
-            function (e) { if (!job.cancelled) bad.push(f.name + '(' + ((e && e.name) || '오류') + ')'); });
-        }).catch(function () { bad.push(f.name); }).then(next);
+      var job = startJob(), ok = [], bad = [];
+      _merging = true;
+      for (var i = 0; i < files.length && !job.cancelled; i++) {
+        var f = files[i], m = null;
+        try { m = await _mbOpen(f); } catch (e) {}
+        if (!m) { bad.push(f.name + '(형식)'); continue; }          // PC 지도저장·지도 다운로더 파일 모양이 아님
+        try { await pkMerge(m, job, '지도 파일 가져오는 중 (' + (i + 1) + '/' + files.length + ')<br>' + esc(f.name)); ok.push(f.name); }
+        catch (e) { if (!job.cancelled) { bad.push(f.name + '(' + fsErrText(e) + ')'); console.warn('[지도 파일] 가져오기 실패', f.name, e); } }
       }
-      next();
+      if (!job.cancelled) { try { await pkCompact(job); } catch (e) { console.warn('[지도 파일] 정리 실패', e); } }
+      _merging = false;
+      fsOnUpdate();
+      if (cancelled(job, '가져오기를 멈췄습니다.' + (ok.length ? '<br>' + ok.length + '개는 넣었습니다.' : ''))) return;
+      done();
+      toast((ok.length ? '🗺 지도 파일 ' + ok.length + '개를 합친 지도에 넣었습니다' : '') + (bad.length ? (ok.length ? '<br>' : '') + '못 가져옴: ' + bad.map(esc).join(', ') : ''), 4000);
+      showSettings();
     };
     inp.click();
   }
-  function fsCopy(f, job, n, tot) {
-    var tmp = f.name + '.part', got = 0, t0 = 0;
-    return _fsDir.getFileHandle(tmp, { create: true }).then(function (fh) {
-      if (!fh.createWritable) throw { name: '쓰기 미지원' };
-      return fh.createWritable();
-    }).then(function (w) {
-      var rd = f.stream().getReader();
-      function pump() {
-        if (job.cancelled) return rd.cancel().then(function () { return w.abort(); }).then(function () { throw { name: '취소' }; });
-        return rd.read().then(function (r) {
-          if (r.done) return w.close();
-          got += r.value.byteLength;
-          if (Date.now() - t0 > 300) { t0 = Date.now(); status('지도 파일 가져오는 중 (' + n + '/' + tot + ')<br>' + esc(f.name) + '<br>' + (got / 1048576).toFixed(0) + ' / ' + (f.size / 1048576).toFixed(0) + 'MB'); }
-          return w.write(r.value).then(pump);
-        });
+  // 예전처럼 따로 복사해 둔 .mbtiles(2026-10-24 오전 판)가 남아 있으면 합친 지도로 옮기고 지운다 — 열고 3초 뒤, 취소하면 다음에 이어서
+  var _merging = false;
+  function fsMergeLeft() {
+    if (_merging) return;
+    _merging = true;
+    setTimeout(async function () {
+      var list = _mb.slice(), job = startJob(), ok = 0;
+      try {
+        for (var i = 0; i < list.length && !job.cancelled; i++) {
+          await pkMerge(list[i], job, '지도 파일을 한 파일로 합치는 중 (' + (i + 1) + '/' + list.length + ')<br>' + esc(list[i].name));
+          if (job.cancelled) break;
+          try { await _fsDir.removeEntry(list[i].name); } catch (e) {}
+          ok++;
+        }
+        if (!job.cancelled) await pkCompact(job);
+      } catch (e) { if (!job.cancelled) { console.warn('[지도 파일] 합치기 실패', e); toast('지도 파일 합치기 실패: ' + esc(fsErrText(e)), 4000); } }
+      await _mbOpenAll();
+      _merging = false;
+      fsOnUpdate();
+      if (cancelled(job, '합치기를 멈췄습니다. 다음에 열 때 이어서 합칩니다.')) return;
+      done();
+      if (ok) toast('🗺 지도 파일 ' + ok + '개를 한 파일로 합쳤습니다.', 3000);
+    }, 3000);
+  }
+  async function fsDelete(sid) {
+    var s = _pk && _pk.srcs[sid]; if (!s) return;
+    if (!confirm('합친 지도에서 ' + s.name + ' 몫을 지울까요?\n(나중에 넣은 다른 파일과 겹치는 곳은 그 파일 것이 남습니다. PC 의 원본은 그대로입니다)')) return;
+    if (_merging) { toast('지도 파일을 합치는 중입니다. 끝난 뒤 다시 해 주세요.', 3000); return; }
+    var job = startJob(); _merging = true;
+    try { status('지우는 중...'); await pkDropSrc(sid); await pkCompact(job); }
+    catch (e) { console.warn('[지도 파일] 지우기 실패', e); }
+    _merging = false; fsOnUpdate();
+    if (!cancelled(job)) done();
+    showSettings();
+  }
+
+  // ── 합친 지도 한 파일 (2026-10-24) ──
+  //  가져온 .mbtiles 들을 따로 두지 않고 '합친지도.pack' 한 파일에 타일 바이트만 이어 붙이고, 찾아보기표 '합친지도.idx' 를 둔다.
+  //  pack = 'JTYPACK1' + 세대번호(f64) + 타일 바이트들.
+  //  idx  = 'JTYIDX01' + JSON 길이(u32) + JSON{gen,end,layers,meta,srcs} + 개수(u32) + keys(f64)·offs(f64)·lens(u32)·src(u16) — 모두 little-endian, keys 오름차순.
+  //  key = ((층번호×32 + z)×2^20 + x)×2^20 + y (층 이름은 JSON layers). vw_sat 의 y 는 XYZ(위에서부터), 그 밖은 주소 숫자 그대로(_tileKey 와 같음).
+  //  · 같은 자리 타일은 나중에 넣은 것이 이긴다. 같은 이름 파일을 다시 넣으면 그 파일 몫을 먼저 빼고 넣는다(= 바꾸기, PC 는 같은 파일에 계속 더함).
+  //  · 쓰기는 createWritable(닫을 때 한꺼번에 바뀜) → 중간에 끊기거나 취소하면 예전 그대로. 붙이기는 pack 을 닫은 뒤 idx 를 쓴다(그 사이 끊기면 끝 뒤 찌꺼기만 남음).
+  //  · 버린 바이트가 50MB 넘고 남은 것보다 많으면 새로 써서 줄인다(pkCompact) — 세대번호 +1, idx.new → pack → idx 순서라 끊겨도 pack 과 세대가 맞는 표를 고른다.
+  var PK_NAME = '합친지도.pack', PX_NAME = '합친지도.idx', PK_HEAD = 16, P2 = 1048576;
+  var _pk = null;                      // {file, gen, end, layers, lmap, meta, srcs, n, keys, offs, lens, src, live}
+  function pkKey(li, z, x, y) { return ((li * 32 + z) * P2 + x) * P2 + y; }
+  function pkHead(gen) {
+    var b = new ArrayBuffer(PK_HEAD);
+    new Uint8Array(b).set(new TextEncoder().encode('JTYPACK1')); new DataView(b).setFloat64(8, gen, true);
+    return b;
+  }
+  async function pkReadIdx(name) {
+    try {
+      var f = await (await _fsDir.getFileHandle(name)).getFile(), b = await f.arrayBuffer(), u = new Uint8Array(b);
+      if (b.byteLength < 16 || String.fromCharCode.apply(null, u.subarray(0, 8)) !== 'JTYIDX01') return null;
+      var dv = new DataView(b), jl = dv.getUint32(8, true);
+      var j = JSON.parse(new TextDecoder().decode(u.subarray(12, 12 + jl)));
+      var p = 12 + jl, n = dv.getUint32(p, true); p += 4;
+      j.n = n;
+      j.keys = new Float64Array(b.slice(p, p + 8 * n)); p += 8 * n;
+      j.offs = new Float64Array(b.slice(p, p + 8 * n)); p += 8 * n;
+      j.lens = new Uint32Array(b.slice(p, p + 4 * n)); p += 4 * n;
+      j.src = new Uint16Array(b.slice(p, p + 2 * n));
+      return j;
+    } catch (e) { return null; }
+  }
+  async function pkWriteIdx(P, name) {
+    var j = new TextEncoder().encode(JSON.stringify({ gen: P.gen, end: P.end, layers: P.layers, meta: P.meta, srcs: P.srcs }));
+    var hd = new ArrayBuffer(16), dv = new DataView(hd), n = P.n;
+    new Uint8Array(hd).set(new TextEncoder().encode('JTYIDX01')); dv.setUint32(8, j.length, true);
+    var jb = new Uint8Array(j.length + 4); jb.set(j); new DataView(jb.buffer).setUint32(j.length, n, true);
+    var w = await (await _fsDir.getFileHandle(name || PX_NAME, { create: true })).createWritable();
+    await w.write(new Blob([hd.slice(0, 12), jb, P.keys.subarray(0, n), P.offs.subarray(0, n), P.lens.subarray(0, n), P.src.subarray(0, n)]));
+    await w.close();
+  }
+  function pkLive(P) { var s = 0; for (var i = 0; i < P.n; i++) s += P.lens[i]; return s; }
+  async function pkOpen() {
+    _pk = null;
+    var fh; try { fh = await _fsDir.getFileHandle(PK_NAME); } catch (e) { return; }
+    var file = await fh.getFile();
+    if (file.size < PK_HEAD) return;
+    var gen = new DataView(await file.slice(0, PK_HEAD).arrayBuffer()).getFloat64(8, true);
+    var ix = await pkReadIdx(PX_NAME);
+    if (!ix || ix.gen !== gen) {
+      var ix2 = await pkReadIdx(PX_NAME + '.new');                // 줄이기 중에 끊겼던 것
+      if (ix2 && ix2.gen === gen) { ix = ix2; await pkWriteIdx(ix); }
+      else { console.warn('[지도 파일] 합친 지도의 찾아보기표가 안 맞아 못 씀'); return; }
+    }
+    try { await _fsDir.removeEntry(PX_NAME + '.new'); } catch (e) {}
+    ix.file = file; ix.lmap = {}; ix.layers.forEach(function (l, i) { ix.lmap[l] = i; });
+    ix.live = pkLive(ix);
+    _pk = ix;
+  }
+  function pkFind(lay, z, x, y) {      // → 자리 번호, 없으면 -1
+    var P = _pk; if (!P || !P.n || x >= P2 || y >= P2) return -1;
+    var li = P.lmap[lay]; if (li === undefined) return -1;
+    var k = pkKey(li, z, x, y), lo = 0, hi = P.n - 1;
+    while (lo <= hi) { var mid = (lo + hi) >> 1, v = P.keys[mid]; if (v === k) return mid; if (v < k) lo = mid + 1; else hi = mid - 1; }
+    return -1;
+  }
+  function pkGet(t) {
+    var P = _pk; if (!P) return Promise.resolve(null);
+    for (var i = 0; i < t.lays.length; i++) {
+      var k = pkFind(t.lays[i], t.z, t.x, t.y);
+      if (k < 0) continue;
+      var lay = t.lays[i];
+      return P.file.slice(P.offs[k], P.offs[k] + P.lens[k]).arrayBuffer().then(function (b) {
+        return { buf: b, type: new Uint8Array(b, 0, 1)[0] === 0x89 ? 'image/png' : 'image/jpeg', t: P.file.lastModified, mb: PK_NAME, lay: lay };
+      }).catch(function () { return null; });
+    }
+    return Promise.resolve(null);
+  }
+  // 지도 파일 하나(m = _mbOpen 결과)를 합친 지도에 넣는다. 돌려주는 값 = 넣은 장수
+  async function pkMerge(m, job, label) {
+    var P = _pk || { gen: 1, end: PK_HEAD, layers: [], meta: {}, srcs: [], n: 0, live: 0,
+                     keys: new Float64Array(0), offs: new Float64Array(0), lens: new Uint32Array(0), src: new Uint16Array(0) };
+    var layers = P.layers.slice(), lmap = {}, srcs = P.srcs.slice(), sid = -1;
+    layers.forEach(function (l, i) { lmap[l] = i; });
+    srcs.forEach(function (s, i) { if (s && s.name === m.name) sid = i; });
+    if (sid < 0) { sid = srcs.indexOf(null); if (sid < 0) { sid = srcs.length; srcs.push(null); } }
+    if (sid > 65534) throw { name: '파일 수 초과' };
+    var fh = await _fsDir.getFileHandle(PK_NAME, { create: true });
+    var w = await fh.createWritable({ keepExistingData: !!_pk });
+    try {
+      if (_pk) { await w.truncate(P.end); await w.seek(P.end); }   // 끊긴 가져오기의 찌꺼기는 잘라냄
+      else await w.write(pkHead(P.gen));
+      var pos = P.end, nk = [], no = [], nl = [], parts = [], pb = 0, cnt = 0, t0 = 0;
+      var add = async function (lay, z, x, y, d) {
+        if (!d || !d.byteLength || !(z >= 0 && z < 32 && x >= 0 && y >= 0 && x < P2 && y < P2)) return;
+        var li = lmap[lay];
+        if (li === undefined) { if (layers.length > 255) return; li = layers.length; layers.push(lay); lmap[lay] = li; }
+        nk.push(pkKey(li, z, x, y)); no.push(pos); nl.push(d.byteLength);
+        parts.push(d); pos += d.byteLength; pb += d.byteLength; cnt++;
+        if (pb > 4 * P2) { await w.write(new Blob(parts)); parts = []; pb = 0; }
+        if (Date.now() - t0 > 400) { t0 = Date.now(); status(label + '<br>' + cnt + '장 · ' + ((pos - P.end) / P2).toFixed(0) + 'MB'); }
+      };
+      status(label);
+      m.bulk = true;
+      if (m.tblRoot) await _mbEach(m, m.tblRoot, function (v) { return add('vw_sat', v[0], v[1], Math.pow(2, v[0]) - 1 - v[2], v[3]); }, job);
+      if (m.layTblRoot && !(job && job.cancelled)) await _mbEach(m, m.layTblRoot, function (v) { return add(String(v[0]), v[1], v[2], v[3], v[4]); }, job);
+      if (job && job.cancelled) throw { name: '취소' };
+      if (parts.length) await w.write(new Blob(parts));
+      // 찾아보기표 합치기 — 옛 표(그 파일 옛 몫은 뺌) + 새 것(정렬, 같은 자리는 새 것)
+      var N = nk.length, ord = new Array(N);
+      for (var i = 0; i < N; i++) ord[i] = i;
+      ord.sort(function (a, b) { return nk[a] - nk[b] || a - b; });
+      var tot = P.n + N, K = new Float64Array(tot), O = new Float64Array(tot), L = new Uint32Array(tot), S = new Uint16Array(tot);
+      var a = 0, j = 0, c = 0, live = 0, nIn = 0;
+      while (a < P.n || j < N) {
+        if (a < P.n && P.src[a] === sid) { a++; continue; }
+        if (j + 1 < N && nk[ord[j]] === nk[ord[j + 1]]) { j++; continue; }   // 한 파일 안 같은 자리 → 뒤의 것
+        var kn = j < N ? nk[ord[j]] : Infinity, ko = a < P.n ? P.keys[a] : Infinity;
+        if (ko < kn) { K[c] = ko; O[c] = P.offs[a]; L[c] = P.lens[a]; S[c] = P.src[a]; live += P.lens[a]; c++; a++; continue; }
+        if (ko === kn) a++;
+        var q = ord[j++];
+        K[c] = kn; O[c] = no[q]; L[c] = nl[q]; S[c] = sid; live += nl[q]; c++; nIn++;
       }
-      return pump();
-    }).then(function () {                               // 다 쓴 뒤에 이름 바꾸기 — 중간에 끊겨도 옛 파일은 그대로
-      return _fsDir.removeEntry(f.name).catch(function () {});
-    }).then(function () {
-      return _fsDir.getFileHandle(tmp).then(function (fh) {
-        if (fh.move) return fh.move(f.name);
-        return fh.getFile().then(function (b) {         // move 가 없으면 한 번 더 복사
-          return _fsDir.getFileHandle(f.name, { create: true }).then(function (h2) { return h2.createWritable(); })
-            .then(function (w) { return b.stream().pipeTo(w); });
-        }).then(function () { return _fsDir.removeEntry(tmp); });
+      var meta = JSON.parse(JSON.stringify(P.meta || {}));
+      var num = function (v) { return typeof v === 'number' && isFinite(v); };
+      Object.keys(m.layers || {}).forEach(function (k) {
+        var A = meta[k], B = m.layers[k] || {};
+        if (!A) { meta[k] = B; return; }
+        var C = Object.assign({}, A, B);
+        if (num(A.minzoom) && num(B.minzoom)) C.minzoom = Math.min(A.minzoom, B.minzoom);
+        if (num(A.maxzoom) && num(B.maxzoom)) C.maxzoom = Math.max(A.maxzoom, B.maxzoom);
+        meta[k] = C;
       });
-    }).catch(function (e) { _fsDir.removeEntry(tmp).catch(function () {}); throw e; });
+      srcs[sid] = { name: m.name, size: m.file.size, n: nIn, t: Date.now() };
+      var NP = { gen: P.gen, end: pos, layers: layers, lmap: lmap, meta: meta, srcs: srcs, n: c, live: live,
+                 keys: K.subarray(0, c), offs: O.subarray(0, c), lens: L.subarray(0, c), src: S.subarray(0, c) };
+      await w.close(); w = null;
+      NP.file = await fh.getFile();
+      _pk = NP;
+      await pkWriteIdx(NP);
+      return nIn;
+    } finally {
+      m.bulk = false;
+      if (w) { try { await w.abort(); } catch (e) {} }
+    }
   }
-  function fsDelete(name) {
-    if (!confirm('지도 파일 ' + name + ' 을(를) 앱에서 지울까요?\n(PC 의 원본은 그대로입니다)')) return;
-    _mb = _mb.filter(function (m) { return m.name !== name; });
-    _fsDir.removeEntry(name).catch(function () {}).then(fsInit).then(showSettings);
+  // 한 파일 몫 빼기(표에서만 — 바이트는 버린 곳이 되어 pkCompact 가 줄임)
+  async function pkDropSrc(sid) {
+    var P = _pk; if (!P) return;
+    var K = new Float64Array(P.n), O = new Float64Array(P.n), L = new Uint32Array(P.n), S = new Uint16Array(P.n), c = 0, live = 0;
+    for (var i = 0; i < P.n; i++) {
+      if (P.src[i] === sid) continue;
+      K[c] = P.keys[i]; O[c] = P.offs[i]; L[c] = P.lens[i]; S[c] = P.src[i]; live += P.lens[i]; c++;
+    }
+    var srcs = P.srcs.slice(); srcs[sid] = null;
+    if (!c) { await pkClear(); return; }
+    var NP = Object.assign({}, P, { n: c, live: live, srcs: srcs,
+      keys: K.subarray(0, c), offs: O.subarray(0, c), lens: L.subarray(0, c), src: S.subarray(0, c) });
+    _pk = NP;
+    await pkWriteIdx(NP);
   }
+  async function pkClear() {
+    _pk = null;
+    for (var nm of [PX_NAME, PX_NAME + '.new', PK_NAME]) { try { await _fsDir.removeEntry(nm); } catch (e) {} }
+  }
+  // 버린 곳이 많으면 남은 타일만 새로 써서 줄이기 — 파일 조각(Blob)으로 옮겨 메모리에 안 올림
+  async function pkCompact(job, force) {
+    var P = _pk; if (!P) return;
+    var waste = P.end - PK_HEAD - P.live;
+    if (!force && (waste < 50 * P2 || waste < P.live)) return;
+    status('합친 지도 정리하는 중...');
+    var n = P.n, ord = new Array(n), NO = new Float64Array(n), pos = PK_HEAD, gen = P.gen + 1;
+    for (var i = 0; i < n; i++) ord[i] = i;
+    ord.sort(function (a, b) { return P.offs[a] - P.offs[b]; });
+    for (i = 0; i < n; i++) { NO[ord[i]] = pos; pos += P.lens[ord[i]]; }
+    var NP = Object.assign({}, P, { gen: gen, end: pos, offs: NO });
+    await pkWriteIdx(NP, PX_NAME + '.new');
+    var fh = await _fsDir.getFileHandle(PK_NAME), srcF = P.file;
+    var w = await fh.createWritable();                           // 닫기 전까지 옛 파일은 그대로 읽힌다
+    try {
+      await w.write(pkHead(gen));
+      var parts = [], pb = 0;
+      for (i = 0; i < n; i++) {
+        var q = ord[i];
+        parts.push(srcF.slice(P.offs[q], P.offs[q] + P.lens[q])); pb += P.lens[q];
+        if (pb > 8 * P2) {
+          await w.write(new Blob(parts)); parts = []; pb = 0;
+          if (job && job.cancelled) throw { name: '취소' };
+          status('합친 지도 정리하는 중... ' + Math.round(i * 100 / n) + '%');
+        }
+      }
+      if (parts.length) await w.write(new Blob(parts));
+      await w.close(); w = null;
+    } finally { if (w) { try { await w.abort(); } catch (e) {} } }
+    NP.file = await fh.getFile();
+    _pk = NP;
+    await pkWriteIdx(NP);
+    try { await _fsDir.removeEntry(PX_NAME + '.new'); } catch (e) {}
+  }
+  window._jtyPack = function () { return _pk; };   // 시험용
+  window._jtyPackCompact = function () { return pkCompact(null, true).then(done, done); };
 
   // ── PC 지도저장 파일(MBTiles = SQLite) 읽기 — 필요한 쪽만 잘라 읽는다(파일 전체를 올리지 않음) ──
   //  사진위치표시가 만드는 형태: tiles(zoom_level, tile_column, tile_row, tile_data, PRIMARY KEY(z,x,row)) → 자동 색인으로 찾는다.
@@ -1648,11 +1856,31 @@
   }
   function _mbPage(m, no) {
     var c = m.cache.get(no); if (c) return Promise.resolve(c);
-    return m.file.slice((no - 1) * m.ps, no * m.ps).arrayBuffer().then(function (b) {
-      var u = new Uint8Array(b);
-      if (m.cache.size > 3000) m.cache.clear();
-      m.cache.set(no, u); return u;
+    // 합치기(m.bulk)는 파일을 차례로 훑으므로 1MB 씩 읽어 둔다 — 한 장씩 읽으면 휴대폰에서 아주 느림
+    var per = m.bulk ? Math.max(1, Math.floor(P2 / m.ps)) : 1, first = m.bulk ? Math.floor((no - 1) / per) * per + 1 : no;
+    return m.file.slice((first - 1) * m.ps, (first - 1 + per) * m.ps).arrayBuffer().then(function (b) {
+      if (m.cache.size > Math.max(3000, 32 * P2 / m.ps)) m.cache.clear();
+      for (var k = 0; k * m.ps < b.byteLength; k++) m.cache.set(first + k, new Uint8Array(b, k * m.ps, Math.min(m.ps, b.byteLength - k * m.ps)));
+      return m.cache.get(no);
     });
+  }
+  // 표 B-tree 를 처음부터 끝까지 차례로 — 줄마다 fn(값들). 합치기용(큰 파일도 메모리에 다 올리지 않고, 약속 사슬도 안 쌓음)
+  async function _mbEach(m, root, fn, job) {
+    var stack = [root];
+    while (stack.length) {
+      var no = stack.pop(), u = await _mbPage(m, no), hd = _hdr(u, no);
+      if (hd.t === 5) {                // 안쪽 쪽: 자식들을 차례로 (스택이라 거꾸로 넣음)
+        stack.push(hd.right);
+        for (var i = hd.n - 1; i >= 0; i--) stack.push(_u32(u, _cellPtr(u, hd, i)));
+        continue;
+      }
+      if (hd.t !== 13) continue;
+      for (i = 0; i < hd.n; i++) {
+        var p = _cellPtr(u, hd, i), a = _vint(u, p), b = _vint(u, a[1]);
+        await fn(_record(await _payload(m, u, b[1], a[0], true)));
+      }
+      if (job && job.cancelled) return;
+    }
   }
   function _vint(u, p) {               // [값, 다음 위치]
     var v = 0;
@@ -1774,8 +2002,12 @@
   function mbRead(url) {
     return _mbFind(_tileKey(url));
   }
-  function _mbFind(t) {                // t = {lays, z, x, y}
-    if (!t || !_mb.length) return Promise.resolve(null);
+  function _mbFind(t) {                // t = {lays, z, x, y} — 합친 지도 먼저, 없으면 아직 안 합친 지도 파일
+    if (!t) return Promise.resolve(null);
+    return pkGet(t).then(function (r) { return r || _mbFindOld(t); });
+  }
+  function _mbFindOld(t) {
+    if (!_mb.length) return Promise.resolve(null);
     var tries = [];                    // [지도 파일, 층] — 우선 층부터 모든 파일
     t.lays.forEach(function (lay) { _mb.forEach(function (m) { if (lay === 'vw_sat' ? m.tblRoot : m.layTblRoot) tries.push([m, lay]); }); });
     var i = 0;
@@ -1802,8 +2034,8 @@
   var _osmLyr = null, OSM_EMPTY = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
   function _osmZooms() {
     var zs = null;
-    _mb.forEach(function (m) {
-      var L = m.layers && m.layers.osm; if (!L) return;
+    _mb.map(function (m) { return m.layers; }).concat(_pk ? [_pk.meta] : []).forEach(function (ls) {
+      var L = ls && ls.osm; if (!L) return;
       zs = zs ? [Math.min(zs[0], L.minzoom), Math.max(zs[1], L.maxzoom)] : [L.minzoom, L.maxzoom];
     });
     return zs;
@@ -1847,7 +2079,7 @@
   if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', function (e) {
     var d = e.data || {}, port = e.ports && e.ports[0];
     if (d.t === 'fsget' && port) {
-      if (!_mb.length) { port.postMessage({ off: true }); return; }
+      if (!_mb.length && !(_pk && _pk.n)) { port.postMessage({ off: true }); return; }
       mbRead(d.url).then(function (r) {
         if (r) { _fsStat.hit++; port.postMessage({ buf: r.buf, type: r.type, t: r.t }, [r.buf]); }
         else port.postMessage({ miss: true });
@@ -1875,16 +2107,25 @@
           h += '<div style="margin-top:4px;color:#c62828;">이 브라우저는 앱 안 저장소를 지원하지 않습니다.</div>' +
                '<div style="color:#888;font-size:12px;">크롬으로 열면 쓸 수 있습니다.</div>';
         } else {
-          h += '<div style="margin-top:4px;">' + (_mb.length ? _mb.map(function (m) {
-                 return '<div style="display:flex;align-items:center;gap:6px;margin:3px 0;"><span style="flex:1;word-break:break-all;">📦 ' + esc(m.name) +
-                   ' <span style="color:#888;">' + (m.file.size / 1048576).toFixed(m.file.size < 10485760 ? 1 : 0) + 'MB</span></span>' +
-                   '<button class="gsMbDel" data-n="' + esc(m.name) + '" style="padding:4px 10px;">🗑</button></div>';
-               }).join('') : '<span style="color:#888;">없음</span>') + '</div>';
+          var mbS = function (b) { return (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + 'MB'; };
+          var srcs = _pk ? _pk.srcs.map(function (s, i) { return s ? { s: s, i: i } : null; }).filter(Boolean) : [];
+          h += '<div style="margin-top:4px;">';
+          if (_pk && _pk.n) {
+            h += '<div>📦 <b>합친 지도</b> 한 파일 — ' + _pk.n.toLocaleString() + '장 · ' + mbS(_pk.file.size) + '</div>';
+            h += srcs.map(function (o) {
+              return '<div style="display:flex;align-items:center;gap:6px;margin:3px 0 3px 14px;"><span style="flex:1;word-break:break-all;">└ ' + esc(o.s.name) +
+                ' <span style="color:#888;">' + (o.s.n || 0).toLocaleString() + '장</span></span>' +
+                '<button class="gsMbDel" data-i="' + o.i + '" style="padding:4px 10px;">🗑</button></div>';
+            }).join('');
+          }
+          if (_mb.length) h += '<div style="color:#888;">합치기 기다림: ' + _mb.map(function (m) { return esc(m.name); }).join(', ') + '</div>';
+          if (!(_pk && _pk.n) && !_mb.length) h += '<span style="color:#888;">없음</span>';
+          h += '</div>';
           if (_fsStat.hit) h += '<div style="margin-top:2px;">이번에 지도 파일에서 읽음 ' + _fsStat.hit + '장</div>';
           h += '<div class="btns"><button class="pri" id="gsMbAdd">➕ 지도 파일 가져오기</button></div>' +
                '<div style="color:#888;font-size:12px;margin-top:4px;">고른 파일을 앱 안에 복사해 두고, 인터넷이 느리거나 끊기면 지도(브이월드·카카오 위성·하이브리드·일반)를 거기서 보여 줍니다. ' +
                '해외 일반지도(OSM)는 브이월드 앱에서 한국 밖을 볼 때 나옵니다. ' +
-               '같은 이름을 다시 가져오면 새 파일로 바꿉니다(PC 는 같은 파일에 계속 더하므로 새로 받은 곳까지 합쳐짐). 복사한 뒤 휴대폰의 원본은 지워도 됩니다.' +
+               '가져온 파일은 모두 「합친 지도」 한 파일에 합칩니다(겹치는 곳은 나중에 가져온 것). 같은 이름을 다시 가져오면 그 몫을 새것으로 바꿉니다. 가져온 뒤 휴대폰의 원본은 지워도 됩니다.' +
                (isVw() ? '' : '<br>※ 카카오 앱은 카카오 타일(PC 지도 다운로더에서 카카오로 받은 것)만 씁니다. 브이월드 타일·해외 지도는 브이월드 앱(/Vmap/)에서.') + '</div>';
         }
         return h + '</div>';
@@ -1892,7 +2133,7 @@
       bind: function () {
         if ($('gsMbAdd')) $('gsMbAdd').onclick = fsImport;
         Array.prototype.forEach.call(document.querySelectorAll('.gsMbDel'), function (b) {
-          b.onclick = function () { fsDelete(b.getAttribute('data-n')); };
+          b.onclick = function () { fsDelete(+b.getAttribute('data-i')); };
         });
       } },
     { html: function () {

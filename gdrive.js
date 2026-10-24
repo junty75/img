@@ -1478,6 +1478,12 @@
   setTimeout(function () { pump(); }, 4000);
   if (_returned && pend && pend.picker) {
     setTimeout(function () { openPicker(pend.picker, null); }, 800);
+  } else if (_returned && pend && (pend.mbtiles || pend.mbtilesResume)) {   // ☁ 드라이브 지도 파일 가져오기 (앱 안 저장소가 열린 뒤)
+    (function wait(n) {
+      if (!_fsDir && n < 40) { setTimeout(function () { wait(n + 1); }, 250); return; }
+      var dl = lsJson(LS_MBDL);
+      if (pend.mbtilesResume && dl) fsDriveImport(dl, true); else fsDriveList();
+    })(0);
   } else if (_returned && pend && pend.pump) {
     setTimeout(function () { pump(true); }, 1500);
   } else if (_returned && pend && pend.b) {
@@ -1531,7 +1537,7 @@
     return navigator.storage.getDirectory().then(function (root) { return root.getDirectoryHandle(FS_ROOT, { create: true }); })
       .then(function (d) { _fsDir = d; return pkOpen().catch(function (e) { console.warn('[지도 파일] 합친 지도를 못 엶', e); }); })
       .then(function () { return _mbOpenAll(); })
-      .then(function () { if (!_merging) return _fsDir.removeEntry(FS_TMP).catch(function () {}); })   // 끊긴 가져오기의 복사본
+      .then(function () { if (!_merging && !lsGet(LS_MBDL)) return _fsDir.removeEntry(FS_TMP).catch(function () {}); })   // 끊긴 가져오기의 복사본 (드라이브 이어 받기 중이면 둠)
       .catch(function (e) { console.warn('[지도 파일] 앱 저장소를 못 엶', e); })
       .then(function () { fsOnUpdate(); if (_mb.length) fsMergeLeft(); });
   }
@@ -1619,6 +1625,118 @@
       if (w) { try { await w.abort(); } catch (e) {} try { await rd.cancel(); } catch (e) {} }
     }
     return fh.getFile();
+  }
+  // ── ☁ 구글 드라이브에서 바로 가져오기 (2026-10-24) ──
+  //  큰 파일(1.6GB)은 휴대폰 파일 고르기 창에서 드라이브 파일을 눌러도 반응이 없었다(드라이브 앱이 통째로 받은 뒤에야 넘겨줌 — 진행 표시도 없음, 작은 파일은 됨).
+  //  → 드라이브 API(alt=media)로 앱 안 FS_TMP 에 직접 받고(진행 MB·취소), 다 받으면 그 복사본에서 합친다.
+  //  끊기면 Range 로 받은 곳부터 다시(최대 30번). 로그인 만료(1시간)면 받은 데까지 닫아 두고 LS_MBDL 에 기억 → 다시 로그인하고 돌아와 이어 받음.
+  var LS_MBDL = 'gdrive_mb_dl';
+  function fsDriveList() {
+    if (!_fsDir) { alert('이 브라우저는 앱 안 저장소를 지원하지 않습니다.\n(크롬에서 열면 쓸 수 있습니다)'); return; }
+    if (_merging) { toast('지도 파일을 합치는 중입니다. 끝난 뒤 다시 해 주세요.', 3000); return; }
+    var tok = getToken(); if (!tok) { login({ mbtiles: 1 }); return; }
+    status('드라이브에서 지도 파일 찾는 중...');
+    var out = [];
+    listPaged(tok, "name contains '.mbtiles' and trashed=false and mimeType!='application/vnd.google-apps.folder'", 'id,name,size,modifiedTime',
+      function (arr) { arr.forEach(function (f) { if (/\.mbtiles$/i.test(f.name)) out.push({ id: f.id, name: f.name, size: +f.size || 0, t: f.modifiedTime || '' }); }); }
+    ).then(function () {
+      hideLoading();
+      out.sort(function (a, b) { return a.t < b.t ? 1 : -1; });
+      var h = '<b style="font-size:15px;">☁ 구글 드라이브의 지도 파일</b>';
+      h += out.length ? out.map(function (f, i) {
+        return '<div style="display:flex;align-items:center;gap:6px;margin:6px 0;"><span style="flex:1;word-break:break-all;">📦 ' + esc(f.name) +
+          '<br><span style="color:#888;font-size:12px;">' + (f.size / P2).toFixed(f.size < 10 * P2 ? 1 : 0) + 'MB · ' + esc(f.t.slice(0, 10)) + '</span></span>' +
+          '<button class="pri gsDrvGet" data-i="' + i + '" style="padding:6px 12px;">가져오기</button></div>';
+      }).join('') : '<div style="margin:8px 0;color:#888;">드라이브에 .mbtiles 파일이 없습니다.</div>';
+      h += '<div style="color:#888;font-size:12px;">앱 안으로 바로 받아 「합친 지도」에 넣습니다. 큰 파일은 와이파이에서 받으세요(받는 동안 화면을 켜 두면 빠릅니다).</div>' +
+           '<div class="sec btns"><button id="gsDrvBack">← 설정</button></div>';
+      openPanel(h);
+      $('gsDrvBack').onclick = showSettings;
+      Array.prototype.forEach.call(document.querySelectorAll('.gsDrvGet'), function (b) {
+        b.onclick = function () { fsDriveImport(out[+b.getAttribute('data-i')]); };
+      });
+    }).catch(function (e) {
+      hideLoading();
+      if (e && e.auth) { login({ mbtiles: 1 }); return; }
+      alert('드라이브 목록을 못 받았습니다: ' + e.message);
+    });
+  }
+  async function fsDriveImport(f, resume) {
+    if (_merging) { toast('지도 파일을 합치는 중입니다. 끝난 뒤 다시 해 주세요.', 3000); return; }
+    if (!resume && netType() === 'cellular' && !confirm('지금 모바일 데이터입니다. ' + (f.size / P2).toFixed(0) + 'MB 를 받을까요?')) return;
+    closePanel();
+    try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
+    var job = startJob(), label = '드라이브에서 받는 중<br>' + esc(f.name), why = null;
+    _merging = true;
+    try {
+      if (!resume) await fsRoomCheck(f.size, f.name, true);
+      var got = await fsDriveDownload(f, job, label, resume);
+      if (got === 'login') return;                                  // 로그인하러 떠남 — 돌아와 이어 받음
+      lsDel(LS_MBDL);
+      if (job.cancelled) throw { name: '취소' };
+      var tf = await (await _fsDir.getFileHandle(FS_TMP)).getFile();
+      var m = await _mbOpen(tf);
+      if (!m) throw { why: '지도 파일 형식 아님' };
+      m.name = f.name;
+      await pkMerge(m, job, label.replace('받는 중', '합치는 중'));
+      await pkCompact(job);
+    } catch (e) { why = e; if (!job.cancelled) console.warn('[지도 파일] 드라이브 가져오기 실패', f.name, e); }
+    if (!lsGet(LS_MBDL)) { try { await _fsDir.removeEntry(FS_TMP); } catch (e) {} }
+    _merging = false;
+    fsOnUpdate();
+    if (cancelled(job, '가져오기를 멈췄습니다.')) { lsDel(LS_MBDL); try { await _fsDir.removeEntry(FS_TMP); } catch (e) {} return; }
+    done();
+    if (why) alert('못 가져왔습니다: ' + f.name + '\n(' + (why.why || fsErrText(why)) + ')');
+    else toast('🗺 ' + esc(f.name) + ' 을(를) 합친 지도에 넣었습니다.', 4000);
+    showSettings();
+  }
+  // FS_TMP 에 받기 → 받은 바이트 수, 로그인하러 떠나면 'login'
+  async function fsDriveDownload(f, job, label, resume) {
+    var fh = await _fsDir.getFileHandle(FS_TMP, { create: true });
+    var got = 0;
+    if (resume) { got = (await fh.getFile()).size; if (got > f.size) got = 0; }
+    var w = await fh.createWritable({ keepExistingData: got > 0 });
+    if (got) await w.seek(got);
+    var tries = 0, t0 = 0, tS = Date.now(), g0 = got;
+    try {
+      while (got < f.size) {
+        if (job.cancelled) throw { name: '취소' };
+        var tok = getToken();
+        if (!tok) {                                                 // 로그인 만료 — 받은 데까지 남기고 다시 로그인
+          await w.close(); w = null;
+          lsSet(LS_MBDL, JSON.stringify(f));
+          alert('구글 로그인 시간이 끝났습니다. 다시 로그인하면 받은 곳(' + (got / P2).toFixed(0) + 'MB)부터 이어 받습니다.');
+          login({ mbtilesResume: 1 });
+          return 'login';
+        }
+        try {
+          var r = await api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f.id) + '?alt=media', tok,
+                            { headers: got ? { Range: 'bytes=' + got + '-' } : {}, signal: jobSignal(job) });
+          if (got && r.status !== 206) throw { name: 'Range 안 됨' };
+          var rd = r.body.getReader();
+          for (;;) {
+            var c = await rd.read();
+            if (c.done) break;
+            await w.write(c.value); got += c.value.byteLength; tries = 0;
+            if (Date.now() - t0 > 500) {
+              t0 = Date.now();
+              var sp = (got - g0) / Math.max(1, (Date.now() - tS) / 1000);
+              status(label + '<br>' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB · ' + (sp / P2).toFixed(1) + 'MB/초' +
+                     (sp > 0 ? ' · 남은 ' + Math.ceil((f.size - got) / sp / 60) + '분' : ''));
+            }
+          }
+        } catch (e) {
+          if (job.cancelled) throw { name: '취소' };
+          if (e && e.auth) continue;                               // 토큰 지움 → 위에서 다시 로그인
+          if (e && (e.name === 'Range 안 됨' || e.status === 404 || e.status === 403)) throw e;
+          if (++tries > 30) throw e;
+          status(label + '<br>연결이 끊겨 다시 잇는 중... (' + tries + ')<br>' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB');
+          await new Promise(function (res) { setTimeout(res, Math.min(30000, 2000 * tries)); });
+        }
+      }
+      await w.close(); w = null;
+      return got;
+    } finally { if (w) { try { await w.abort(); } catch (e) {} } }
   }
   // 예전처럼 따로 복사해 둔 .mbtiles(2026-10-24 오전 판)가 남아 있으면 합친 지도로 옮기고 지운다 — 열고 3초 뒤, 취소하면 다음에 이어서
   var _merging = false;
@@ -2176,7 +2294,10 @@
           if (!(_pk && _pk.n) && !_mb.length) h += '<span style="color:#888;">없음</span>';
           h += '</div>';
           if (_fsStat.hit) h += '<div style="margin-top:2px;">이번에 지도 파일에서 읽음 ' + _fsStat.hit + '장</div>';
-          h += '<div class="btns"><button class="pri" id="gsMbAdd">➕ 지도 파일 가져오기</button></div>' +
+          var dl = lsJson(LS_MBDL);
+          if (dl) h += '<div style="margin-top:4px;color:#c62828;">드라이브에서 받다 멈춤: ' + esc(dl.name) + ' <button id="gsDrvResume" style="padding:4px 10px;">이어 받기</button></div>';
+          h += '<div class="btns"><button class="pri" id="gsMbAdd">➕ 지도 파일 가져오기</button><button class="pri" id="gsMbDrv">☁ 구글 드라이브에서</button></div>' +
+               '<div style="color:#888;font-size:12px;">큰 파일(수백 MB 넘음)은 「☁ 구글 드라이브에서」로 — 휴대폰 파일 고르기 창에서는 드라이브의 큰 파일이 안 눌립니다.</div>' +
                '<div style="color:#888;font-size:12px;margin-top:4px;">고른 파일을 앱 안에 복사해 두고, 인터넷이 느리거나 끊기면 지도(브이월드·카카오 위성·하이브리드·일반)를 거기서 보여 줍니다. ' +
                '해외 일반지도(OSM)는 브이월드 앱에서 한국 밖을 볼 때 나옵니다. ' +
                '가져온 파일은 모두 「합친 지도」 한 파일에 합칩니다(겹치는 곳은 나중에 가져온 것). 같은 이름을 다시 가져오면 그 몫을 새것으로 바꿉니다. 가져온 뒤 휴대폰의 원본은 지워도 됩니다.' +
@@ -2186,6 +2307,8 @@
       },
       bind: function () {
         if ($('gsMbAdd')) $('gsMbAdd').onclick = fsImport;
+        if ($('gsMbDrv')) $('gsMbDrv').onclick = fsDriveList;
+        if ($('gsDrvResume')) $('gsDrvResume').onclick = function () { var dl = lsJson(LS_MBDL); if (dl) fsDriveImport(dl, true); };
         Array.prototype.forEach.call(document.querySelectorAll('.gsMbDel'), function (b) {
           b.onclick = function () { fsDelete(+b.getAttribute('data-i')); };
         });

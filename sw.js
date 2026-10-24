@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kmz-viewer-v38';   // 지도 저장 폴더 → 지도 파일 가져오기(앱 안 저장소), 조각 파일 쓰기 뺌 (2026-10-24)
+const CACHE_NAME = 'kmz-viewer-v39';   // 지도 파일에서 카카오 위성·하이브리드·일반, 브이월드 하이브리드·일반도 찾음 (2026-10-24)
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const TILE_CACHE  = 'map-tiles-v1';   // 지도 타일 (버전 올려도 지우지 않음 — 데이터 절약)
 const LIB_CACHE   = 'map-libs-v1';    // 지도 SDK·CDN 라이브러리
@@ -109,7 +109,7 @@ async function putTile(key, res) {
 // PC 지도저장 파일(.mbtiles)을 앱 안 저장소에 복사해 두고 페이지가 읽는다 → 페이지에 묻는다:
 //   'fsget' {url} → {buf,type,t} | {miss} | {off}
 // 켜짐 여부(지도 파일이 있음)는 페이지가 'fs-on' 으로 알려 주고, 서비스워커가 새로 뜨면 IndexedDB 'jty-fs' 의 'on' 을 읽는다.
-// 지도 파일엔 브이월드 위성만 들어 있으므로 그 주소만 묻는다.
+// 지도 파일에 들어갈 수 있는 층(브이월드 위성·하이브리드·일반, 카카오 위성·하이브리드·일반 — PC 지도 다운로더)의 주소만 묻는다(2026-10-24 넓힘, 예전엔 브이월드 위성만).
 // (2026-10-22 판은 받은 타일을 휴대폰 폴더에 조각 파일로도 썼다('fsput') — 권한 창이 매번 떠서 뺐다. 받은 타일은 카카오처럼 브라우저 캐시에만)
 let _fsOn = null;
 self.addEventListener('message', e => { if (e.data && e.data.t === 'fs-on') _fsOn = !!e.data.on; });
@@ -139,10 +139,17 @@ function askPage(client, msg, ms) {
   });
 }
 const tileType = u => /\.png($|\?)/i.test(u.href) ? 'image/png' : 'image/jpeg';
-// 지도 파일에서 찾을 수 있는 요청(브이월드 위성)이면 그 페이지(client), 아니면 null
-const isVwSat = u => (u.hostname === 'cdn.vworld.kr' || u.hostname === 'api.vworld.kr') && u.pathname.includes('/Satellite/');
+// 지도 파일에서 찾을 수 있는 요청이면 그 페이지(client), 아니면 null — 주소 → 층 판정은 gdrive.js _tileKey 와 같은 규칙
+const isFileTile = u => {
+  const h = u.hostname, p = u.pathname;
+  if (h === 'cdn.vworld.kr') return /^\/2d\/(Satellite|Hybrid|Base)\//.test(p);
+  if (h === 'api.vworld.kr') return p.includes('/Satellite/');
+  if (/^map\d*\.(kakaocdn|daumcdn)\.net$/.test(h)) return /^\/map_skyview(_hd)?\/L\d+\//.test(p);
+  if (h === 'mts.kakaocdn.net' || h === 'mts.daumcdn.net') return /^\/api\/v1\/tile\/(PNG_SKYH02|PNGSD_SKYH02|PNG02|PNGSD02)\//.test(p);
+  return false;
+};
 async function folderClient(e, u) {
-  if (!isVwSat(u) || !e.clientId || !(await fsOnState())) return null;
+  if (!isFileTile(u) || !e.clientId || !(await fsOnState())) return null;
   return (await self.clients.get(e.clientId)) || null;
 }
 const FOLDER_WAIT_MS = 1000;           // 인터넷 타일이 이만큼 안 오면 지도 파일본으로 먼저 보여 줌 (PC 지도와 같은 1초)

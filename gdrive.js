@@ -1494,7 +1494,8 @@
   //  ⚙ 설정 버튼 + 지도 파일 가져오기 (2026-10-22, 2026-10-24 바꿈)
   //  · ⚙ 버튼(📷 왼쪽) → 설정 창. 지금 항목: 지도 파일 · 지도 미리 받기. 다른 설정도 여기에 덧붙인다(SETTINGS_SECTIONS).
   //  · 지도 파일 = PC 지도저장 파일(*.mbtiles, 사진위치표시 '🛰 지도저장')을 골라 앱 안 저장소(OPFS '지도타일')에 복사해 둔 것.
-  //    브이월드 위성 타일을 거기서 읽는다(읽기만). 같은 이름을 다시 가져오면 새 파일로 바꾼다(PC 는 같은 파일에 계속 더하므로 = 합치기).
+  //    브이월드 위성 타일을 거기서 읽는다(읽기만). 2026-10-24: PC 지도 다운로더(htm/img/지도다운로더) 파일의 카카오 위성·하이브리드·일반,
+  //    브이월드 하이브리드·일반(jty_layers 표)도 읽는다 → 카카오 앱도 오프라인 지도 파일을 쓴다. 같은 이름을 다시 가져오면 새 파일로 바꾼다(PC 는 같은 파일에 계속 더하므로 = 합치기).
   //  · 2026-10-24: 예전 '지도 저장 폴더'(사용자가 고른 휴대폰 폴더, File System Access)는 뺐다 —
   //    브라우저가 폴더 권한을 기억 못 해 앱을 열 때마다 허용 창이 떴고, 브이월드 타일이 수천 개 조각 파일로 쌓였다.
   //    앱 안 저장소는 권한 창이 없다. 보면서 받은 타일은 브이월드도 카카오처럼 브라우저 안(Cache Storage) 한 덩어리에만 둔다.
@@ -1598,8 +1599,9 @@
 
   // ── PC 지도저장 파일(MBTiles = SQLite) 읽기 — 필요한 쪽만 잘라 읽는다(파일 전체를 올리지 않음) ──
   //  사진위치표시가 만드는 형태: tiles(zoom_level, tile_column, tile_row, tile_data, PRIMARY KEY(z,x,row)) → 자동 색인으로 찾는다.
+  //  지도 다운로더는 그 밖 층을 jty_layers(layer, zoom_level, tile_column, tile_row, tile_data, PK(layer,z,x,row)) 에 — 번호는 타일 주소 숫자 그대로.
   //  다른 프로그램이 만든 MBTiles 는 tiles 가 표가 아니면(view) 못 읽고 건너뛴다.
-  var _mb = [];                        // [{name, file, ps, us, tblRoot, idxRoot, cache}]
+  var _mb = [];                        // [{name, file, ps, us, tblRoot, idxRoot, layTblRoot, layIdxRoot, cache}]
   function _mbOpenAll() {
     if (!_fsDir || !_fsDir.values) return Promise.resolve();
     var list = [];
@@ -1628,8 +1630,12 @@
           var v = r.vals;
           if (v[0] === 'table' && v[1] === 'tiles') m.tblRoot = v[3];
           if (v[0] === 'index' && v[2] === 'tiles' && /^sqlite_autoindex_tiles|tile_index/i.test(v[1])) m.idxRoot = v[3];
+          // PC 지도 다운로더(htm/img/지도다운로더)의 그 밖 층 — jty_layers(layer, z, x, row, data), 숫자는 타일 주소 그대로
+          if (v[0] === 'table' && v[1] === 'jty_layers') m.layTblRoot = v[3];
+          if (v[0] === 'index' && v[2] === 'jty_layers' && /^sqlite_autoindex_jty_layers/i.test(v[1])) m.layIdxRoot = v[3];
         });
-        return (m.tblRoot && m.idxRoot) ? m : null;
+        if (!(m.layTblRoot && m.layIdxRoot)) m.layTblRoot = m.layIdxRoot = 0;
+        return ((m.tblRoot && m.idxRoot) || m.layTblRoot) ? m : null;
       });
     });
   }
@@ -1700,7 +1706,7 @@
     return walk(root).then(function () { return rows; });
   }
   function _cmpKey(vals, key) { for (var i = 0; i < key.length; i++) { if (vals[i] < key[i]) return -1; if (vals[i] > key[i]) return 1; } return 0; }
-  function _mbRowid(m, key) {          // 색인 (z, x, row) → rowid
+  function _mbRowid(m, key, root) {    // 색인 (z, x, row) 또는 (layer, z, x, row) → rowid
     function walk(no) {
       return _mbPage(m, no).then(function (u) {
         var hd = _hdr(u, no), i = 0;
@@ -1722,9 +1728,9 @@
         return step();
       });
     }
-    return walk(m.idxRoot);
+    return walk(root || m.idxRoot);
   }
-  function _mbRow(m, rowid) {          // 표 rowid → 값
+  function _mbRow(m, rowid, root) {    // 표 rowid → 값
     function walk(no) {
       return _mbPage(m, no).then(function (u) {
         var hd = _hdr(u, no);
@@ -1739,24 +1745,41 @@
         return hd.t === 5 ? walk(hd.right) : null;
       });
     }
-    return walk(m.tblRoot);
+    return walk(root || m.tblRoot);
   }
-  // 브이월드 위성 타일 주소면 (z,x,y) — cdn 배경 {z}/{x}/{y}, WMTS {z}/{y}/{x}
-  function _vwSatZXY(url) {
-    var a = /cdn\.vworld\.kr\/2d\/Satellite\/[^/]+\/(\d+)\/(\d+)\/(\d+)\./.exec(url);
-    if (a) return [+a[1], +a[2], +a[3]];
+  // 타일 주소 → {lays: 찾을 층(앞이 우선), z, x, y} — 숫자는 주소에 든 그대로(카카오 x=열, y=아래부터 행)
+  //  vw_sat 은 표준 tiles 표(TMS 뒤집힌 행), 그 밖은 jty_layers 표. sw.js isFileTile 과 같은 주소들.
+  //  카카오는 휴대폰(고해상도)이 HD 주소를 요청 — HD 가 없으면 일반, 일반이 없으면 HD 로 대신(같은 격자, 크기만 다름)
+  function _tileKey(url) {
+    var a = /cdn\.vworld\.kr\/2d\/(Satellite|Hybrid|Base)\/[^/]+\/(\d+)\/(\d+)\/(\d+)\./.exec(url);
+    if (a) return { lays: [{ Satellite: 'vw_sat', Hybrid: 'vw_hybrid', Base: 'vw_base' }[a[1]]], z: +a[2], x: +a[3], y: +a[4] };
     a = /api\.vworld\.kr\/req\/wmts\/1\.0\.0\/[^/]+\/Satellite\/(\d+)\/(\d+)\/(\d+)\./.exec(url);
-    return a ? [+a[1], +a[3], +a[2]] : null;
+    if (a) return { lays: ['vw_sat'], z: +a[1], x: +a[3], y: +a[2] };
+    a = /map\d*\.(?:kakaocdn|daumcdn)\.net\/map_skyview(_hd)?\/L(\d+)\/(\d+)\/(\d+)\./.exec(url);
+    if (a) return { lays: a[1] ? ['kakao_sky_hd', 'kakao_sky'] : ['kakao_sky', 'kakao_sky_hd'], z: +a[2], x: +a[4], y: +a[3] };
+    a = /mts\.(?:kakaocdn|daumcdn)\.net\/api\/v1\/tile\/(PNG_SKYH02|PNGSD_SKYH02|PNG02|PNGSD02)\/[^/]+\/[^/]+\/(\d+)\/(\d+)\/(\d+)\./.exec(url);
+    if (a) {
+      var hd = a[1].indexOf('PNGSD') !== 0, k = /SKYH/.test(a[1]) ? 'kakao_hybrid' : 'kakao_road';
+      return { lays: hd ? [k + '_hd', k] : [k, k + '_hd'], z: +a[2], x: +a[4], y: +a[3] };
+    }
+    return null;
   }
   function mbRead(url) {
-    var z = _vwSatZXY(url); if (!z || !_mb.length) return Promise.resolve(null);
-    var key = [z[0], z[1], Math.pow(2, z[0]) - 1 - z[2]], i = 0;
+    var t = _tileKey(url); if (!t || !_mb.length) return Promise.resolve(null);
+    var tries = [];                    // [지도 파일, 층] — 우선 층부터 모든 파일
+    t.lays.forEach(function (lay) { _mb.forEach(function (m) { if (lay === 'vw_sat' ? m.tblRoot : m.layTblRoot) tries.push([m, lay]); }); });
+    var i = 0;
     function next() {
-      if (i >= _mb.length) return null;
-      var m = _mb[i++];
-      return _mbRowid(m, key).then(function (rid) { return rid == null ? next() : _mbRow(m, rid); })
-        .then(function (v) { return v && v.length ? (v[3] && v[3].buffer ? { buf: v[3].slice().buffer, type: 'image/jpeg', t: m.file.lastModified, mb: m.name } : next()) : v; })
-        .catch(function () { return next(); });
+      if (i >= tries.length) return null;
+      var m = tries[i][0], lay = tries[i++][1], sat = lay === 'vw_sat';
+      var key = sat ? [t.z, t.x, Math.pow(2, t.z) - 1 - t.y] : [lay, t.z, t.x, t.y];
+      return _mbRowid(m, key, sat ? m.idxRoot : m.layIdxRoot)
+        .then(function (rid) { return rid == null ? null : _mbRow(m, rid, sat ? m.tblRoot : m.layTblRoot); })
+        .then(function (v) {
+          var d = v && v[sat ? 3 : 4];
+          if (!d || !d.buffer) return next();
+          return { buf: d.slice().buffer, type: d[0] === 0x89 ? 'image/png' : 'image/jpeg', t: m.file.lastModified, mb: m.name, lay: lay };
+        }, function () { return next(); });
     }
     return Promise.resolve(next());
   }
@@ -1789,7 +1812,7 @@
   // 설정 창의 섹션들 — 다른 설정을 넣을 땐 여기에 {html, bind} 를 하나 더 (위에서부터 차례로 보인다)
   var SETTINGS_SECTIONS = [
     { html: function () {
-        var h = '<div class="sec" style="border-top:none;margin-top:4px;padding-top:0;"><b>🗺 지도 파일</b> <span style="color:#888;font-size:12px;">(PC 「🛰 지도저장」 .mbtiles)</span>';
+        var h = '<div class="sec" style="border-top:none;margin-top:4px;padding-top:0;"><b>🗺 지도 파일</b> <span style="color:#888;font-size:12px;">(PC 「🛰 지도저장」·지도 다운로더 .mbtiles)</span>';
         if (!fsSupported()) {
           h += '<div style="margin-top:4px;color:#c62828;">이 브라우저는 앱 안 저장소를 지원하지 않습니다.</div>' +
                '<div style="color:#888;font-size:12px;">크롬으로 열면 쓸 수 있습니다.</div>';

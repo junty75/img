@@ -1531,6 +1531,7 @@
     return navigator.storage.getDirectory().then(function (root) { return root.getDirectoryHandle(FS_ROOT, { create: true }); })
       .then(function (d) { _fsDir = d; return pkOpen().catch(function (e) { console.warn('[지도 파일] 합친 지도를 못 엶', e); }); })
       .then(function () { return _mbOpenAll(); })
+      .then(function () { if (!_merging) return _fsDir.removeEntry(FS_TMP).catch(function () {}); })   // 끊긴 가져오기의 복사본
       .catch(function (e) { console.warn('[지도 파일] 앱 저장소를 못 엶', e); })
       .then(function () { fsOnUpdate(); if (_mb.length) fsMergeLeft(); });
   }
@@ -1545,28 +1546,79 @@
     if (_merging) { toast('지도 파일을 합치는 중입니다. 끝난 뒤 다시 해 주세요.', 3000); return; }
     var inp = document.createElement('input');
     inp.type = 'file'; inp.accept = '.mbtiles'; inp.multiple = true;
-    inp.onchange = async function () {
+    inp.onchange = function () {
       var files = Array.prototype.filter.call(inp.files || [], function (f) { return /\.mbtiles$/i.test(f.name); });
       if (!files.length) { if (inp.files && inp.files.length) alert('.mbtiles 파일만 가져올 수 있습니다.'); return; }
-      try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}   // 저장 공간이 모자라도 브라우저가 지우지 않게
-      var job = startJob(), ok = [], bad = [];
-      _merging = true;
-      for (var i = 0; i < files.length && !job.cancelled; i++) {
-        var f = files[i], m = null;
-        try { m = await _mbOpen(f); } catch (e) {}
-        if (!m) { bad.push(f.name + '(형식)'); continue; }          // PC 지도저장·지도 다운로더 파일 모양이 아님
-        try { await pkMerge(m, job, '지도 파일 가져오는 중 (' + (i + 1) + '/' + files.length + ')<br>' + esc(f.name)); ok.push(f.name); }
-        catch (e) { if (!job.cancelled) { bad.push(f.name + '(' + fsErrText(e) + ')'); console.warn('[지도 파일] 가져오기 실패', f.name, e); } }
-      }
-      if (!job.cancelled) { try { await pkCompact(job); } catch (e) { console.warn('[지도 파일] 정리 실패', e); } }
-      _merging = false;
-      fsOnUpdate();
-      if (cancelled(job, '가져오기를 멈췄습니다.' + (ok.length ? '<br>' + ok.length + '개는 넣었습니다.' : ''))) return;
-      done();
-      toast((ok.length ? '🗺 지도 파일 ' + ok.length + '개를 합친 지도에 넣었습니다' : '') + (bad.length ? (ok.length ? '<br>' : '') + '못 가져옴: ' + bad.map(esc).join(', ') : ''), 4000);
-      showSettings();
+      fsImportFiles(files);
     };
     inp.click();
+  }
+  async function fsImportFiles(files) {
+    try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}   // 저장 공간이 모자라도 브라우저가 지우지 않게
+    var job = startJob(), ok = [], bad = [];
+    _merging = true;
+    for (var i = 0; i < files.length && !job.cancelled; i++) {
+      var f = files[i], label = '지도 파일 가져오는 중 (' + (i + 1) + '/' + files.length + ')<br>' + esc(f.name);
+      try { await fsImportOne(f, job, label); ok.push(f.name); }
+      catch (e) { if (!job.cancelled) { bad.push(f.name + '(' + (e && e.why || fsErrText(e)) + ')'); console.warn('[지도 파일] 가져오기 실패', f.name, e); } }
+    }
+    try { await _fsDir.removeEntry(FS_TMP); } catch (e) {}
+    if (!job.cancelled) { try { await pkCompact(job); } catch (e) { console.warn('[지도 파일] 정리 실패', e); } }
+    _merging = false;
+    fsOnUpdate();
+    if (cancelled(job, '가져오기를 멈췄습니다.' + (ok.length ? '<br>' + ok.length + '개는 넣었습니다.' : ''))) return;
+    done();
+    toast((ok.length ? '🗺 지도 파일 ' + ok.length + '개를 합친 지도에 넣었습니다' : '') + (bad.length ? (ok.length ? '<br>' : '') + '못 가져옴: ' + bad.map(esc).join(', ') : ''), 6000);
+    showSettings();
+  }
+  window._jtyImportFiles = fsImportFiles;   // 시험용
+  // 파일 하나 가져오기. 먼저 바로 읽어 합치고, 읽기가 안 되면(구글 드라이브에서 고른 파일 등 — 휴대폰이 처음부터 차례로만 읽게 줌,
+  // 2026-10-24 사용자 기기에서 실패) 앱 안에 차례로 통째 복사한 뒤 그 복사본에서 합친다(끝나면 지움).
+  var FS_TMP = '가져오는중.tmp';
+  async function fsImportOne(f, job, label) {
+    var m = null, why = null;
+    try { m = await _mbOpen(f); } catch (e) { why = e; }
+    if (!m && !why) throw { why: '지도 파일 형식 아님' };            // SQLite 이지만 tiles / jty_layers 표가 없음
+    if (m) {
+      try { await fsRoomCheck(f.size, m.name, false); await pkMerge(m, job, label); return; }
+      catch (e) { if (job.cancelled || (e && (e.why || e.name === 'QuotaExceededError'))) throw e; why = e; }
+    }
+    console.warn('[지도 파일] 바로 읽기 실패 → 앱 안에 복사해서 다시', f.name, why);
+    await fsRoomCheck(f.size, f.name, true);
+    var tf = await fsCopyTmp(f, job, label);
+    if (job.cancelled) throw { name: '취소' };
+    m = await _mbOpen(tf);
+    if (!m) throw { why: '지도 파일 형식 아님' };
+    m.name = f.name;
+    try { await pkMerge(m, job, label); } finally { try { await _fsDir.removeEntry(FS_TMP); } catch (e) {} }
+  }
+  // 남은 공간 확인 — 합친 지도에 붙일 만큼(+복사본, +브라우저가 닫을 때 기존 합친 지도를 한 번 복사하는 만큼)
+  async function fsRoomCheck(size, name, copy) {
+    if (!(navigator.storage && navigator.storage.estimate)) return;
+    var est = await navigator.storage.estimate().catch(function () { return null; });
+    if (!est || !est.quota) return;
+    var keep = _pk && !pkOnlySrc(name) ? _pk.file.size : 0;
+    var need = size * (copy ? 2 : 1) + keep + 20 * P2, free = est.quota - est.usage;
+    if (free < need) throw { why: '저장 공간 부족 — ' + (need / 1073741824).toFixed(1) + 'GB 필요, ' + (free / 1073741824).toFixed(1) + 'GB 남음' };
+  }
+  function pkOnlySrc(name) {            // 합친 지도에 이 이름 파일 몫만 있음 → 바꿀 때 처음부터 새로 씀
+    return !!_pk && _pk.srcs.every(function (s) { return !s || s.name === name; });
+  }
+  async function fsCopyTmp(f, job, label) {
+    var fh = await _fsDir.getFileHandle(FS_TMP, { create: true }), w = await fh.createWritable(), rd = f.stream().getReader(), got = 0, t0 = 0;
+    try {
+      for (;;) {
+        if (job.cancelled) throw { name: '취소' };
+        var r = await rd.read();
+        if (r.done) break;
+        await w.write(r.value); got += r.value.byteLength;
+        if (Date.now() - t0 > 400) { t0 = Date.now(); status(label + '<br>앱 안으로 옮기는 중 ' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB'); }
+      }
+      await w.close(); w = null;
+    } finally {
+      if (w) { try { await w.abort(); } catch (e) {} try { await rd.cancel(); } catch (e) {} }
+    }
+    return fh.getFile();
   }
   // 예전처럼 따로 복사해 둔 .mbtiles(2026-10-24 오전 판)가 남아 있으면 합친 지도로 옮기고 지운다 — 열고 3초 뒤, 취소하면 다음에 이어서
   var _merging = false;
@@ -1683,17 +1735,19 @@
   }
   // 지도 파일 하나(m = _mbOpen 결과)를 합친 지도에 넣는다. 돌려주는 값 = 넣은 장수
   async function pkMerge(m, job, label) {
-    var P = _pk || { gen: 1, end: PK_HEAD, layers: [], meta: {}, srcs: [], n: 0, live: 0,
-                     keys: new Float64Array(0), offs: new Float64Array(0), lens: new Uint32Array(0), src: new Uint16Array(0) };
+    // 합친 지도에 이 파일 몫만 있으면(같은 파일을 다시 가져옴) 처음부터 새로 쓴다 — 옛 것을 이어 쓰면 닫을 때 브라우저가 옛 합친 지도를 통째로 한 번 더 복사해 공간이 두 배로 듦
+    var fresh = !_pk || pkOnlySrc(m.name);
+    var P = fresh ? { gen: _pk ? _pk.gen + 1 : 1, end: PK_HEAD, layers: [], meta: {}, srcs: [], n: 0, live: 0,
+                     keys: new Float64Array(0), offs: new Float64Array(0), lens: new Uint32Array(0), src: new Uint16Array(0) } : _pk;
     var layers = P.layers.slice(), lmap = {}, srcs = P.srcs.slice(), sid = -1;
     layers.forEach(function (l, i) { lmap[l] = i; });
     srcs.forEach(function (s, i) { if (s && s.name === m.name) sid = i; });
     if (sid < 0) { sid = srcs.indexOf(null); if (sid < 0) { sid = srcs.length; srcs.push(null); } }
     if (sid > 65534) throw { name: '파일 수 초과' };
     var fh = await _fsDir.getFileHandle(PK_NAME, { create: true });
-    var w = await fh.createWritable({ keepExistingData: !!_pk });
+    var w = await fh.createWritable({ keepExistingData: !fresh });
     try {
-      if (_pk) { await w.truncate(P.end); await w.seek(P.end); }   // 끊긴 가져오기의 찌꺼기는 잘라냄
+      if (!fresh) { await w.truncate(P.end); await w.seek(P.end); }   // 끊긴 가져오기의 찌꺼기는 잘라냄
       else await w.write(pkHead(P.gen));
       var pos = P.end, nk = [], no = [], nl = [], parts = [], pb = 0, cnt = 0, t0 = 0;
       var add = async function (lay, z, x, y, d) {

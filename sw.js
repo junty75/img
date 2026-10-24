@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kmz-viewer-v37';   // 카카오 새 타일 주소(kakaocdn) 저장 (2026-10-22)
+const CACHE_NAME = 'kmz-viewer-v38';   // 지도 저장 폴더 → 지도 파일 가져오기(앱 안 저장소), 조각 파일 쓰기 뺌 (2026-10-24)
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const TILE_CACHE  = 'map-tiles-v1';   // 지도 타일 (버전 올려도 지우지 않음 — 데이터 절약)
 const LIB_CACHE   = 'map-libs-v1';    // 지도 SDK·CDN 라이브러리
@@ -105,11 +105,12 @@ async function putTile(key, res) {
   if (++_puts % 100 === 0) await trimTiles();
 }
 
-// ── 지도 저장 폴더 (gdrive.js ⚙ 설정, 2026-10-22) ──
-// 사용자가 고른 휴대폰 폴더에 타일을 파일로 둔다. 폴더 손잡이·권한은 페이지에 있으므로 페이지에 묻는다:
-//   'fsget' {url} → {buf,type,t} | {miss} | {off}   /   'fsput' {url, buf} (받은 타일을 폴더에 씀)
-// 켜짐 여부는 페이지가 'fs-on' 으로 알려 주고, 서비스워커가 새로 뜨면 IndexedDB 'jty-fs' 의 'on' 을 읽는다.
-// 내용을 못 읽는 서버(카카오 — CORS 없음)는 폴더에 못 넣으므로 묻지 않고 예전 방식(브라우저 캐시).
+// ── 지도 파일 (gdrive.js ⚙ 설정 '지도 파일 가져오기', 2026-10-24) ──
+// PC 지도저장 파일(.mbtiles)을 앱 안 저장소에 복사해 두고 페이지가 읽는다 → 페이지에 묻는다:
+//   'fsget' {url} → {buf,type,t} | {miss} | {off}
+// 켜짐 여부(지도 파일이 있음)는 페이지가 'fs-on' 으로 알려 주고, 서비스워커가 새로 뜨면 IndexedDB 'jty-fs' 의 'on' 을 읽는다.
+// 지도 파일엔 브이월드 위성만 들어 있으므로 그 주소만 묻는다.
+// (2026-10-22 판은 받은 타일을 휴대폰 폴더에 조각 파일로도 썼다('fsput') — 권한 창이 매번 떠서 뺐다. 받은 타일은 카카오처럼 브라우저 캐시에만)
 let _fsOn = null;
 self.addEventListener('message', e => { if (e.data && e.data.t === 'fs-on') _fsOn = !!e.data.on; });
 function fsOnState() {
@@ -138,17 +139,17 @@ function askPage(client, msg, ms) {
   });
 }
 const tileType = u => /\.png($|\?)/i.test(u.href) ? 'image/png' : 'image/jpeg';
-// 폴더를 쓸 수 있는 요청이면 그 페이지(client), 아니면 null
+// 지도 파일에서 찾을 수 있는 요청(브이월드 위성)이면 그 페이지(client), 아니면 null
+const isVwSat = u => (u.hostname === 'cdn.vworld.kr' || u.hostname === 'api.vworld.kr') && u.pathname.includes('/Satellite/');
 async function folderClient(e, u) {
-  if (!CORS_HOSTS.includes(u.hostname) || !e.clientId || !(await fsOnState())) return null;
+  if (!isVwSat(u) || !e.clientId || !(await fsOnState())) return null;
   return (await self.clients.get(e.clientId)) || null;
 }
-const FOLDER_WAIT_MS = 1000;           // 인터넷 타일이 이만큼 안 오면 폴더본으로 먼저 보여 줌 (PC 지도와 같은 1초)
+const FOLDER_WAIT_MS = 1000;           // 인터넷 타일이 이만큼 안 오면 지도 파일본으로 먼저 보여 줌 (PC 지도와 같은 1초)
 
-// 타일 (2026-10-22 고침 — 표시 먼저, 폴더는 뒤에서):
-//  ① 브라우저 캐시 → ② 인터넷. 폴더는 화면을 기다리게 하지 않는다 —
-//  인터넷이 1초 안에 안 오거나·끊겼을 때만 폴더에서 읽고, 받은 타일은 응답한 뒤 페이지에 넘겨 뒤에서 폴더에 쓴다.
-//  (예전 판은 타일마다 폴더를 먼저 뒤져 휴대폰에서 지도가 많이 느려졌다)
+// 타일 (2026-10-22 고침 — 표시 먼저):
+//  ① 브라우저 캐시 → ② 인터넷. 지도 파일은 화면을 기다리게 하지 않는다 —
+//  인터넷이 1초 안에 안 오거나·끊겼을 때만 지도 파일에서 읽는다.
 async function handleTile(e, u, kind) {
   const key = u.href;
   const c = await caches.open(TILE_CACHE);
@@ -168,10 +169,6 @@ async function handleTile(e, u, kind) {
   }
   const net = netFetch(e.request, u).then(res => {
     if (storable(res)) e.waitUntil(putTile(key, res.clone()).catch(() => {}));
-    if (folder && res.ok && res.type !== 'opaque') {
-      const cl = res.clone();
-      e.waitUntil(cl.arrayBuffer().then(b => folder.postMessage({ t: 'fsput', url: key, buf: b }, [b])).catch(() => {}));
-    }
     return res;
   });
   if (!folder) {

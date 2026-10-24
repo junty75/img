@@ -1,4 +1,4 @@
-// gdrive.js — 구글 드라이브 연동 + 지도 저장(미리 받기·저장 공간) + ⚙ 설정(지도 저장 폴더). index.html(카카오)·index_vworld.html(브이월드) 공통.
+// gdrive.js — 구글 드라이브 연동 + 지도 저장(미리 받기·저장 공간) + ⚙ 설정(지도 파일 가져오기). index.html(카카오)·index_vworld.html(브이월드) 공통.
 // 두 페이지의 </body> 바로 앞에서 <script src="gdrive.js"> 로 불러온다(예전 인라인 블록과 같은 자리·같은 실행 시점).
 // 지도 어댑터(getBounds/fitBounds/isVw…)가 vmap(브이월드)·map(카카오)을 런타임에 구분한다.
 // 배포: /img/ 와 /Vmap/ 두 저장소에 같은 파일을 올릴 것.
@@ -403,7 +403,7 @@
           '<div class="btns"><button class="pri" id="gdMapPhotos">🖼 지금 화면 안의 사진 목록</button></div>' +
           '<div style="color:#888;font-size:12px;">📷 버튼을 길게 눌러도 열립니다. 사진 말풍선의 📝 로도 고칠 수 있습니다.</div>' +
         '</div>' +
-        '<div class="sec" style="color:#888;font-size:12px;">지도 미리 받기·지도 저장 폴더는 ⚙️ 설정 버튼으로 옮겼습니다.</div>' +
+        '<div class="sec" style="color:#888;font-size:12px;">지도 미리 받기·지도 파일 가져오기는 ⚙️ 설정 버튼으로 옮겼습니다.</div>' +
         '<div class="sec btns"><button id="gdCacheClr">목록 새로 받기</button>' +
           '<button id="gdCidEdit">클라이언트 ID</button><button id="gdClose">닫기</button></div>' +
         '<div style="color:#888;margin-top:8px;font-size:12px;">드라이브 사진·폴더 목록은 6시간 동안 기억합니다. 그 사이 새로 올린 사진이나 새 폴더는 "목록 새로 받기" 후 찾으세요.<br>' +
@@ -1491,20 +1491,19 @@
     })();
   }
   // ══════════════════════════════════════════════════
-  //  ⚙ 설정 버튼 + 지도 저장 폴더 (2026-10-22)
-  //  · ⚙ 버튼(📷 왼쪽) → 설정 창. 지금 항목: 지도 저장 폴더 · 지도 미리 받기(드라이브 설정에서 옮김). 다른 설정도 여기에 덧붙인다(SETTINGS_SECTIONS).
-  //  · 지도 저장 폴더 = 사용자가 고른 휴대폰 폴더(File System Access API, 크롬 안드로이드). 브레이브 등 지원 안 하면 안내만, 예전처럼 브라우저 안 저장.
-  //    폴더 안 '지도타일/<서버>/<주소 경로>' 에 타일 파일로 저장 — 사용자가 직접 옮기기·지우기 가능.
-  //    그 폴더에 PC 지도저장 파일(*.mbtiles, 사진위치표시 '🛰 지도저장')을 넣으면 브이월드 위성 타일을 거기서도 읽는다(읽기만).
-  //  · 타일은 서비스워커(sw.js)가 브라우저 캐시 → 인터넷 순으로 먼저 보여 주고, 받은 타일을 'fsput' 으로 넘기면 여기서 줄 세워 뒤에서 폴더에 쓴다.
-  //    인터넷이 1초 넘게 늦거나 끊겼을 때만 'fsget' 으로 폴더에서 읽는다(2026-10-22 — 타일마다 폴더를 먼저 뒤져 휴대폰에서 느렸던 것 고침).
-  //    카카오 지도 타일은 카카오 서버가 내용을 못 읽게 막아서(CORS 없음) 폴더에 못 넣는다 → 예전처럼 브라우저 안 저장.
-  //  · 폴더 손잡이(FileSystemDirectoryHandle)는 IndexedDB 'jty-fs' 에, 켜짐 표시('on')도 거기 — sw.js 가 읽는다.
-  //    권한은 브라우저가 기억 못 하면 앱을 열 때마다 처음 화면을 누를 때 한 번 다시 묻는다.
+  //  ⚙ 설정 버튼 + 지도 파일 가져오기 (2026-10-22, 2026-10-24 바꿈)
+  //  · ⚙ 버튼(📷 왼쪽) → 설정 창. 지금 항목: 지도 파일 · 지도 미리 받기. 다른 설정도 여기에 덧붙인다(SETTINGS_SECTIONS).
+  //  · 지도 파일 = PC 지도저장 파일(*.mbtiles, 사진위치표시 '🛰 지도저장')을 골라 앱 안 저장소(OPFS '지도타일')에 복사해 둔 것.
+  //    브이월드 위성 타일을 거기서 읽는다(읽기만). 같은 이름을 다시 가져오면 새 파일로 바꾼다(PC 는 같은 파일에 계속 더하므로 = 합치기).
+  //  · 2026-10-24: 예전 '지도 저장 폴더'(사용자가 고른 휴대폰 폴더, File System Access)는 뺐다 —
+  //    브라우저가 폴더 권한을 기억 못 해 앱을 열 때마다 허용 창이 떴고, 브이월드 타일이 수천 개 조각 파일로 쌓였다.
+  //    앱 안 저장소는 권한 창이 없다. 보면서 받은 타일은 브이월드도 카카오처럼 브라우저 안(Cache Storage) 한 덩어리에만 둔다.
+  //  · 서비스워커(sw.js)는 브라우저 캐시 → 인터넷 순으로 먼저 보여 주고, 인터넷이 1초 넘게 늦거나 끊겼을 때만 'fsget' 으로 여기 묻는다.
+  //    켜짐 표시('on' = 지도 파일이 있음)는 IndexedDB 'jty-fs' 에 — sw.js 가 읽는다.
   // ══════════════════════════════════════════════════
   var FS_DB = 'jty-fs', FS_ROOT = '지도타일';
-  var _fsDir = null, _fsPerm = 'none', _fsStat = { put: 0, hit: 0, mb: 0 }, _fsDirCache = {};
-  function fsSupported() { return typeof window.showDirectoryPicker === 'function'; }
+  var _fsDir = null, _fsStat = { hit: 0 };
+  function fsSupported() { return !!(navigator.storage && navigator.storage.getDirectory); }
   function fsIdb() {
     return new Promise(function (res, rej) {
       var r = indexedDB.open(FS_DB, 1);
@@ -1524,68 +1523,77 @@
       });
     }).catch(function () { return null; });
   }
-  function fsCheckPerm(ask) {
-    if (!_fsDir) { _fsPerm = 'none'; return Promise.resolve(_fsPerm); }
-    var o = { mode: 'readwrite' };
-    return Promise.resolve(_fsDir.queryPermission ? _fsDir.queryPermission(o) : 'granted').then(function (p) {
-      if (p === 'granted' || !ask) return p;
-      return _fsDir.requestPermission(o);
-    }).then(function (p) {
-      _fsPerm = p || 'prompt';
-      fsKv('on', _fsPerm === 'granted'); fsTellSw(_fsPerm === 'granted');
-      updGear();
-      if (_fsPerm === 'granted') _mbOpenAll();
-      return _fsPerm;
-    }).catch(function () { _fsPerm = 'prompt'; updGear(); return _fsPerm; });
+  // 앱 안 저장소 열기 → 지도 파일 읽을 준비. 켜짐 = 읽을 지도 파일이 하나라도 있음
+  function fsInit() {
+    if (!fsSupported()) return Promise.resolve();
+    return navigator.storage.getDirectory().then(function (root) { return root.getDirectoryHandle(FS_ROOT, { create: true }); })
+      .then(function (d) { _fsDir = d; return _mbOpenAll(); })
+      .catch(function (e) { console.warn('[지도 파일] 앱 저장소를 못 엶', e); })
+      .then(function () { var on = _mb.length > 0; fsKv('on', on); fsTellSw(on); });
   }
-  function fsPick() {
-    if (!fsSupported()) { alert('이 브라우저는 폴더 저장을 지원하지 않습니다.\n(크롬에서 열면 쓸 수 있습니다)'); return; }
-    window.showDirectoryPicker({ id: 'jty-map-tiles', mode: 'readwrite' }).then(function (h) {
-      _fsDir = h; _fsDirCache = {}; _mb = [];
-      return fsKv('dir', h).then(function () { return fsCheckPerm(true); });
-    }).then(function (p) {
-      toast(p === 'granted' ? '📁 지도 저장 폴더: ' + esc(_fsDir.name) + '<br>앞으로 받는 지도는 이 폴더에 저장합니다.' : '폴더 권한을 허용해야 저장할 수 있습니다.', 4000);
-      showSettings();
-    }).catch(function (e) { if (e && e.name !== 'AbortError') alert('폴더를 열지 못했습니다: ' + e.message); });
+  // 바깥 지도 파일(.mbtiles) 골라 앱 안으로 복사 — 큰 파일이라 통째로 메모리에 올리지 않고 흘려 쓴다
+  function fsImport() {
+    if (!_fsDir) { alert('이 브라우저는 앱 안 저장소를 지원하지 않습니다.\n(크롬에서 열면 쓸 수 있습니다)'); return; }
+    var inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.mbtiles'; inp.multiple = true;
+    inp.onchange = function () {
+      var files = Array.prototype.filter.call(inp.files || [], function (f) { return /\.mbtiles$/i.test(f.name); });
+      if (!files.length) { if (inp.files && inp.files.length) alert('.mbtiles 파일만 가져올 수 있습니다.'); return; }
+      try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}   // 저장 공간이 모자라도 브라우저가 지우지 않게
+      var job = startJob(), ok = [], bad = [], i = 0;
+      function next() {
+        if (cancelled(job, '가져오기를 멈췄습니다.')) return fsInit();
+        if (i >= files.length) {
+          done();
+          return fsInit().then(function () {
+            toast((ok.length ? '🗺 지도 파일 ' + ok.length + '개 가져옴' : '') + (bad.length ? (ok.length ? '<br>' : '') + '못 가져옴: ' + bad.map(esc).join(', ') : ''), 4000);
+            showSettings();
+          });
+        }
+        var f = files[i++];
+        return _mbOpen(f).then(function (m) {          // 먼저 PC 지도저장 파일 모양인지 확인
+          if (!m) { bad.push(f.name + '(형식)'); return; }
+          return fsCopy(f, job, i, files.length).then(function () { ok.push(f.name); },
+            function (e) { if (!job.cancelled) bad.push(f.name + '(' + ((e && e.name) || '오류') + ')'); });
+        }).catch(function () { bad.push(f.name); }).then(next);
+      }
+      next();
+    };
+    inp.click();
   }
-  function fsUnset() {
-    if (!confirm('지도 저장 폴더를 해제할까요?\n(폴더의 파일은 그대로 남습니다. 앞으로는 브라우저 안에 저장합니다)')) return;
-    _fsDir = null; _fsPerm = 'none'; _fsDirCache = {}; _mb = [];
-    fsKv('dir', null); fsKv('on', false); fsTellSw(false); updGear(); showSettings();
+  function fsCopy(f, job, n, tot) {
+    var tmp = f.name + '.part', got = 0, t0 = 0;
+    return _fsDir.getFileHandle(tmp, { create: true }).then(function (fh) {
+      if (!fh.createWritable) throw { name: '쓰기 미지원' };
+      return fh.createWritable();
+    }).then(function (w) {
+      var rd = f.stream().getReader();
+      function pump() {
+        if (job.cancelled) return rd.cancel().then(function () { return w.abort(); }).then(function () { throw { name: '취소' }; });
+        return rd.read().then(function (r) {
+          if (r.done) return w.close();
+          got += r.value.byteLength;
+          if (Date.now() - t0 > 300) { t0 = Date.now(); status('지도 파일 가져오는 중 (' + n + '/' + tot + ')<br>' + esc(f.name) + '<br>' + (got / 1048576).toFixed(0) + ' / ' + (f.size / 1048576).toFixed(0) + 'MB'); }
+          return w.write(r.value).then(pump);
+        });
+      }
+      return pump();
+    }).then(function () {                               // 다 쓴 뒤에 이름 바꾸기 — 중간에 끊겨도 옛 파일은 그대로
+      return _fsDir.removeEntry(f.name).catch(function () {});
+    }).then(function () {
+      return _fsDir.getFileHandle(tmp).then(function (fh) {
+        if (fh.move) return fh.move(f.name);
+        return fh.getFile().then(function (b) {         // move 가 없으면 한 번 더 복사
+          return _fsDir.getFileHandle(f.name, { create: true }).then(function (h2) { return h2.createWritable(); })
+            .then(function (w) { return b.stream().pipeTo(w); });
+        }).then(function () { return _fsDir.removeEntry(tmp); });
+      });
+    }).catch(function (e) { _fsDir.removeEntry(tmp).catch(function () {}); throw e; });
   }
-  // 타일 주소 → 폴더 안 경로 조각들. 물음표 뒤(WMS·키)는 이름 뒤에 짧은 해시로
-  function fsPathOf(url) {
-    var u = new URL(url), segs = [FS_ROOT, u.hostname].concat(u.pathname.split('/').filter(Boolean));
-    segs = segs.map(function (s) { return decodeURIComponent(s).replace(/[\\/:*?"<>|]/g, '_'); });
-    var q = u.search.replace(/([?&])(key|apikey|apiKey|domain)=[^&]*/g, '$1');   // 키는 경로에 안 넣음(키가 바뀌어도 같은 파일)
-    if (q.length > 1) {
-      var h = 0; for (var i = 0; i < q.length; i++) h = (h * 31 + q.charCodeAt(i)) | 0;
-      var last = segs.pop() || 'tile', m = /^(.*?)(\.[a-z0-9]+)?$/i.exec(last);
-      segs.push(m[1] + '_q' + (h >>> 0).toString(36) + (m[2] || ''));
-    }
-    return segs;
-  }
-  function fsDirOf(segs, create) {
-    var key = segs.slice(0, -1).join('/');
-    if (_fsDirCache[key]) return Promise.resolve(_fsDirCache[key]);
-    var p = Promise.resolve(_fsDir);
-    segs.slice(0, -1).forEach(function (s) { p = p.then(function (d) { return d.getDirectoryHandle(s, { create: create }); }); });
-    return p.then(function (d) { _fsDirCache[key] = d; return d; });
-  }
-  function fsRead(url) {
-    var segs = fsPathOf(url);
-    return fsDirOf(segs, false).then(function (d) { return d.getFileHandle(segs[segs.length - 1]); })
-      .then(function (fh) { return fh.getFile(); })
-      .then(function (f) { return f.arrayBuffer().then(function (b) { return { buf: b, type: f.type || '', t: f.lastModified }; }); })
-      .catch(function () { return null; });
-  }
-  function fsWrite(url, buf) {
-    var segs = fsPathOf(url);
-    return fsDirOf(segs, true).then(function (d) { return d.getFileHandle(segs[segs.length - 1], { create: true }); })
-      .then(function (fh) { return fh.createWritable(); })
-      .then(function (w) { return w.write(buf).then(function () { return w.close(); }); })
-      .then(function () { _fsStat.put++; _fsStat.mb += buf.byteLength / 1048576; })
-      .catch(function () {});
+  function fsDelete(name) {
+    if (!confirm('지도 파일 ' + name + ' 을(를) 앱에서 지울까요?\n(PC 의 원본은 그대로입니다)')) return;
+    _mb = _mb.filter(function (m) { return m.name !== name; });
+    _fsDir.removeEntry(name).catch(function () {}).then(fsInit).then(showSettings);
   }
 
   // ── PC 지도저장 파일(MBTiles = SQLite) 읽기 — 필요한 쪽만 잘라 읽는다(파일 전체를 올리지 않음) ──
@@ -1593,17 +1601,20 @@
   //  다른 프로그램이 만든 MBTiles 는 tiles 가 표가 아니면(view) 못 읽고 건너뛴다.
   var _mb = [];                        // [{name, file, ps, us, tblRoot, idxRoot, cache}]
   function _mbOpenAll() {
-    if (!_fsDir || !_fsDir.values) return;
-    _mb = [];
-    (function walk(it) {
-      it.next().then(function (r) {
+    if (!_fsDir || !_fsDir.values) return Promise.resolve();
+    var list = [];
+    return (function walk(it) {
+      return it.next().then(function (r) {
         if (r.done) return;
         var h = r.value;
-        if (h.kind === 'file' && /\.mbtiles$/i.test(h.name))
-          h.getFile().then(_mbOpen).then(function (m) { if (m) _mb.push(m); }).catch(function () {});
-        walk(it);
-      }).catch(function () {});
-    })(_fsDir.values());
+        var p = (h.kind === 'file' && /\.mbtiles$/i.test(h.name))
+          ? h.getFile().then(_mbOpen).then(function (m) { if (m) list.push(m); }).catch(function () {}) : null;
+        return Promise.resolve(p).then(function () { return walk(it); });
+      });
+    })(_fsDir.values()).catch(function () {}).then(function () {
+      list.sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+      _mb = list;
+    });
   }
   function _mbOpen(file) {
     var m = { name: file.name, file: file, cache: new Map() };
@@ -1755,106 +1766,66 @@
   if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', function (e) {
     var d = e.data || {}, port = e.ports && e.ports[0];
     if (d.t === 'fsget' && port) {
-      if (!_fsDir || _fsPerm !== 'granted') { port.postMessage({ off: true }); return; }
-      fsRead(d.url).then(function (r) { return r || mbRead(d.url); }).then(function (r) {
+      if (!_mb.length) { port.postMessage({ off: true }); return; }
+      mbRead(d.url).then(function (r) {
         if (r) { _fsStat.hit++; port.postMessage({ buf: r.buf, type: r.type, t: r.t }, [r.buf]); }
         else port.postMessage({ miss: true });
       }).catch(function () { port.postMessage({ miss: true }); });
-    } else if (d.t === 'fsput' && d.buf) {
-      if (_fsDir && _fsPerm === 'granted') fsQueue(d.url, d.buf);
     }
   });
-  // 폴더 쓰기는 줄 세워 한 장씩, 화면이 한가할 때 (2026-10-22 — 지도 그리기와 다투지 않게).
-  // 이번 실행에 이미 쓴 주소는 다시 안 쓴다. 너무 밀리면(지나간 화면) 오래된 것부터 버린다.
-  var _fsQ = [], _fsQBusy = false, _fsDone = new Set();
-  function fsQueue(url, buf) {
-    if (_fsDone.has(url)) return;
-    _fsQ.push([url, buf]);
-    if (_fsQ.length > 1500) _fsQ.splice(0, _fsQ.length - 1500);
-    fsPump();
-  }
-  function fsPump() {
-    if (_fsQBusy || !_fsQ.length) return;
-    _fsQBusy = true;
-    var idle = window.requestIdleCallback || function (f) { return setTimeout(f, 50); };
-    idle(function () {
-      var it = _fsQ.shift();
-      if (!it || _fsDone.has(it[0])) { _fsQBusy = false; fsPump(); return; }
-      _fsDone.add(it[0]);
-      fsWrite(it[0], it[1]).then(function () { _fsQBusy = false; fsPump(); });
-    }, { timeout: 2000 });
-  }
-  // 시작: 기억한 폴더 꺼내기 → 권한 확인. 브라우저가 권한을 기억 못 했으면 처음 화면을 누를 때 한 번 묻는다
-  fsKv('dir').then(function (h) {
-    if (!h) { fsKv('on', false); fsTellSw(false); return; }
-    _fsDir = h;
-    return fsCheckPerm(false).then(function (p) {
-      if (p === 'granted') return;
-      var once = function () {
-        document.removeEventListener('pointerup', once, true);
-        fsCheckPerm(true).then(function (q) { if (q === 'granted') toast('📁 지도 저장 폴더 연결됨: ' + esc(_fsDir.name), 2500); });
-      };
-      document.addEventListener('pointerup', once, true);
-    });
-  });
+  // 시작: 예전 '지도 저장 폴더' 손잡이는 지우고(권한 창 안 뜨게) 앱 안 저장소를 연다
+  fsKv('dir', null).then(fsInit);
 
   // ── ⚙ 버튼 + 설정 창 ──
   var gear = document.createElement('button');
-  gear.className = 'btn'; gear.id = 'gdGearBtn'; gear.title = '설정 — 지도 저장 폴더 · 지도 미리 받기';
-  gear.innerHTML = '⚙️<span class="gdq"></span>';
+  gear.className = 'btn'; gear.id = 'gdGearBtn'; gear.title = '설정 — 지도 파일 가져오기 · 지도 미리 받기';
+  gear.innerHTML = '⚙️';
   document.body.appendChild(gear);
   var gcss = document.createElement('style');
-  gcss.textContent = '#gdGearBtn{top:184px;right:72px;padding:0;font-size:22px;position:absolute;}' +
-    '#gdGearBtn .gdq{position:absolute;top:-6px;left:-6px;width:12px;height:12px;border-radius:6px;background:#e53935;display:none;}' +
-    '#gdGearBtn .gdq.show{display:block;}';
+  gcss.textContent = '#gdGearBtn{top:184px;right:72px;padding:0;font-size:22px;position:absolute;}';
   document.head.appendChild(gcss);
-  function updGear() {
-    var need = !!_fsDir && _fsPerm !== 'granted';
-    gear.querySelector('.gdq').classList.toggle('show', need);
-    gear.title = '설정 — 지도 저장 폴더' + (_fsDir ? ': ' + _fsDir.name + (need ? ' (권한 필요)' : '') : '') + ' · 지도 미리 받기';
-  }
   gear.onclick = function () { showSettings(); };
 
   // 설정 창의 섹션들 — 다른 설정을 넣을 땐 여기에 {html, bind} 를 하나 더 (위에서부터 차례로 보인다)
   var SETTINGS_SECTIONS = [
     { html: function () {
-        var h = '<div class="sec" style="border-top:none;margin-top:4px;padding-top:0;"><b>📁 지도 저장 폴더</b>';
+        var h = '<div class="sec" style="border-top:none;margin-top:4px;padding-top:0;"><b>🗺 지도 파일</b> <span style="color:#888;font-size:12px;">(PC 「🛰 지도저장」 .mbtiles)</span>';
         if (!fsSupported()) {
-          h += '<div style="margin-top:4px;color:#c62828;">이 브라우저는 폴더 저장을 지원하지 않습니다(브레이브 등).</div>' +
-               '<div style="color:#888;font-size:12px;">크롬으로 열면 쓸 수 있습니다. 지금은 브라우저 안에 저장합니다.</div>';
+          h += '<div style="margin-top:4px;color:#c62828;">이 브라우저는 앱 안 저장소를 지원하지 않습니다.</div>' +
+               '<div style="color:#888;font-size:12px;">크롬으로 열면 쓸 수 있습니다.</div>';
         } else {
-          h += '<div class="path" style="margin-top:4px;">' + (_fsDir ? '📁 ' + esc(_fsDir.name) : '없음 — 브라우저 안에 저장 중') + '</div>';
-          if (_fsDir && _fsPerm !== 'granted') h += '<div style="color:#c62828;">폴더 사용 권한이 필요합니다.</div>';
-          h += '<div class="btns"><button class="pri" id="gsFsPick">' + (_fsDir ? '폴더 바꾸기' : '폴더 고르기') + '</button>' +
-               (_fsDir && _fsPerm !== 'granted' ? '<button class="pri" id="gsFsPerm">🔓 권한 허용</button>' : '') +
-               (_fsDir ? '<button id="gsFsOff">폴더 해제</button>' : '') + '</div>';
-          if (_fsDir && _fsPerm === 'granted')
-            h += '<div style="margin-top:4px;">이번에 저장 ' + _fsStat.put + '장 (' + _fsStat.mb.toFixed(1) + 'MB) · 폴더에서 읽음 ' + _fsStat.hit + '장' +
-                 (_mb.length ? '<br>PC 지도 파일: ' + _mb.map(function (m) { return esc(m.name); }).join(', ') : '') + '</div>';
-          h += '<div style="color:#888;font-size:12px;margin-top:4px;">고른 폴더 안 <code>' + FS_ROOT + '</code> 폴더에 지도 타일 파일로 저장합니다(파일 앱에서 옮기기·지우기 가능). ' +
-               'PC 「🛰 지도저장」 파일(<code>.mbtiles</code>)을 이 폴더에 넣으면 브이월드 위성 영상을 거기서도 읽습니다.' +
-               (isVw() ? '' : '<br>※ 카카오 지도 타일은 카카오 서버가 막아 폴더에 못 넣습니다(브라우저 안에 저장). 폴더 저장은 브이월드 앱(/Vmap/)에서 됩니다.') + '</div>';
+          h += '<div style="margin-top:4px;">' + (_mb.length ? _mb.map(function (m) {
+                 return '<div style="display:flex;align-items:center;gap:6px;margin:3px 0;"><span style="flex:1;word-break:break-all;">📦 ' + esc(m.name) +
+                   ' <span style="color:#888;">' + (m.file.size / 1048576).toFixed(m.file.size < 10485760 ? 1 : 0) + 'MB</span></span>' +
+                   '<button class="gsMbDel" data-n="' + esc(m.name) + '" style="padding:4px 10px;">🗑</button></div>';
+               }).join('') : '<span style="color:#888;">없음</span>') + '</div>';
+          if (_fsStat.hit) h += '<div style="margin-top:2px;">이번에 지도 파일에서 읽음 ' + _fsStat.hit + '장</div>';
+          h += '<div class="btns"><button class="pri" id="gsMbAdd">➕ 지도 파일 가져오기</button></div>' +
+               '<div style="color:#888;font-size:12px;margin-top:4px;">고른 파일을 앱 안에 복사해 두고, 인터넷이 느리거나 끊기면 브이월드 위성 영상을 거기서 보여 줍니다. ' +
+               '같은 이름을 다시 가져오면 새 파일로 바꿉니다(PC 는 같은 파일에 계속 더하므로 새로 받은 곳까지 합쳐짐). 복사한 뒤 휴대폰의 원본은 지워도 됩니다.' +
+               (isVw() ? '' : '<br>※ 카카오 지도 앱에서는 위성 영상이 카카오 것이라 쓰이지 않습니다. 브이월드 앱(/Vmap/)에서 쓰입니다.') + '</div>';
         }
         return h + '</div>';
       },
       bind: function () {
-        if ($('gsFsPick')) $('gsFsPick').onclick = fsPick;
-        if ($('gsFsOff')) $('gsFsOff').onclick = fsUnset;
-        if ($('gsFsPerm')) $('gsFsPerm').onclick = function () { fsCheckPerm(true).then(function () { showSettings(); }); };
+        if ($('gsMbAdd')) $('gsMbAdd').onclick = fsImport;
+        Array.prototype.forEach.call(document.querySelectorAll('.gsMbDel'), function (b) {
+          b.onclick = function () { fsDelete(b.getAttribute('data-n')); };
+        });
       } },
     { html: function () {
         return '<div class="sec"><b>🗺 지도 미리 받기</b> <span style="color:#888;font-size:12px;">(데이터 절약 · 신호 없는 곳에서도 보기)</span>' +
-          '<div id="gdTileInfo" style="margin-top:4px;">' + (_fsDir && _fsPerm === 'granted' ? '받은 지도는 위 폴더에 저장합니다.' : '저장된 지도 확인 중...') + '</div>' +
+          '<div id="gdTileInfo" style="margin-top:4px;">저장된 지도 확인 중...</div>' +
           '<div style="margin-top:6px;">지금 화면을 <select id="gdPreLv" style="font-size:14px;padding:5px;border-radius:6px;">' +
             '<option value="1">1단계 더 확대까지 (4화면)</option>' +
             '<option value="2" selected>2단계 더 확대까지 (20화면)</option>' +
             '<option value="3">3단계 더 확대까지 (84화면)</option></select></div>' +
           '<div class="btns"><button class="pri" id="gdPre">지금 화면 지도 미리 받기</button><button id="gdTileClr">브라우저 안 저장 지도 비우기</button></div>' +
           '<div style="color:#888;font-size:12px;">와이파이에서 받으세요. 받는 동안 지도가 저절로 움직이고, 끝나면 원래 화면으로 돌아옵니다. ' +
-            '브라우저 안에는 최대 8000장까지 저장하고, 넘으면 먼저 저장된 것부터 지웁니다(폴더 저장은 한도 없음).</div></div>';
+            '브라우저 안에는 최대 8000장까지 저장하고, 넘으면 먼저 저장된 것부터 지웁니다(위 지도 파일은 한도 없음).</div></div>';
       },
       bind: function () {
-        if (!(_fsDir && _fsPerm === 'granted')) tileCount().then(function (n) { var el = $('gdTileInfo'); if (el) el.textContent = tileInfoText(n); });
+        tileCount().then(function (n) { var el = $('gdTileInfo'); if (el) el.textContent = tileInfoText(n); });
         $('gdPre').onclick = function () { preloadTiles(+$('gdPreLv').value); };
         $('gdTileClr').onclick = function () { clearTiles(showSettings); };
       } }

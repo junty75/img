@@ -2401,6 +2401,7 @@
         if (typeof textLabelsV === 'undefined') return null;
         var r = vmap.getViewport().getBoundingClientRect();
         textLabelsV.forEach(function (o) {
+          if (window.isCadText && isCadText(o)) return;     // 지적도 지번은 따로 고르지 않음(지적도 선 메뉴로 색·삭제)
           var px = vmap.getPixelFromCoordinate(o.coord); if (!px) return;
           var dx = Math.abs(cx - (r.left + px[0])), dy = Math.abs(cy - (r.top + px[1]));
           var hw = Math.max(24, String(o.name).length * 9);   // 캔버스 글자라 크기를 어림 (13px 굵은 글씨)
@@ -2411,6 +2412,7 @@
       if (typeof textLabels === 'undefined') return null;
       textLabels.forEach(function (o) {
         if (!o.ov.getMap() || o.el.style.display === 'none') return;
+        if (window.isCadText && isCadText(o)) return;       // 지적도 지번은 따로 고르지 않음
         var b = o.el.getBoundingClientRect(), m = 12;
         if (cx < b.left - m || cx > b.right + m || cy < b.top - m || cy > b.bottom + m) return;
         var d = Math.abs(cx - (b.left + b.right) / 2) + Math.abs(cy - (b.top + b.bottom) / 2);
@@ -2527,15 +2529,20 @@
 
 })();
 
-// ── 🗺 지적도 불러오기 (2026-10-24) — PC 지도의 '지적도 삽입'과 같은 결과 ──
-// 길게 누르기 메뉴 → 누른 곳이 든 리의 연속지적도 = 노랑 1px 묶음선 한 항목 「○○리 지적도」 + 지번 문자(높이 2m).
+// ── 🗺 지적도 불러오기 (2026-10-24) — PC 지도의 '지적도 삽입'과 같은 모양, 단 지금 화면 안 필지만 ──
+// 길게 누르기 메뉴 → 지금 화면에 걸친 필지(여러 리에 걸쳐도)를 흰색 1px 묶음선 한 항목 「○○리 지적도」 + 지번 문자(높이 2m)로 넣는다.
+//   · 최대 확대에서 4단계 안에서만(브이월드 줌 16 이상, 휴대폰 카카오 레벨 5 이하) — 넓은 화면은 필지가 너무 많아 오래 걸린다.
+//   · 이미 넣은 필지(같은 지번 글자가 같은 자리에 있음)는 건너뛰어, 화면을 옮겨 가며 여러 번 불러도 겹치지 않는다.
+//   · 지번 문자는 선 항목에 딸린다(ExtendedData owner = 항목 이름) — 따로 선택·수정·지우개 안 됨, 선 색을 바꾸면 같이, 선을 지우면 같이.
 // 데이터는 지적도_생성.py 가 연속지적도 SHP 를 리별로 나눈 /img/cad/<PNU 10자리>.json (브이월드 판도 같은 사이트의 /img/cad/ 를 씀).
 //   index.json = {q, src, li:[{li, emd, ri, n, kb, b:[남,서,북,동](위경도×q)}]}
 //   리 파일 = {li, emd, ri, p:[[지번, 중심위도, 중심경도, 링(첫 점+차이값, [위,경,위,경…])…]…]}
 // 받은 파일은 캐시 'cad-v1' 에 두어 다시 받지 않는다(index.json 은 하루 한 번 새로, 리 파일 주소에 src 를 붙여 새 데이터면 새로 받음).
-// 지도에는 KML 로 만들어 loadKMZ 로 넣는다(자동저장·내보내기·지우개 그대로). 넣은 뒤 보던 화면 그대로.
+// 지도에는 KML 로 만들어 loadKMZ 로 넣는다(자동저장·내보내기 그대로). 넣은 뒤 보던 화면 그대로.
 (function () {
   var CAD_BASE = location.origin + '/img/cad/', CAD_CACHE = 'cad-v1';
+  var CAD_COLOR = '#FFFFFF';                 // 기본 색 (선·지번 같은 색)
+  var VW_MIN_ZOOM = 16, KAKAO_MAX_LEVEL = 5; // 최대(브이월드 20 · 휴대폰 카카오 1)에서 4단계
   var _idx = null;
   function isVw() { return typeof vmap !== 'undefined' && vmap && vmap.getView; }
   async function cget(url, key, fresh) {
@@ -2566,37 +2573,48 @@
     }
     return out;
   }
-  function inRings(y, x, rs) {
-    var ins = false;
-    rs.forEach(function (r) {
-      for (var i = 0, j = r.length - 1; i < r.length; j = i++) {
-        var yi = r[i][0], xi = r[i][1], yj = r[j][0], xj = r[j][1];
-        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) ins = !ins;
-      }
-    });
-    return ins;
+  function viewBox() {          // 지금 화면 [남,서,북,동] (위경도)
+    if (isVw()) {
+      var v = vmap.getView(), ex = ol.proj.transformExtent(v.calculateExtent(vmap.getSize()), v.getProjection(), 'EPSG:4326');
+      return [ex[1], ex[0], ex[3], ex[2]];
+    }
+    var b = map.getBounds(), sw = b.getSouthWest(), ne = b.getNorthEast();
+    return [sw.getLat(), sw.getLng(), ne.getLat(), ne.getLng()];
   }
-  function hasItem(name) {
-    try { return polylines.some(function (p) { return (p.name || p._name) === name; }); } catch (e) { return false; }
+  function tooWide() { return isVw() ? vmap.getView().getZoom() < VW_MIN_ZOOM - 0.01 : map.getLevel() > KAKAO_MAX_LEVEL; }
+  // 지적도 지번 문자인가 — 딸린 문자(owner) 또는 예전 저장본의 노랑 2m 문자. 지도 쪽 지우개도 이걸로 건너뜀
+  function isCadText(t) { return !!(t && (t.owner || (t.h === 2 && /^#ffff00$/i.test(t.color || '')))); }
+  window.isCadText = isCadText;
+  function cadTexts() {         // 지도에 이미 있는 지적도 지번 [위,경,글자]
+    var out = [];
+    try {
+      if (isVw()) textLabelsV.forEach(function (t) { if (isCadText(t)) { var ll = ol.proj.toLonLat(t.coord); out.push([ll[1], ll[0], t.name]); } });
+      else textLabels.forEach(function (t) { if (isCadText(t)) out.push([t.pos.getLat(), t.pos.getLng(), t.name]); });
+    } catch (e) {}
+    return out;
+  }
+  function itemNames() {
+    try { return polylines.map(function (p) { return p.name || p._name; }); } catch (e) { return []; }
   }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-  function toKml(name, d, q) {
+  function toKml(name, ps, q) {
     var f = function (v) { return (v / q).toFixed(7); };
-    var s = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>' + esc(name) + '</name>\n'
-      + '<Style id="cad"><LineStyle><color>ff00d4ff</color><width>1</width></LineStyle></Style>\n'
-      + '<Placemark><name>' + esc(name) + '</name><styleUrl>#cad</styleUrl><MultiGeometry>';
-    var parts = [s];
-    d.p.forEach(function (p) {
-      rings(p).forEach(function (r) {
+    var kc = 'ff' + CAD_COLOR.slice(5, 7) + CAD_COLOR.slice(3, 5) + CAD_COLOR.slice(1, 3);   // KML 색은 aabbggrr
+    var parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>' + esc(name) + '</name>\n'
+      + '<Style id="cad"><LineStyle><color>' + kc + '</color><width>1</width></LineStyle></Style>\n'
+      + '<Placemark><name>' + esc(name) + '</name><styleUrl>#cad</styleUrl><MultiGeometry>'];
+    ps.forEach(function (p) {
+      p.r.forEach(function (r) {
         parts.push('<LineString><coordinates>' + r.map(function (c) { return f(c[1]) + ',' + f(c[0]) + ',0'; }).join(' ') + '</coordinates></LineString>');
       });
     });
     parts.push('</MultiGeometry></Placemark>\n');
-    d.p.forEach(function (p) {
-      if (!p[0]) return;
-      parts.push('<Placemark><name>' + esc(p[0]) + '</name><ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>0</value></Data>'
-        + '<Data name="color"><value>#FFFF00</value></Data><Data name="h"><value>2</value></Data><Data name="ax"><value>0.5</value></Data><Data name="ay"><value>0.5</value></Data>'
-        + '</ExtendedData><Point><coordinates>' + f(p[2]) + ',' + f(p[1]) + ',0</coordinates></Point></Placemark>\n');
+    ps.forEach(function (p) {
+      if (!p.j) return;
+      parts.push('<Placemark><name>' + esc(p.j) + '</name><ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>0</value></Data>'
+        + '<Data name="color"><value>' + CAD_COLOR + '</value></Data><Data name="h"><value>2</value></Data><Data name="ax"><value>0.5</value></Data><Data name="ay"><value>0.5</value></Data>'
+        + '<Data name="owner"><value>' + esc(name) + '</value></Data>'
+        + '</ExtendedData><Point><coordinates>' + f(p.c[1]) + ',' + f(p.c[0]) + ',0</coordinates></Point></Placemark>\n');
     });
     parts.push('</Document></kml>');
     return parts.join('');
@@ -2610,38 +2628,43 @@
     else { map.setLevel(st.z); map.setCenter(st.c); }
   }
   var _busy = false;
-  window.loadCadastralAt = async function (lat, lng) {
+  window.loadCadastralAt = async function () {
     if (_busy) return;
+    if (tooWide()) { showToastMsg('🗺 지도를 더 확대하세요 — 지적도는 최대 확대에서 4단계 안에서 불러옵니다'); return; }
     _busy = true;
     try {
       showLoading('🗺 지적도 찾는 중...');
-      var ix = await getIndex(), q = ix.q || 1e6, y = Math.round(lat * q), x = Math.round(lng * q);
-      var cand = ix.li.filter(function (e) { return e.b[0] <= y && y <= e.b[2] && e.b[1] <= x && x <= e.b[3]; })
-        .sort(function (a, c) { return (a.b[2] - a.b[0]) * (a.b[3] - a.b[1]) - (c.b[2] - c.b[0]) * (c.b[3] - c.b[1]); });
-      if (!cand.length) { hideLoading(); showToastMsg('🗺 이 위치의 지적도가 없습니다 (' + (ix.src || '') + ' 범위 밖)'); return; }
-      var pick = null, near = null, nearD = Infinity;
-      for (var i = 0; i < cand.length && !pick; i++) {
+      var ix = await getIndex(), q = ix.q || 1e6, vb = viewBox();
+      var S = Math.round(vb[0] * q), W = Math.round(vb[1] * q), N = Math.round(vb[2] * q), E = Math.round(vb[3] * q);
+      var cand = ix.li.filter(function (e) { return e.b[0] <= N && e.b[2] >= S && e.b[1] <= E && e.b[3] >= W; });
+      if (!cand.length) { hideLoading(); showToastMsg('🗺 이 화면의 지적도가 없습니다 (' + (ix.src || '') + ' 범위 밖)'); return; }
+      var have = new Set(cadTexts().map(function (t) { return t[2] + '|' + Math.round(t[0] * q) + '|' + Math.round(t[1] * q); }));
+      var ps = [], ris = [], dup = 0;
+      for (var i = 0; i < cand.length; i++) {
         var e = cand[i];
-        showLoading('🗺 지적도 받는 중... ' + (e.ri || e.li) + ' (' + e.kb + 'KB)');
-        var d = await cget(CAD_BASE + e.li + '.json?v=' + encodeURIComponent(ix.src || ''), CAD_BASE + e.li + '.json?v=' + encodeURIComponent(ix.src || ''));
-        for (var k = 0; k < d.p.length; k++) {
-          var p = d.p[k], dd = (p[1] - y) * (p[1] - y) + (p[2] - x) * (p[2] - x);
-          if (dd < nearD) { nearD = dd; near = { e: e, d: d }; }
-          if (dd < 4e6 && inRings(y, x, rings(p))) { pick = { e: e, d: d }; break; }   // 중심이 약 2km 안인 필지만 판정
-        }
+        showLoading('🗺 지적도 받는 중... ' + (e.ri || e.li) + ' (' + e.kb + 'KB)' + (cand.length > 1 ? ' ' + (i + 1) + '/' + cand.length : ''));
+        var key = CAD_BASE + e.li + '.json?v=' + encodeURIComponent(ix.src || '');
+        var d = await cget(key, key), n0 = ps.length;
+        d.p.forEach(function (p) {
+          var rs = rings(p), s = Infinity, w = Infinity, n = -Infinity, ea = -Infinity;
+          rs.forEach(function (r) { r.forEach(function (c) { if (c[0] < s) s = c[0]; if (c[0] > n) n = c[0]; if (c[1] < w) w = c[1]; if (c[1] > ea) ea = c[1]; }); });
+          if (s > N || n < S || w > E || ea < W) return;                       // 화면에 안 걸친 필지
+          if (have.has(p[0] + '|' + p[1] + '|' + p[2])) { dup++; return; }     // 이미 넣은 필지
+          ps.push({ j: p[0], c: [p[1], p[2]], r: rs });
+        });
+        if (ps.length > n0) ris.push(e.ri || e.li);
       }
-      pick = pick || near;
-      if (!pick) { hideLoading(); showToastMsg('🗺 이 위치의 지적도를 찾지 못했습니다'); return; }
-      var name = ((pick.e.ri || pick.e.li) + ' 지적도').trim();       // 「장수리 지적도」 (PC 지도와 같은 이름)
-      if (hasItem(name)) { hideLoading(); showToastMsg('🗺 이미 불러온 지적도입니다 — ' + name); return; }
-      showLoading('🗺 ' + name + ' 그리는 중... (' + pick.d.p.length.toLocaleString() + '필지)');
-      var file = new File([toKml(name, pick.d, q)], name + '.kml', { type: 'application/vnd.google-earth.kml+xml' });
+      if (!ps.length) { hideLoading(); showToastMsg(dup ? '🗺 이 화면의 지적도는 이미 불러왔습니다' : '🗺 이 화면에 지적도 필지가 없습니다'); return; }
+      var base = (ris.length > 2 ? ris.slice(0, 2).join('·') + ' 외' : ris.join('·')) + ' 지적도', name = base, names = itemNames();
+      for (var k = 2; names.indexOf(name) >= 0; k++) name = base + ' ' + k;   // 지번이 이름으로 딸리므로 항목 이름은 겹치지 않게
+      showLoading('🗺 ' + name + ' 그리는 중... (' + ps.length.toLocaleString() + '필지)');
+      var file = new File([toKml(name, ps, q)], name + '.kml', { type: 'application/vnd.google-earth.kml+xml' });
       var v = viewSave();
       try { await loadKMZ(file); }
       finally { viewRestore(v); setTimeout(function () { viewRestore(v); }, 300); }
       try { autoSaveToDB(); } catch (er) {}
-      console.log('[cad]', name, pick.d.p.length, '필지', pick.e.li);
-      showToastMsg('🗺 ' + name + ' — ' + pick.d.p.length.toLocaleString() + '필지');
+      console.log('[cad]', name, ps.length, '필지', '건너뜀', dup);
+      showToastMsg('🗺 ' + name + ' — ' + ps.length.toLocaleString() + '필지' + (dup ? ' (이미 있는 ' + dup.toLocaleString() + '필지 건너뜀)' : ''));
     } catch (er) {
       hideLoading();
       console.warn('[cad] 실패', er);

@@ -1667,6 +1667,7 @@ function applyPickedStyle(color, width) {
   if (_styleTarget) {
     const en = _styleTarget;
     restylePolyline(en, color || en.color || '#FF5733', width || en.width || 4);
+    _recolorOwned(en);
     _spMarkSelected(en.color, en.width);
     autoSaveToDB();
   } else {
@@ -1733,6 +1734,8 @@ document.getElementById('polyStyleBtn').onclick = () => {
 document.getElementById('polyDeleteBtn').onclick = () => {
   if (!polyMenuTarget) return;
   const t = polyMenuTarget;
+  const own = _ownedTexts(t.entry || polylines.find(p => p.poly === t.poly));   // 딸린 문자(지적도의 지번)도 같이
+  if (own.length) { const s = new Set(own); own.forEach(x => x.ov.setMap(null)); textLabels = textLabels.filter(x => !s.has(x)); }
   t.poly.setMap(null);
   polylines = polylines.filter(p => p.poly !== t.poly);
   if (markers.length === 0 && polylines.length === 0) document.getElementById('saveBtn').disabled = true;
@@ -1932,13 +1935,30 @@ function _removeErased(it) {
     polylines = polylines.filter(p => p !== it.obj);
   } else {
     it.obj.ov.setMap(null);
-    textLabels = textLabels.filter(t => t !== it.obj);
+    const i = textLabels.indexOf(it.obj); if (i >= 0) textLabels.splice(i, 1);
   }
+}
+// 선 항목에 딸린 문자 — owner 가 그 선 이름(지적도 불러오기의 지번, 2026-10-24).
+// owner 가 없던 예전 자동저장의 「○○리 지적도」는 선 범위 안의 노랑 2m 문자를 딸린 것으로 본다.
+function _ownedTexts(en) {
+  const nm = en && en.name; if (!nm) return [];
+  let bb = null;
+  if (/ 지적도$/.test(nm)) {
+    bb = [90, 180, -90, -180];
+    for (const p of (en.path || [])) { const a = p.getLat(), b = p.getLng(); if (a < bb[0]) bb[0] = a; if (a > bb[2]) bb[2] = a; if (b < bb[1]) bb[1] = b; if (b > bb[3]) bb[3] = b; }
+  }
+  return textLabels.filter(t => t.owner ? t.owner === nm
+    : !!bb && t.h === 2 && /^#ffff00$/i.test(t.color) && t.pos.getLat() >= bb[0] && t.pos.getLat() <= bb[2] && t.pos.getLng() >= bb[1] && t.pos.getLng() <= bb[3]);
+}
+// 선 색을 바꾸면 딸린 문자(지적도 지번)도 같은 색 — 예전 저장본 지번은 이때 owner 를 붙인다
+function _recolorOwned(en) {
+  if (!en || !/^#[0-9a-fA-F]{6}$/.test(en.color || '')) return;
+  _ownedTexts(en).forEach(t => { t.owner = t.owner || en.name; t.color = en.color; t.el.style.color = en.color; });
 }
 function _restoreErased(it) {
   if (it.kind === 'marker') { it.obj.marker.setMap(map); markers.push(it.obj); }
   else if (it.kind === 'line') { it.obj.poly.setMap(map); polylines.push(it.obj); }
-  else { it.obj.ov.setMap(map); textLabels.push(it.obj); }
+  else { textLabels.push(it.obj); if (it.obj.h > 0) _scheduleTextCull(); else it.obj.ov.setMap(map); }
 }
 function _syncSaveBtn() {
   document.getElementById('saveBtn').disabled =
@@ -1987,12 +2007,16 @@ function eraseAt(ll) {
     if (near(p.getLat(), p.getLng())) batch.push({ kind: 'marker', obj: m });
   }
   for (const t of textLabels) {
-    if (!t.ov.getMap()) continue;
+    if (!t.ov.getMap() && !t._viewCulled) continue;
+    if (window.isCadText && isCadText(t)) continue;   // 지적도 지번은 따로 안 지움 — 지적도 선을 지우면 같이
     if (near(t.pos.getLat(), t.pos.getLng())) batch.push({ kind: 'text', obj: t });
   }
   for (const en of polylines) {
     if (_polyWithin(en, px, py, cosLat, tol)) batch.push({ kind: 'line', obj: en });
   }
+  // 지운 선에 딸린 문자(지적도의 지번)도 같이 — 되돌리기도 같이 (2026-10-24)
+  const _inB = new Set(batch.map(it => it.obj));
+  batch.filter(it => it.kind === 'line').forEach(it => _ownedTexts(it.obj).forEach(t => { if (!_inB.has(t)) { _inB.add(t); batch.push({ kind: 'text', obj: t }); } }));
 
   if (!batch.length) { showToastMsg('지울 객체가 없습니다'); return; }
   batch.forEach(_removeErased);
@@ -2984,7 +3008,7 @@ async function _collectHtmData(scope) {
     D.LINES.push(g);
   }
   for (const t of textLabels) {
-    if (!t.ov.getMap()) continue;
+    if (!t.ov.getMap() && !t._viewCulled) continue;
     if (bounds && !bounds.contain(t.pos)) continue;
     D.TEXTS.push([R(t.pos.getLat()), R(t.pos.getLng()), t.name || '', t.rot || 0,
                   t.color || '#FFEB00', t.h || 0, t.ax || 0, t.ay || 0]);
@@ -3042,7 +3066,7 @@ async function exportHTM(scope = 'all') {
   // 저장 범위: 'view'=현재 화면에 보이는 객체만, 'all'=전체 객체
   const hasAny = markers.some(m => m.marker.getMap())
               || polylines.some(p => p.poly.getMap() || p.poly._viewCulled)
-              || textLabels.some(t => t.ov.getMap());
+              || textLabels.some(t => t.ov.getMap() || t._viewCulled);
   if (!hasAny) { alert('저장할 객체가 없습니다.'); return; }
 
   const now = new Date();
@@ -3431,9 +3455,11 @@ function addTextLabel(latlng, text, rot, color, h, ax, ay) {
     'font-weight:bold;line-height:1;color:' + col + ';pointer-events:none;' +
     'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 0 2px #000;';
   el.innerHTML = safe;
-  const ov = new kakao.maps.CustomOverlay({ map, content: el, position: latlng, xAnchor: 0, yAnchor: 0, zIndex: 6 });
+  // 높이 있는 문자는 일단 떼어 두고 cullTextLabels 가 화면 안 것만 붙인다
+  const ov = new kakao.maps.CustomOverlay({ map: h > 0 ? null : map, content: el, position: latlng, xAnchor: 0, yAnchor: 0, zIndex: 6 });
   const o = { ov, el, name: String(text == null ? '' : text), rot: Number(rot) || 0,
-              color: col, pos: latlng, h, ax, ay };
+              color: col, pos: latlng, h, ax, ay, _viewCulled: h > 0 };
+  if (h > 0) _scheduleTextCull();
   textLabels.push(o);
   if (h > 0) _applyTextLabelSize(o, _mapMetersPerPixel());
 }
@@ -3445,6 +3471,8 @@ function _applyTextLabelSize(o, mpp) {
   o.el.style.display = '';
   o.el.style.fontSize = Math.min(px, 400) + 'px';
 }
+let _textCullT = null;
+function _scheduleTextCull() { clearTimeout(_textCullT); _textCullT = setTimeout(cullTextLabels, 50); }
 function updateTextLabelSizes() {
   if (!textLabels.some(o => o.h > 0)) return;
   const mpp = _mapMetersPerPixel();
@@ -3517,6 +3545,25 @@ function cullBundlePolys() {
       if (pl.getMap()) pl.setMap(null);
     }
   }
+  cullTextLabels();
+}
+// 높이(h) 있는 CAD 문자(지적도 지번 등)도 화면 안 + 보일 만큼 클 때만 지도에 붙인다 (2026-10-24)
+// 카카오 CustomOverlay 는 하나 붙일 때마다 ~1ms 라 지번 수천 개를 다 붙이면 불러오기·줌이 느렸다.
+// 뗀 것은 _viewCulled=true — 데이터는 살아있음(자동저장·내보내기·지우개는 표시 중으로 취급).
+function cullTextLabels() {
+  if (typeof map === 'undefined' || !map || !textLabels.length) return;
+  const b = map.getBounds(); if (!b) return;
+  const sw = b.getSouthWest(), ne = b.getNorthEast();
+  const la = (ne.getLat() - sw.getLat()) * 0.2, lo = (ne.getLng() - sw.getLng()) * 0.2;
+  const s = sw.getLat() - la, n = ne.getLat() + la, w = sw.getLng() - lo, e = ne.getLng() + lo;
+  const mpp = _mapMetersPerPixel();
+  for (const t of textLabels) {
+    if (!(t.h > 0)) continue;
+    const lat = t.pos.getLat(), lng = t.pos.getLng();
+    const show = lat >= s && lat <= n && lng >= w && lng <= e && !(mpp > 0 && t.h * 1.1 / mpp < 2);
+    if (show) { if (!t.ov.getMap()) t.ov.setMap(map); t._viewCulled = false; }
+    else { if (t.ov.getMap()) t.ov.setMap(null); t._viewCulled = true; }
+  }
 }
 
 // ─── 트랙 → KML Placemark 직렬화 (내보내기/자동저장 공용) ──
@@ -3566,7 +3613,7 @@ function _photoMetaXml(m) {
 // 텍스트 라벨 → KML Placemark (kind=text — 자동저장/내보내기 복원용)
 function _textKmlPlacemark(t) {
   const safeName = (t.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  return `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>${t.rot}</value></Data><Data name="color"><value>${t.color}</value></Data><Data name="h"><value>${t.h || 0}</value></Data><Data name="ax"><value>${t.ax || 0}</value></Data><Data name="ay"><value>${t.ay || 0}</value></Data></ExtendedData>\n    <Point><coordinates>${t.pos.getLng()},${t.pos.getLat()},0</coordinates></Point>\n  </Placemark>`;
+  return `\n  <Placemark>\n    <name>${safeName}</name>\n    <ExtendedData><Data name="kind"><value>text</value></Data><Data name="rot"><value>${t.rot}</value></Data><Data name="color"><value>${t.color}</value></Data><Data name="h"><value>${t.h || 0}</value></Data><Data name="ax"><value>${t.ax || 0}</value></Data><Data name="ay"><value>${t.ay || 0}</value></Data>${t.owner ? `<Data name="owner"><value>${String(t.owner).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</value></Data>` : ''}</ExtendedData>\n    <Point><coordinates>${t.pos.getLng()},${t.pos.getLat()},0</coordinates></Point>\n  </Placemark>`;
 }
 
 // ─── KMZ 불러오기 ─────────────────────────────────────
@@ -3885,15 +3932,17 @@ async function loadKMZ(file, silent = false) {
         const ct = point.getElementsByTagName('coordinates')[0]?.textContent || '';
         const [lng, lat] = ct.trim().split(',').map(Number);
         if (!isNaN(lat) && !isNaN(lng)) {
-          let _rot = 0, _col = '', _h = 0, _ax = 0, _ay = 0;
+          let _rot = 0, _col = '', _h = 0, _ax = 0, _ay = 0, _own = '';
           for (const d of Array.from(pm.getElementsByTagName('Data'))) {
             const nm = d.getAttribute('name'); const v = d.getElementsByTagName('value')[0]?.textContent || '';
             if (nm === 'rot') _rot = parseFloat(v) || 0; else if (nm === 'color') _col = v.trim();
             else if (nm === 'h') _h = parseFloat(v) || 0;
             else if (nm === 'ax') _ax = parseFloat(v) || 0; else if (nm === 'ay') _ay = parseFloat(v) || 0;
+            else if (nm === 'owner') _own = v.trim();
           }
           const ll = new kakao.maps.LatLng(lat, lng); bounds.extend(ll);
           addTextLabel(ll, pmName, _rot, _col, _h, _ax, _ay);
+          if (_own) textLabels[textLabels.length - 1].owner = _own;   // 딸린 선 항목 이름(지적도의 지번) — 선을 지우면 같이 지움
         }
       } else if (point) {
         const coordsText = point.getElementsByTagName('coordinates')[0]?.textContent || '';

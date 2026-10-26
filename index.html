@@ -2211,7 +2211,9 @@ function _headingFromEuler(a, b, g) {   // W3C ZXY 오일러각(alpha,beta,gamma
   const yE = -sa * cb,                yN = ca * cb,                 yU = sb;
   const zE = -ca * sg - sa * sb * cg, zN = -sa * sg + ca * sb * cg;
   // 화면 위쪽 = 화면 회전각만큼 돌린 기기 축. 세운 정도(w)만큼 뒷면 방향을 더한다
-  const uE = ss * xE + cs * yE, uN = ss * xN + cs * yN, w = Math.abs(ss * xU + cs * yU);
+  // w 는 화면 위쪽이 '들렸을 때'만(2026-10-27). 예전 Math.abs 는 위쪽을 아래로 52° 넘게 숙이면
+  // 뒷면 성분이 화면 위쪽 성분을 이겨 방향이 180° 뒤집혔다(시뮬레이션으로 확인).
+  const uE = ss * xE + cs * yE, uN = ss * xN + cs * yN, w = Math.max(0, ss * xU + cs * yU);
   const E = uE + w * zE, N = uN + w * zN;
   if (Math.hypot(E, N) < 1e-6) return null;
   return (Math.atan2(E, N) * 180 / Math.PI + 360) % 360;
@@ -2223,6 +2225,24 @@ function _feedHeading(h) {
   else { _hdX += (x - _hdX) * 0.2; _hdY += (y - _hdY) * 0.2; }   // 원형 평균(0°/360° 경계에서도 안 튐)
   deviceHeading = (Math.atan2(_hdX, _hdY) * 180 / Math.PI + 360) % 360;
 }
+// ── 나침반 진단 배지 (주소에 ?compassdebug=1 붙였을 때만, 2026-10-27) ──
+// 방향이 뒤집힐 때 화면을 찍어 보내면 원인(출처·기울기·화면각)을 알 수 있게.
+const _cmpDbg = /[?&]compassdebug=1/.test(location.search) ? (() => {
+  let el = null;
+  return (src, e) => {
+    if (!el) {
+      el = document.createElement('div');
+      el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99999;background:rgba(0,0,0,.75);'
+        + 'color:#fff;font:12px/1.4 monospace;padding:4px 7px;border-radius:5px;pointer-events:none;white-space:pre';
+      document.body.appendChild(el);
+    }
+    const f = v => (v == null ? '-' : Math.round(v));
+    el.textContent = src + (e.absolute ? ' abs' : '') + ' a' + f(e.alpha) + ' b' + f(e.beta) + ' g' + f(e.gamma)
+      + (e.webkitCompassHeading != null ? ' wk' + f(e.webkitCompassHeading) : '')
+      + ' scr' + _screenAngle() + '\nraw ' + f(src === 'ios' ? null : _headingFromEuler(e.alpha, e.beta || 0, e.gamma || 0))
+      + ' -> ' + f(deviceHeading);
+  };
+})() : null;
 function _angDiff(a, b) { if (a == null || b == null) return 360; const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
 // ─── 기기 나침반 리스너 설정 ──────────────────────────
 function setupDeviceOrientation() {
@@ -2230,13 +2250,18 @@ function setupDeviceOrientation() {
     if (_orientOn) return;   // 위치를 다시 시작할 때마다 리스너가 겹쳐 붙지 않게
     _orientOn = true;
     // Android: deviceorientationabsolute (절대 방위각)
+    // 이게 한 번이라도 오면 deviceorientation 쪽 값은 버린다 — 두 출처가 섞여 번갈아 들어오지 않게(2026-10-27)
+    let absSeen = false;
     window.addEventListener('deviceorientationabsolute', e => {
-      if (e.alpha != null) _feedHeading(_headingFromEuler(e.alpha, e.beta || 0, e.gamma || 0));
+      if (e.alpha == null) return;
+      absSeen = true;
+      _feedHeading(_headingFromEuler(e.alpha, e.beta || 0, e.gamma || 0));
+      _cmpDbg && _cmpDbg('abs', e);
     }, true);
     // iOS: webkitCompassHeading, Android 폴백: deviceorientation(absolute 일 때만)
     window.addEventListener('deviceorientation', e => {
-      if (e.webkitCompassHeading != null) _feedHeading((e.webkitCompassHeading + _screenAngle() + 360) % 360);
-      else if (e.absolute && e.alpha != null) _feedHeading(_headingFromEuler(e.alpha, e.beta || 0, e.gamma || 0));
+      if (e.webkitCompassHeading != null) { _feedHeading((e.webkitCompassHeading + _screenAngle() + 360) % 360); _cmpDbg && _cmpDbg('ios', e); }
+      else if (!absSeen && e.absolute && e.alpha != null) { _feedHeading(_headingFromEuler(e.alpha, e.beta || 0, e.gamma || 0)); _cmpDbg && _cmpDbg('rel', e); }
     }, true);
   };
   if (typeof DeviceOrientationEvent !== 'undefined' &&

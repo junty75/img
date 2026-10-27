@@ -2762,6 +2762,96 @@
     render();
   }
 
+  // ── 손가락 옆 메뉴 만들기 (길게 누르기 메뉴·경로 편집·출발지 고르기 공통) ──
+  // 화면 전체를 덮는 id 없는 창 → 뒤로가기(_closeTopPopup)·바깥 누르기로 닫힌다.
+  // 길게 누른 손을 뗄 때의 click 이 메뉴를 바로 닫거나 고르지 않게 — 새로 누른 뒤의 click 만 받는다(armed).
+  function pressMenu(cx, cy, headText, items) {
+    var bg = document.createElement('div'); bg.className = 'pm-bg';
+    var dot = document.createElement('div'); dot.className = 'pm-dot';
+    dot.style.left = cx + 'px'; dot.style.top = cy + 'px';
+    var box = document.createElement('div'); box.className = 'pm-box';
+    if (headText) {
+      var head = document.createElement('div');
+      head.style.cssText = 'padding:6px 18px 8px;color:#666;font-size:12px;border-bottom:1px solid #eee;';
+      head.textContent = headText;
+      box.appendChild(head);
+    }
+    var armed = false;
+    items.concat([['✕ 취소', null]]).forEach(function (it) {
+      var b = document.createElement('button'); b.textContent = it[0];
+      b.onclick = function (e) {
+        e.stopPropagation();
+        if (!armed) return;
+        bg.remove(); if (it[1]) it[1]();
+      };
+      box.appendChild(b);
+    });
+    bg.appendChild(dot); bg.appendChild(box);
+    document.body.appendChild(bg);
+    // 손가락 옆(가리지 않게)에 띄우고 화면 안으로 맞춤
+    var w = box.offsetWidth, h = box.offsetHeight, W = innerWidth, H = innerHeight;
+    var x = cx + 18; if (x + w > W - 8) x = cx - 18 - w; x = Math.max(8, Math.min(x, W - w - 8));
+    var y = cy - h / 2; y = Math.max(8, Math.min(y, H - h - 8));
+    box.style.left = x + 'px'; box.style.top = y + 'px';
+    bg.addEventListener('pointerdown', function () { armed = true; });
+    bg.addEventListener('click', function (e) { if (armed && e.target === bg) bg.remove(); });
+    bg.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    return bg;
+  }
+
+  // ── 출발지 고르기 (2026-10-27) — 누른 곳을 목적지로 두고, 출발을 내 위치 / 지도에서 고른다 ──
+  // 길게 누르기 메뉴의 🧭 길찾기 → ① 여기서 출발(예전 동작) ② 내 위치에서 여기로 ③ 출발지를 지도에서 지정.
+  function myLL() {       // 지금 잡힌 내 위치 [lat,lng] 또는 null (두 판 공통)
+    try {
+      if (isVw()) {
+        if (typeof locationFeat === 'undefined' || !locationFeat) return null;
+        var ll = fromMerc(locationFeat.getGeometry().getCoordinates());
+        return [ll[1], ll[0]];
+      }
+      if (typeof locationMarker === 'undefined' || !locationMarker) return null;
+      var q = locationMarker.getPosition();
+      return [q.getLat(), q.getLng()];
+    } catch (e) { return null; }
+  }
+  function routeFromTo(s, d) {    // 출발 s → 목적지 d 로 바로 길찾기 시작
+    startMeasure('route', s[0], s[1]);
+    M.wps.push(d); queueSeg(s, d); render();
+  }
+  // 내 위치에서 목적지까지 — 아직 위치를 못 잡았으면 한 번 물어본다
+  function routeFromMyLoc(d) {
+    var s = myLL();
+    if (s) { routeFromTo(s, d); return; }
+    if (!navigator.geolocation) { showToastMsg('이 기기에서 내 위치를 쓸 수 없습니다'); return; }
+    showToastMsg('내 위치를 찾는 중…');
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      routeFromTo([pos.coords.latitude, pos.coords.longitude], d);
+    }, function () {
+      showToastMsg('내 위치를 가져올 수 없습니다 (GPS·위치 권한 확인)');
+    }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 });
+  }
+  // 출발지를 지도에서 고르기 — 목적지만 찍어 두고 다음 탭(또는 길게 누르기)을 출발지로 받는다
+  function routeAwaitStart(d) {
+    startMeasure('route', d[0], d[1]);
+    M.awaitStart = true;
+    render();
+  }
+  function setRouteStart(lat, lng) {
+    if (!M || !M.awaitStart) return;
+    var d = M.wps[0];
+    M.awaitStart = false;
+    M.wps = [[lat, lng], d];
+    rebuildRoute();
+  }
+  // 🧭 길찾기 를 고르면 시작 방식부터 묻는다
+  function openRouteStartMenu(lat, lng, cx, cy) {
+    var d = [lat, lng];
+    pressMenu(cx, cy, '🧭 길찾기 — 어디서 출발할까요?', [
+      ['🚩 여기서 출발', function () { startMeasure('route', lat, lng); }],
+      ['📍 내 위치에서 여기로', function () { routeFromMyLoc(d); }],
+      ['🗺 출발지를 지도에서 지정', function () { routeAwaitStart(d); }]
+    ]);
+  }
+
   // ── 길찾기 중 길게 누르기 → 경로 편집 메뉴 (2026-10-17) ──
   // 경유지 추가(돌아가는 거리가 가장 적게 늘어나는 구간에) · 지점 삭제(가장 가까운 지점) · 출발지 변경 · 도착지 변경 → 처음부터 다시 잇기
   var _swallowTap = false;   // 길게 누른 손을 뗄 때 지도가 받는 탭은 지점으로 넣지 않는다
@@ -2791,29 +2881,11 @@
   function openRouteMenu(lat, lng, cx, cy) {
     _swallowTap = true;
     var p = [lat, lng];
-    var bg = document.createElement('div'); bg.className = 'pm-bg';
-    var dot = document.createElement('div'); dot.className = 'pm-dot';
-    dot.style.left = cx + 'px'; dot.style.top = cy + 'px';
-    var box = document.createElement('div'); box.className = 'pm-box';
-    var head = document.createElement('div');
-    head.style.cssText = 'padding:6px 18px 8px;color:#666;font-size:12px;border-bottom:1px solid #eee;';
-    head.textContent = '🧭 길찾기 · 지점 ' + M.wps.length + '개';
-    box.appendChild(head);
-    var armed = false;
-    [['📍 경유지 추가', 'via'], ['❌ 지점 삭제', 'del'], ['🚩 출발지 변경', 'start'], ['🏁 도착지 변경', 'end'], ['✕ 취소', '']].forEach(function (it) {
-      var b = document.createElement('button'); b.textContent = it[0];
-      b.onclick = function (e) { e.stopPropagation(); if (!armed) return; bg.remove(); if (it[1]) routeEdit(it[1], p); };
-      box.appendChild(b);
-    });
-    bg.appendChild(dot); bg.appendChild(box);
-    document.body.appendChild(bg);
-    var w = box.offsetWidth, h = box.offsetHeight, W = innerWidth, H = innerHeight;
-    var x = cx + 18; if (x + w > W - 8) x = cx - 18 - w; x = Math.max(8, Math.min(x, W - w - 8));
-    var y = cy - h / 2; y = Math.max(8, Math.min(y, H - h - 8));
-    box.style.left = x + 'px'; box.style.top = y + 'px';
-    bg.addEventListener('pointerdown', function () { armed = true; });
-    bg.addEventListener('click', function (e) { if (armed && e.target === bg) bg.remove(); });
-    bg.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    var mk = function (label, kind) { return [label, function () { routeEdit(kind, p); }]; };
+    pressMenu(cx, cy, '🧭 길찾기 · 지점 ' + M.wps.length + '개', [
+      mk('📍 경유지 추가', 'via'), mk('❌ 지점 삭제', 'del'),
+      mk('🚩 출발지 변경', 'start'), mk('🏁 도착지 변경', 'end')
+    ]);
   }
 
   // ── 저장한 경로 다시 고치기 (2026-10-17) ──
@@ -2927,7 +2999,8 @@
       pb.textContent = ROUTE_NAME[routeProf()];
       if (p.length >= 2) lbl = fmtLen(pathLen(p));
       txt = '🧭 길찾기' + (M.busy ? ' — 길 찾는 중…' : '') + '\n'
-        + (M.wps.length < 2 ? '지도를 눌러 다음 지점을 찍으세요' : '총 ' + (lbl || '0m') + ' · 지점 ' + M.wps.length + '개 · 길게 누르면 편집')
+        + (M.awaitStart ? '🚩 출발지를 지도에서 누르세요 (목적지는 찍혀 있습니다)'
+           : M.wps.length < 2 ? '지도를 눌러 다음 지점을 찍으세요' : '총 ' + (lbl || '0m') + ' · 지점 ' + M.wps.length + '개 · 길게 누르면 편집')
         + (M.fail ? '\n⚠️ 길을 못 찾아 마지막 구간은 직선' : M.gap ? '\n⚠️ 끝 ' + Math.round(M.gap) + 'm 는 지도에 길이 없어 직선' : '');
       bar.querySelector('.mb-t').textContent = txt;
       drawMeas(p, 'dist', lbl, M.wps);
@@ -2958,6 +3031,7 @@
   function undoPt() {
     if (!M) return;
     if (M.kind === 'route') {                  // 길찾기: 마지막 지점과 그 구간 통째로
+      if (M.awaitStart) { stopMeasure(); return; }   // 출발지를 고르던 중 = 길찾기 그만
       if (M.busy) return;                      // 받는 중에는 기다림
       if (M.segs.length) { M.p.splice(M.p.length - M.segs.pop()); M.wps.pop(); M.fail = false; M.gap = 0; render(); }
       else stopMeasure();
@@ -2977,6 +3051,7 @@
     if (!M || !isFinite(lat) || !isFinite(lng)) return false;
     if (M.kind === 'route') {
       if (_swallowTap) { _swallowTap = false; return true; }   // 길게 누른 손을 뗀 탭
+      if (M.awaitStart) { setRouteStart(lat, lng); return true; }   // 누른 곳이 출발지
       var a = M.wps[M.wps.length - 1], b = [lat, lng];
       M.wps.push(b); queueSeg(a, b); render();
       return true;
@@ -3082,44 +3157,20 @@
 
   // ── 길게 누르기 메뉴 ──
   window.openPressMenu = function (lat, lng, cx, cy) {
+    // 출발지를 지도에서 고르는 중 → 길게 누른 곳이 출발지
+    if (M && M.kind === 'route' && M.awaitStart) { _swallowTap = true; setRouteStart(lat, lng); return; }
     if (M && M.kind === 'route') { openRouteMenu(lat, lng, cx, cy); return; }   // 길찾기 중 → 경로 편집 메뉴
     var tx = findTextAt(cx, cy);                        // 문자 위를 길게 누름 → 수정 창
     if (tx) { openTextInput(lat, lng, tx); return; }
-    // 화면 전체를 덮는 id 없는 창 → 뒤로가기(_closeTopPopup)로 닫힌다
-    var bg = document.createElement('div'); bg.className = 'pm-bg';
-    var dot = document.createElement('div'); dot.className = 'pm-dot';
-    dot.style.left = cx + 'px'; dot.style.top = cy + 'px';
-    var box = document.createElement('div'); box.className = 'pm-box';
-    // 길게 누른 손을 뗄 때의 click 이 메뉴를 바로 닫거나 고르지 않게 — 새로 누른 뒤의 click 만 받는다
-    var armed = false;
-    var items = [
+    pressMenu(cx, cy, '', [
       ['📍 마커 입력', function () { addMarkerAt(lat, lng); }],
       ['🔤 문자 입력', function () { openTextInput(lat, lng); }],
       ['📏 거리 재기', function () { startMeasure('dist', lat, lng); }],
       ['📐 면적 재기', function () { startMeasure('area', lat, lng); }],
-      ['🧭 길찾기', function () { startMeasure('route', lat, lng); }],
+      ['🧭 길찾기', function () { openRouteStartMenu(lat, lng, cx, cy); }],
       ['🗺 지적도 불러오기', function () { window.loadCadastralAt(lat, lng); }],
       ['📤 공유하기', function () { openShareLocation(lat, lng); }]
-    ];
-    items.forEach(function (it) {
-      var b = document.createElement('button'); b.textContent = it[0];
-      b.onclick = function (e) {
-        e.stopPropagation();
-        if (!armed) return;
-        bg.remove(); it[1]();
-      };
-      box.appendChild(b);
-    });
-    bg.appendChild(dot); bg.appendChild(box);
-    document.body.appendChild(bg);
-    // 손가락 옆(가리지 않게)에 띄우고 화면 안으로 맞춤
-    var w = box.offsetWidth, h = box.offsetHeight, W = innerWidth, H = innerHeight;
-    var x = cx + 18; if (x + w > W - 8) x = cx - 18 - w; x = Math.max(8, Math.min(x, W - w - 8));
-    var y = cy - h / 2; y = Math.max(8, Math.min(y, H - h - 8));
-    box.style.left = x + 'px'; box.style.top = y + 'px';
-    bg.addEventListener('pointerdown', function () { armed = true; });
-    bg.addEventListener('click', function (e) { if (armed && e.target === bg) bg.remove(); });
-    bg.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    ]);
   };
 
 })();

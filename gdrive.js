@@ -1491,6 +1491,8 @@
     })(0);
   } else if (_returned && pend && pend.pump) {
     setTimeout(function () { pump(true); }, 1500);
+  } else if (_returned && pend && pend.gdlink) {
+    linkWhenReady(pend.gdlink);
   } else if (_returned && pend && pend.b) {
     var t0 = Date.now();
     (function wait() {
@@ -1501,6 +1503,70 @@
       });
     })();
   }
+  // ── 링크로 열기 (2026-10-30) — 엑셀 하이퍼링크(PhotoLink.py·JtyTools '사진 링크 엑셀')용 ──
+  //  ?pt=위도,경도&n=이름 → 그 자리에 검색 핀 + 이동 (핀은 저장 대상 아님)
+  //  ?gd=드라이브파일ID   → 그 사진을 드라이브에서 받아 지도에 올림(로그인 필요, 이미 지도에 있으면 받지 않음). pt 가 같이 있으면 먼저 그 자리로
+  //  주소는 처리 후 지운다(다시 열 때 되풀이 안 함). 설치된 앱이 링크를 가로채도 주소에 다 들어 있어 그대로 된다(런처 4절 문제와 다름)
+  function linkParams() {
+    var q = new URLSearchParams(location.search), o = {}, m;
+    if ((m = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(q.get('pt') || ''))) o.pt = [+m[1], +m[2]];
+    if (o.pt && (Math.abs(o.pt[0]) > 90 || Math.abs(o.pt[1]) > 180)) delete o.pt;
+    if (/^[\w-]{10,}$/.test(q.get('gd') || '')) o.gd = q.get('gd');
+    if (q.get('n')) o.n = q.get('n').slice(0, 100);
+    if (!o.pt && !o.gd) return null;
+    ['pt', 'gd', 'n'].forEach(function (k) { q.delete(k); });
+    var rest = q.toString();
+    try { history.replaceState(history.state, '', location.pathname + (rest ? '?' + rest : '')); } catch (e) {}
+    return o;
+  }
+  function linkWhenReady(o) {
+    var t0 = Date.now();
+    (function wait() {
+      if (!getBounds() && Date.now() - t0 < 20000) { setTimeout(wait, 300); return; }
+      Promise.resolve(window._restoreReady).catch(function () {}).then(function () {
+        setTimeout(function () { openLink(o); }, 300);    // 복원이 화면을 다시 맞춘 뒤
+      });
+    })();
+  }
+  function linkPin(o) {
+    if (!o.pt) return;
+    try {
+      var si = document.getElementById('searchInput');
+      if (si) si.value = o.n || '';
+      moveToSearchResult({ lat: o.pt[0], lng: o.pt[1] });  // 두 판 모두 있는 검색 핀 함수(이동·확대 포함)
+    } catch (e) { gotoLL(o.pt[0], o.pt[1], isVw() ? 17 : 3); }
+  }
+  async function openLink(o) {
+    linkPin(o);
+    if (!o.gd) return;
+    var have = false;
+    try { have = (markers || []).some(function (m) { return m && m.driveId === o.gd; }); } catch (e) {}
+    if (have) { toast('이 사진은 이미 지도에 있습니다.', 2500); return; }
+    if (!clientId()) { showCidForm(); return; }
+    var tok = getToken();
+    if (!tok) { login({ gdlink: o }); return; }
+    var job = startJob();
+    status('드라이브에서 사진 받는 중...' + (o.n ? ' ' + o.n : ''));
+    try {
+      var base = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(o.gd);
+      var meta = await (await api(base + '?fields=name,mimeType', tok, { signal: jobSignal(job) })).json();
+      var bl = await (await api(base + '?alt=media', tok, { signal: jobSignal(job) })).blob();
+      if (cancelled(job, '사진 받기를 중단했습니다.')) return;
+      var file = new File([bl], meta.name || o.n || 'photo.jpg', { type: meta.mimeType || bl.type || 'image/jpeg' });
+      file._fromDrive = true; file._gdId = o.gd;
+      endJob(); hideLoading();
+      await feedFiles([file]);
+      linkPin(o);                                          // 사진 올리며 움직인 화면을 링크 자리로
+    } catch (e) {
+      if (cancelled(job, '사진 받기를 중단했습니다.')) return;
+      endJob(); hideLoading();
+      if (e.auth) { login({ gdlink: o }); return; }
+      alert('드라이브 사진을 받지 못했습니다: ' + e.message + '\n(이 계정으로 볼 수 있는 파일인지 확인하세요)');
+    }
+  }
+  var _link = linkParams();
+  if (_link) linkWhenReady(_link);
+
   // ══════════════════════════════════════════════════
   //  ⚙ 설정 버튼 + 지도 파일 가져오기 (2026-10-22, 2026-10-24 바꿈)
   //  · ⚙ 버튼(📷 왼쪽) → 설정 창. 지금 항목: 지도 파일 · 지도 미리 받기. 다른 설정도 여기에 덧붙인다(SETTINGS_SECTIONS).

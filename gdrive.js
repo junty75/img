@@ -341,7 +341,8 @@
   // 사진 찾기 폴더 = 여러 개 (예전 저장값은 폴더 1개 객체)
   function getFolders() { var v = lsJson(LS_FOLDER); return Array.isArray(v) ? v : v ? [v] : []; }
   function setFolders(a) { if (a && a.length) lsSet(LS_FOLDER, JSON.stringify(a)); else lsDel(LS_FOLDER); updBtn(); }
-  function folderLabel(a) { return a.length ? a.map(function (f) { return f.path || f.name; }).join(', ') : '전체 드라이브'; }
+  // 폴더를 안 고르면 아무 폴더도 찾지 않는다(예전엔 전체 드라이브) — 짧게 누르면 폴더 고르기 창 (2026-10-30)
+  function folderLabel(a) { return a.length ? a.map(function (f) { return f.path || f.name; }).join(', ') : '없음 (폴더를 골라 주세요)'; }
   function getUpFolder() { return lsJson(LS_UPF); }
   function getUpNet() { return lsGet(LS_UPNET) || 'off'; }      // off | wifi | any
   function uploadOn() { return getUpNet() !== 'off' && !!getUpFolder(); }
@@ -378,9 +379,8 @@
         (fs.length ? fs.map(function (f, i) {
             return '<div class="path" style="display:flex;align-items:center;gap:6px;">📁 <span style="flex:1;">' + esc(f.path || f.name) + '</span>' +
               '<button data-rmf="' + i + '" style="padding:3px 9px;font-size:13px;">✕</button></div>';
-          }).join('') : '<div class="path">📁 전체 드라이브</div>') +
-        '<div class="btns"><button class="pri" id="gdPick">' + (fs.length ? '폴더 추가 · 파일 열기' : '폴더 고르기 · 파일 열기') + '</button>' +
-          (fs.length ? '<button id="gdAllDrive">전체 드라이브로</button>' : '') + '</div>' +
+          }).join('') : '<div class="path">📁 없음 — 폴더를 골라야 사진을 찾습니다</div>') +
+        '<div class="btns"><button class="pri" id="gdPick">' + (fs.length ? '폴더 추가 · 파일 열기' : '폴더 고르기 · 파일 열기') + '</button></div>' +
         '<div style="color:#888;font-size:12px;margin-top:4px;">폴더 화면에서 KMZ·GPX·BGPX·HTM 파일을 누르면 지도에 불러옵니다. 왼쪽 칸을 체크하면 여러 개를 한 번에 엽니다. 찾기 폴더는 여러 개 추가할 수 있습니다.</div>' +
         '<div class="sec"><b>자동 업로드</b> (📷 촬영 사진 + 📂 로 넣은 휴대폰 사진)' +
           '<div class="path" style="margin-top:4px;">⬆ ' + esc(uf ? uf.path || uf.name : '업로드 폴더 없음') + '</div>' +
@@ -409,7 +409,6 @@
         '<div style="color:#888;margin-top:8px;font-size:12px;">드라이브 사진·폴더 목록은 6시간 동안 기억합니다. 그 사이 새로 올린 사진이나 새 폴더는 "목록 새로 받기" 후 찾으세요.<br>' +
           '업로드는 앱이 열려 있을 때만 진행됩니다. 닫으면 다음에 열 때 이어서 올립니다.</div>');
       $('gdPick').onclick = function () { openPicker('browse', null); };
-      if ($('gdAllDrive')) $('gdAllDrive').onclick = function () { setFolders([]); showSetup(); };
       Array.prototype.forEach.call($('gdBox').querySelectorAll('button[data-rmf]'), function (b2) {
         b2.onclick = function () { var a = getFolders(); a.splice(+b2.getAttribute('data-rmf'), 1); setFolders(a); showSetup(); };
       });
@@ -434,6 +433,7 @@
 
   // ── 폴더 고르기 / 파일 열기 ── mode: 'browse'(사진 찾기 폴더 + 파일 열기) | 'upload'(업로드 폴더)
   // 폴더 트리는 캐시된 색인에서, 파일 목록은 폴더마다 그때그때 조회
+  var _searchAfterPick = false;    // 폴더 없이 짧게 눌러 연 고르기 창 — 폴더를 고르고 끝내면 바로 사진 찾기
   function openPicker(mode, startId) {
     if (_busy) return;
     var tok = mode === 'upload' ? getToken(true) : getToken();
@@ -482,8 +482,7 @@
       '</div>' +
       '<div class="btns">' +
         (browse ? '<button class="pri" id="gdOpenSel" style="display:none;"></button>' +
-                  (cur ? (chosen[cur] ? '<button id="gdUnuse">이 폴더 빼기</button>' : '<button class="pri" id="gdUse">＋ 사진 찾기 폴더에 추가</button>') : '') +
-                  '<button id="gdUseAll">전체 드라이브</button>'
+                  (cur ? (chosen[cur] ? '<button id="gdUnuse">이 폴더 빼기</button>' : '<button class="pri" id="gdUse">＋ 사진 찾기 폴더에 추가</button>') : '')
                 : '<button class="pri" id="gdUseUp">이 폴더에 올리기</button>') +
         '<button id="gdBack">닫기</button><button id="gdToSetup">설정으로</button></div>');
     Array.prototype.forEach.call($('gdBox').querySelectorAll('.fr[data-id],.fr[data-up]'), function (row) {
@@ -501,13 +500,13 @@
         setFolders(a);
         if (confirm('사진 찾기 폴더 (' + a.length + '개, 하위 폴더 포함):\n- ' + a.map(function (f) { return f.path || f.name; }).join('\n- ') +
           '\n\n폴더를 더 추가할까요?\n(확인 = 계속 고르기, 취소 = 끝)')) renderPicker(mode, idx, byId[cur] && byId[byId[cur][2]] ? byId[cur][2] : null);
+        else if (_searchAfterPick) { _searchAfterPick = false; closePanel(); search(false); }   // 짧게 눌러 왔으면 바로 찾기
         else showSetup();
       };
       if ($('gdUnuse')) $('gdUnuse').onclick = function () {
         setFolders(getFolders().filter(function (f) { return f.id !== cur; }));
         renderPicker(mode, idx, cur);
       };
-      $('gdUseAll').onclick = function () { setFolders([]); closePanel(); alert('사진 찾기 폴더: 전체 드라이브'); };
       listFiles(cur || 'root').then(function (files) {
         var box = $('gdFiles'); if (!box) return;
         if (!files.length) { box.textContent = '이 폴더에 불러올 파일(KMZ·GPX·BGPX·HTM) 없음'; return; }
@@ -636,7 +635,7 @@
   }
 
   // 드라이브 버튼: 길게 = 설정 열기, 짧게 = 검색
-  longPress(btn, function () { showSetup(); }, function () { search(false); });
+  longPress(btn, function () { _searchAfterPick = false; showSetup(); }, function () { search(false); });
 
   // ── 드라이브 API ──
   function api(url, tok, opt) {
@@ -697,11 +696,17 @@
     if (!clientId()) { showCidForm(); return; }
     b = b || getBounds();
     if (!b) { alert('지도가 아직 준비되지 않았습니다. 잠시 후 다시 누르세요.'); return; }
+    var fds = getFolders();
+    if (!fds.length) {                                 // 찾기 폴더 없음 = 찾지 않고 폴더 고르기 창
+      _searchAfterPick = true;
+      toast('사진 찾기 폴더를 먼저 골라 주세요.', 3000);
+      openPicker('browse', null);
+      return;
+    }
     var tok = getToken();
     if (!tok) { login({ b: b, force: !!force }); return; }
     _busy = true;
     status('드라이브 사진 목록 받는 중...');
-    var fds = getFolders();
     var job = startJob();
     loadIndex(tok, force).then(function (idx) {
       if (cancelled(job)) return;

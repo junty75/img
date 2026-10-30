@@ -2189,7 +2189,13 @@ function locMarkerSvg(heading) {
 }
 function makeLocationContent(heading) {
   const rot = (heading != null && !isNaN(heading) && heading >= 0) ? Math.round(heading) : 0;
-  return `<div style="width:40px;height:40px;pointer-events:none;transform:rotate(${rot}deg);">` + locMarkerSvg(heading) + `</div>`;
+  return `<div class="locmk" style="width:40px;height:40px;pointer-events:none;transform:rotate(${rot}deg);">` + locMarkerSvg(heading) + `</div>`;
+}
+// 내 위치 오버레이의 바깥 상자(카카오가 만든 div)도 터치를 통과시킨다 — 안쪽만 none 이면 바깥 상자가 밑의 마커 클릭을 가로챘다
+function _locPassThrough() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.locmk').forEach(el => { if (el.parentElement) el.parentElement.style.pointerEvents = 'none'; });
+  });
 }
 
 /* 기기 나침반 — '화면 위쪽'이 가리키는 방위(도, 북=0 시계방향). (2026-10-21)
@@ -2357,12 +2363,13 @@ function startLocationWatchIfNeeded() {
       locationMarker = new kakao.maps.CustomOverlay({
         map, position: ll,
         content: makeLocationContent(h),
-        xAnchor: 0.5, yAnchor: 0.5, zIndex: 10
+        xAnchor: 0.5, yAnchor: 0.5, zIndex: -1   // 마커·사진(zIndex 0) 아래 — 겹쳐도 마커가 눌린다 (2026-10-30)
       });
     } else {
       locationMarker.setPosition(ll);
       locationMarker.setContent(makeLocationContent(h));
     }
+    _locPassThrough();
   }, () => {
     // 권한 거부·GPS 꺼짐 — 매번 뜨는 경고창 대신 토스트. 버튼을 누르면 다시 시도한다
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }

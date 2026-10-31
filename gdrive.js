@@ -36,13 +36,6 @@
     if (p.access_token) {
       lsSet(LS_TOK, JSON.stringify({ t: p.access_token, s: p.scope || '', exp: Date.now() + (parseInt(p.expires_in, 10) || 3600) * 1000 - 60000 }));
       _returned = true;
-      // PC 지도(/map/…, mapcommon.js '링크로 열기')가 작은 창으로 연 로그인이면 토큰만 저장하고 창을 닫는다(2026-11-01) — PC 지도가 storage 이벤트로 이어 받음
-      var pp = lsJson(LS_PEND);
-      if (pp && pp.popup) {
-        lsDel(LS_PEND); _returned = false;
-        window.close();
-        setTimeout(function () { try { toast('구글 로그인 완료 — 이 창은 닫아도 됩니다.', 10000); } catch (e) {} }, 1500);
-      }
     } else if (p.error) {
       lsDel(LS_PEND);
       setTimeout(function () { alert('구글 로그인이 취소됐거나 실패했습니다.\n(' + p.error + ')'); }, 500);
@@ -1514,13 +1507,14 @@
   //  ?pt=위도,경도&n=이름 → 그 자리에 검색 핀 + 이동 (핀은 저장 대상 아님)
   //  ?gd=드라이브파일ID   → 그 사진을 드라이브에서 받아 지도에 올림(로그인 필요, 이미 지도에 있으면 받지 않음). pt 가 같이 있으면 먼저 그 자리로
   //  주소는 처리 후 지운다(다시 열 때 되풀이 안 함). 설치된 앱이 링크를 가로채도 주소에 다 들어 있어 그대로 된다(런처 4절 문제와 다름)
-  function linkParams() {
-    var q = new URLSearchParams(location.search), o = {}, m;
+  function linkParams(search) {                            // search 를 주면 그 문자열만 읽음(다른 탭이 넘긴 것), 없으면 내 주소 읽고 지움
+    var own = search == null, q = new URLSearchParams(own ? location.search : search), o = {}, m;
     if ((m = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(q.get('pt') || ''))) o.pt = [+m[1], +m[2]];
     if (o.pt && (Math.abs(o.pt[0]) > 90 || Math.abs(o.pt[1]) > 180)) delete o.pt;
     if (/^[\w-]{10,}$/.test(q.get('gd') || '')) o.gd = q.get('gd');
     if (q.get('n')) o.n = q.get('n').slice(0, 100);
     if (!o.pt && !o.gd) return null;
+    if (!own) return o;
     ['pt', 'gd', 'n'].forEach(function (k) { q.delete(k); });
     var rest = q.toString();
     try { history.replaceState(history.state, '', location.pathname + (rest ? '?' + rest : '')); } catch (e) {}
@@ -1576,8 +1570,27 @@
       alert('드라이브 사진을 받지 못했습니다: ' + e.message + '\n(이 계정으로 볼 수 있는 파일인지 확인하세요)');
     }
   }
-  var _link = window._toPc ? null : linkParams();         // PC 는 index 머리가 PC 지도(/map/…?pc)로 넘기는 중(2026-11-01)
+  var _link = linkParams();
   if (_link) linkWhenReady(_link);
+  // PC: 엑셀 링크마다 새 탭이 열리던 것(2026-11-01) — 새 탭은 index 머리의 작은 스크립트가 'jty_link<경로>' 에 값을 넘기고 닫힌다.
+  //  여기(이미 열린 탭)는 'jty_alive<경로>' 에 살아 있음을 적어 두고(숨은 탭은 크롬이 타이머를 1분에 한 번으로 늦춰 90초 기준), 넘어온 값을 받아 연다.
+  (function () {
+    if (!(window.matchMedia && matchMedia('(pointer:fine)').matches)) return;   // 휴대폰은 안 함
+    var p = location.pathname.replace(/index\.html?$/i, ''), KA = 'jty_alive' + p, KL = 'jty_link' + p;
+    function beat() { lsSet(KA, String(Date.now())); }
+    beat(); setInterval(beat, 20000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) beat(); });
+    window.addEventListener('pagehide', function () { lsDel(KA); });
+    window.addEventListener('storage', function (e) {
+      if (e.key !== KL || !e.newValue) return;
+      var v; try { v = JSON.parse(e.newValue); } catch (er) { return; }
+      if (!v || Date.now() - v.t > 15000) return;
+      var o = linkParams(v.q);
+      if (!o) return;
+      try { window.focus(); } catch (er) {}
+      linkWhenReady(o);
+    });
+  })();
 
   // ══════════════════════════════════════════════════
   //  ⚙ 설정 버튼 + 지도 파일 가져오기 (2026-10-22, 2026-10-24 바꿈)
@@ -2506,9 +2519,7 @@
         tileCount().then(function (n) { var el = $('gdTileInfo'); if (el) el.textContent = tileInfoText(n); });
         $('gdPre').onclick = function () { preloadTiles(+$('gdPreLv').value); };
         $('gdTileClr').onclick = function () { clearTiles(showSettings); };
-      } },
-    { html: function () { return window.cadSettingsHtml ? window.cadSettingsHtml() : ''; },
-      bind: function () { if (window.cadSettingsBind) window.cadSettingsBind(showSettings); } }
+      } }
   ];
   function showSettings() {
     openPanel('<b style="font-size:15px;">⚙️ 설정</b>' + SETTINGS_SECTIONS.map(function (s) { return s.html(); }).join('') +
@@ -3268,7 +3279,7 @@
 // 데이터는 지적도_생성.py 가 연속지적도 SHP 를 리별로 나눈 /img/cad/<PNU 10자리>.json (브이월드 판도 같은 사이트의 /img/cad/ 를 씀).
 //   index.json = {q, src, li:[{li, emd, ri, n, kb, b:[남,서,북,동](위경도×q)}]}
 //   리 파일 = {li, emd, ri, p:[[지번, 중심위도, 중심경도, 링(첫 점+차이값, [위,경,위,경…])…]…]}
-// 처음 불러올 때 전체를 캐시 'cad-v1' 에 받아 두고(내부 저장) 그 뒤로는 내부 것으로 — 한 달 지나면 새로 받을지 묻는다(아래 downloadAll·getIndex).
+// 받은 파일은 캐시 'cad-v1' 에 두어 다시 받지 않는다(index.json 은 하루 한 번 새로, 리 파일 주소에 src 를 붙여 새 데이터면 새로 받음).
 // 지도에는 KML 로 만들어 loadKMZ 로 넣는다(자동저장·내보내기 그대로). 넣은 뒤 보던 화면 그대로.
 (function () {
   var CAD_BASE = location.origin + '/img/cad/', CAD_CACHE = 'cad-v1';
@@ -3289,112 +3300,12 @@
       throw e;
     }
   }
-  // ── 내부 저장 (2026-10-31) — 처음 불러올 때 장수군 전체(리 파일 전부)를 캐시 'cad-v1' 에 받아 두고, 그 뒤로는 인터넷 없이 내부 것으로 연다.
-  //   한 달(MONTH) 지나면 "새로 받을까요?" — 취소하면 다시 한 달 뒤에 묻는다(cad_ask). 받았을 때 기록 = localStorage cad_saved {src, t, kb}.
-  var MONTH = 30 * 864e5, LS_SAVED = 'cad_saved', LS_ASK = 'cad_ask';
-  function lsJ(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
-  function lsS(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch (e) {} }
-  function mb(kb) { return kb >= 10240 ? Math.round(kb / 1024) + 'MB' : (kb / 1024).toFixed(1) + 'MB'; }
-  function ymd(t) { var d = new Date(t); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
-  function liKey(ix, e) { return CAD_BASE + e.li + '.json?v=' + encodeURIComponent(ix.src || ''); }
-  async function cachedIndex() {
-    try { var c = await caches.open(CAD_CACHE), r = await c.match(CAD_BASE + 'index.json'); return r ? await r.json() : null; } catch (e) { return null; }
-  }
-  // 내부에 다 받아 둔 지적도가 있으면 그 index (리 파일이 하나라도 빠졌으면 null)
-  async function savedIndex() {
-    var sv = lsJ(LS_SAVED); if (!sv) return null;
-    var ix = await cachedIndex(); if (!ix || ix.src !== sv.src) return null;
-    try {
-      var c = await caches.open(CAD_CACHE);
-      for (var i = 0; i < ix.li.length; i++) if (!(await c.match(liKey(ix, ix.li[i])))) return null;
-    } catch (e) { return null; }
-    return ix;
-  }
-  // 전체 받기 — 새 index 를 받고, 아직 없는 리 파일만 받는다(끊겨도 받은 것은 남아 다음에 이어서). 다 받으면 옛 판 파일을 지운다.
-  async function downloadAll() {
-    var c = await caches.open(CAD_CACHE);
-    var r = await fetch(CAD_BASE + 'index.json?d=' + Date.now(), { cache: 'no-cache' });
-    if (!r.ok) throw new Error('index HTTP ' + r.status);
-    var ix = await r.clone().json();
-    var todo = [];
-    for (var i = 0; i < ix.li.length; i++) if (!(await c.match(liKey(ix, ix.li[i])))) todo.push(ix.li[i]);
-    var tot = ix.li.reduce(function (s, e) { return s + (e.kb || 0); }, 0), got = tot - todo.reduce(function (s, e) { return s + (e.kb || 0); }, 0), k = 0;
-    var next = 0, fail = null;
-    async function worker() {
-      while (next < todo.length && !fail) {
-        var e = todo[next++], key = liKey(ix, e);
-        try {
-          var x = await fetch(key, { cache: 'no-cache' });
-          if (!x.ok) throw new Error(e.li + ' HTTP ' + x.status);
-          await c.put(key, x);
-        } catch (er) { fail = er; return; }
-        got += e.kb || 0; k++;
-        showLoading('🗺 지적도 내부에 저장 중... ' + Math.round(got * 100 / tot) + '% (' + mb(got) + ' / ' + mb(tot) + ')');
-      }
-    }
-    showLoading('🗺 지적도 내부에 저장 중... ' + Math.round(got * 100 / tot) + '%');
-    await Promise.all([worker(), worker(), worker(), worker()]);
-    if (fail) throw fail;
-    await c.put(CAD_BASE + 'index.json', r);                      // 리 파일이 다 들어온 뒤에 index 를 바꿈 — 중간에 끊기면 옛 판 그대로
-    var keep = new Set(ix.li.map(function (e) { return liKey(ix, e); }).concat([CAD_BASE + 'index.json']));
-    try { (await c.keys()).forEach(function (q) { if (!keep.has(q.url)) c.delete(q); }); } catch (e) {}
-    try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
-    lsS(LS_SAVED, { src: ix.src, t: Date.now(), kb: tot }); lsS(LS_ASK, null);
-    console.log('[cad] 내부 저장', ix.src, ix.li.length + '개 리', mb(tot), '새로 받음', k);
-    return ix;
-  }
   async function getIndex() {
     if (_idx) return _idx;
-    var ix = await savedIndex(), sv = lsJ(LS_SAVED);
-    if (ix) {
-      var ask = +(lsGet0(LS_ASK) || 0) || (sv.t + MONTH);
-      if (Date.now() >= ask && navigator.onLine !== false) {
-        hideLoading();
-        var days = Math.floor((Date.now() - sv.t) / 864e5);
-        if (confirm('🗺 지적도를 내부에 저장한 지 ' + days + '일 지났습니다 (' + ymd(sv.t) + ', ' + (sv.src || '') + ').\n\n새 지적도를 받을까요? (약 ' + mb(sv.kb * 0.4) + ' 데이터)\n\n'
-          + '확인 = 지금 새로 받기\n취소 = 저장된 지적도 그대로 쓰기 (한 달 뒤 다시 물어봄)')) {
-          try { ix = await downloadAll(); showToastMsg('🗺 지적도를 새로 받았습니다 (' + ix.src + ')'); }
-          catch (er) { console.warn('[cad] 새로 받기 실패', er); showToastMsg('🗺 새로 받지 못해 저장된 지적도를 씁니다'); lsS(LS_ASK, String(Date.now() + 864e5)); }   // 실패면 내일 다시
-        } else lsS(LS_ASK, String(Date.now() + MONTH));
-      }
-      return (_idx = ix);
-    }
-    // 아직 다 받아 두지 않음 → 인터넷이 되면 전체 받기, 안 되면 예전처럼(받아 둔 리 파일만)
-    if (navigator.onLine !== false) {
-      var cell = (navigator.connection && navigator.connection.type) === 'cellular';
-      if (!cell || confirm('🗺 장수군 연속지적도 전체를 휴대폰 안에 저장합니다 (약 10MB 데이터, 한 번만).\n저장하면 인터넷 없이도 지적도를 불러올 수 있습니다.\n\n지금 모바일 데이터입니다. 받을까요?\n(취소 = 이 화면에 필요한 것만 받기)')) {
-        try { return (_idx = await downloadAll()); }
-        catch (er) { console.warn('[cad] 전체 받기 실패 — 필요한 것만', er); }
-      }
-    }
     var d = new Date(), day = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-    return await cget(CAD_BASE + 'index.json?d=' + day, CAD_BASE + 'index.json', true);    // _idx 에 안 넣음 — 다음에 다시 전체 받기 시도
+    _idx = await cget(CAD_BASE + 'index.json?d=' + day, CAD_BASE + 'index.json', true);
+    return _idx;
   }
-  function lsGet0(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
-  // ⚙ 설정의 「지적도」 칸 (gdrive.js 위쪽 SETTINGS_SECTIONS 에서 부름)
-  window.cadSettingsHtml = function () {
-    var sv = lsJ(LS_SAVED), h = '<div class="sec"><b>🗺 지적도</b> <span style="color:#888;font-size:12px;">(길게 누르기 → 지적도 불러오기)</span><div style="margin-top:4px;">';
-    if (sv) {
-      var ask = +(lsGet0(LS_ASK) || 0) || (sv.t + MONTH);
-      h += '내부 저장: ' + esc(sv.src || '') + ' · ' + mb(sv.kb || 0) + ' · ' + ymd(sv.t) + ' 받음<div style="color:#888;font-size:12px;">인터넷 없이도 불러옵니다. ' + ymd(ask) + ' 이후 새로 받을지 묻습니다.</div>';
-    } else h += '<span style="color:#888;">아직 저장 안 됨 — 처음 불러올 때 전체(약 10MB)를 받아 둡니다.</span>';
-    return h + '</div><div class="btns"><button class="pri" id="gsCadDl">' + (sv ? '지금 새로 받기' : '지금 받아 두기') + '</button>' + (sv ? '<button id="gsCadDel">지우기</button>' : '') + '</div></div>';
-  };
-  window.cadSettingsBind = function (reopen) {
-    var b = document.getElementById('gsCadDl'), d = document.getElementById('gsCadDel');
-    if (b) b.onclick = async function () {
-      if (_busy) return; _busy = true;
-      try { _idx = await downloadAll(); hideLoading(); showToastMsg('🗺 지적도를 내부에 저장했습니다 (' + _idx.src + ')'); }
-      catch (er) { hideLoading(); showToastMsg('🗺 지적도를 받지 못했습니다' + (navigator.onLine === false ? ' (인터넷 연결 없음)' : '') + ' — ' + (er && er.message || er)); }
-      finally { _busy = false; reopen && reopen(); }
-    };
-    if (d) d.onclick = async function () {
-      if (!confirm('내부에 저장한 지적도를 지울까요?\n(지도에 이미 넣은 지적도는 그대로입니다. 다음에 불러올 때 다시 받습니다)')) return;
-      try { await caches.delete(CAD_CACHE); } catch (e) {}
-      lsS(LS_SAVED, null); lsS(LS_ASK, null); _idx = null;
-      showToastMsg('🗺 저장한 지적도를 지웠습니다'); reopen && reopen();
-    };
-  };
   function rings(p) {           // 리 파일 한 필지 → 링 [[위,경]…] (정수)
     var out = [];
     for (var k = 3; k < p.length; k++) {
@@ -3474,7 +3385,7 @@
       for (var i = 0; i < cand.length; i++) {
         var e = cand[i];
         showLoading('🗺 지적도 받는 중... ' + (e.ri || e.li) + ' (' + e.kb + 'KB)' + (cand.length > 1 ? ' ' + (i + 1) + '/' + cand.length : ''));
-        var key = liKey(ix, e);
+        var key = CAD_BASE + e.li + '.json?v=' + encodeURIComponent(ix.src || '');
         var d = await cget(key, key), n0 = ps.length;
         d.p.forEach(function (p) {
           var rs = rings(p), s = Infinity, w = Infinity, n = -Infinity, ea = -Infinity;

@@ -16,27 +16,26 @@
       navigator.serviceWorker.register('./sw.js');
     }
   </script>
-  <!-- PC 에서 링크(엑셀 '사진 링크 엑셀' ?pt= ?gd= ?lp=)로 열리면 PC 지도 /map/map?pc 로 넘긴다 (2026-11-01 사용자 요청).
-       PC 지도(map_kmz mapcommon.js '링크로 열기')가 이미 열린 지도 탭에 넘기고 새 탭을 닫는다. 휴대폰은 그대로.
-       아래 뒤로가기 버퍼(pushState)보다 먼저 — replace 라 새 탭의 기록이 1칸으로 남아야 그쪽에서 탭을 닫을 수 있다 -->
+  <!-- PC 에서 링크(엑셀 ?pt= ?gd=)로 열린 새 탭 → 이미 열린 지도 탭에 넘기고 닫기 (2026-11-01, gdrive.js '링크로 열기').
+       아래 뒤로가기 버퍼(pushState)보다 먼저여야 한다 — 기록이 1칸일 때만 브라우저가 스크립트로 탭을 닫게 해 준다 -->
   <script>
   (function () {
     try {
-      if (!/[?&](pt|gd|lp)=/.test(location.search)) return;
-      if (!(window.matchMedia && matchMedia('(pointer:fine)').matches)) return;
-      window._toPc = true;
-      location.replace('https://junty75.github.io/map/map?pc&' + location.search.slice(1));
+      if (!/[?&](pt|gd)=/.test(location.search) || history.length > 1) return;
+      if (!(window.matchMedia && matchMedia('(pointer:fine)').matches)) return;   // 휴대폰은 그대로
+      var p = location.pathname.replace(/index\.html?$/i, '');
+      if (Date.now() - (+localStorage.getItem('jty_alive' + p) || 0) > 90000) return;   // 살아 있는 지도 탭 없음
+      localStorage.setItem('jty_link' + p, JSON.stringify({ q: location.search, t: Date.now() }));
+      window.close();
     } catch (e) {}
   })();
   </script>
   <!-- 뒤로가기로 앱이 종료되지 않도록 Kakao 로딩보다 먼저 버퍼 설치 -->
   <!-- addEventListener 사용: window.onpopstate=null 로 덮어쓰는 외부 라이브러리에 영향 안 받음 -->
   <script>
-  if (!window._toPc) {   // PC 지도로 넘길 땐 기록을 늘리지 않는다(위 스크립트)
   history.replaceState({k:0},'','');
   history.pushState({k:1},'','');
   history.pushState({k:2},'','');
-  }
   function _earlyBackHandler(){ history.forward(); }
   window.addEventListener('popstate', _earlyBackHandler);
   </script>

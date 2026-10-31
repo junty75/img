@@ -36,6 +36,13 @@
     if (p.access_token) {
       lsSet(LS_TOK, JSON.stringify({ t: p.access_token, s: p.scope || '', exp: Date.now() + (parseInt(p.expires_in, 10) || 3600) * 1000 - 60000 }));
       _returned = true;
+      // PC 지도(/map/…, mapcommon.js '링크로 열기')가 작은 창으로 연 로그인이면 토큰만 저장하고 창을 닫는다(2026-11-01) — PC 지도가 storage 이벤트로 이어 받음
+      var pp = lsJson(LS_PEND);
+      if (pp && pp.popup) {
+        lsDel(LS_PEND); _returned = false;
+        window.close();
+        setTimeout(function () { try { toast('구글 로그인 완료 — 이 창은 닫아도 됩니다.', 10000); } catch (e) {} }, 1500);
+      }
     } else if (p.error) {
       lsDel(LS_PEND);
       setTimeout(function () { alert('구글 로그인이 취소됐거나 실패했습니다.\n(' + p.error + ')'); }, 500);

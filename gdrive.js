@@ -1536,12 +1536,17 @@
       moveToSearchResult({ lat: o.pt[0], lng: o.pt[1] });  // 두 판 모두 있는 검색 핀 함수(이동·확대 포함)
     } catch (e) { gotoLL(o.pt[0], o.pt[1], isVw() ? 17 : 3); }
   }
+  function linkGo(o) {                                     // 드라이브 사진 링크 = 핀 없이 그 자리로만 (사진 마커가 핀에 가리지 않게)
+    if (!o.pt) return;
+    var z = isVw() ? Math.max(17, Math.round(vmap.getView().getZoom() || 0)) : Math.min(3, map.getLevel());
+    gotoLL(o.pt[0], o.pt[1], z);
+  }
   async function openLink(o) {
-    linkPin(o);
-    if (!o.gd) return;
+    if (!o.gd) { linkPin(o); return; }
+    linkGo(o);
     var have = false;
     try { have = (markers || []).some(function (m) { return m && m.driveId === o.gd; }); } catch (e) {}
-    if (have) { toast('이 사진은 이미 지도에 있습니다.', 2500); return; }
+    if (have) { toast('이 사진은 이미 지도에 있습니다. 마커를 누르면 사진이 보입니다.', 3000); return; }
     if (!clientId()) { showCidForm(); return; }
     var tok = getToken();
     if (!tok) { login({ gdlink: o }); return; }
@@ -1556,7 +1561,7 @@
       file._fromDrive = true; file._gdId = o.gd;
       endJob(); hideLoading();
       await feedFiles([file]);
-      linkPin(o);                                          // 사진 올리며 움직인 화면을 링크 자리로
+      linkGo(o);                                           // 사진 올리며 움직인 화면을 링크 자리로
     } catch (e) {
       if (cancelled(job, '사진 받기를 중단했습니다.')) return;
       endJob(); hideLoading();

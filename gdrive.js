@@ -2871,7 +2871,8 @@
   }
 
   // ── 출발지 고르기 (2026-10-27) — 누른 곳을 목적지로 두고, 출발을 내 위치 / 지도에서 고른다 ──
-  // 길게 누르기 메뉴의 🧭 길찾기 → ① 여기서 출발(예전 동작) ② 내 위치에서 여기로 ③ 출발지를 지도에서 지정.
+  // 길게 누르기 메뉴의 🧭 길찾기 → ① 내 위치(에서 여기로) ② 출발지를 지도에서 지정.
+  // (2026-10-31 '여기서 출발' 은 사용자 요청으로 뺐다 — 내 위치와 겹친다고 봄)
   function myLL() {       // 지금 잡힌 내 위치 [lat,lng] 또는 null (두 판 공통)
     try {
       if (isVw()) {
@@ -2917,8 +2918,7 @@
   function openRouteStartMenu(lat, lng, cx, cy) {
     var d = [lat, lng];
     pressMenu(cx, cy, '🧭 길찾기 — 어디서 출발할까요?', [
-      ['🚩 여기서 출발', function () { startMeasure('route', lat, lng); }],
-      ['📍 내 위치에서 여기로', function () { routeFromMyLoc(d); }],
+      ['📍 내 위치', function () { routeFromMyLoc(d); }],
       ['🗺 출발지를 지도에서 지정', function () { routeAwaitStart(d); }]
     ]);
   }

@@ -1507,13 +1507,14 @@
   //  ?pt=위도,경도&n=이름 → 그 자리에 검색 핀 + 이동 (핀은 저장 대상 아님)
   //  ?gd=드라이브파일ID   → 그 사진을 드라이브에서 받아 지도에 올림(로그인 필요, 이미 지도에 있으면 받지 않음). pt 가 같이 있으면 먼저 그 자리로
   //  주소는 처리 후 지운다(다시 열 때 되풀이 안 함). 설치된 앱이 링크를 가로채도 주소에 다 들어 있어 그대로 된다(런처 4절 문제와 다름)
-  function linkParams() {
-    var q = new URLSearchParams(location.search), o = {}, m;
+  function linkParams(search) {                            // search 를 주면 그 문자열만 읽음(다른 탭이 넘긴 것), 없으면 내 주소 읽고 지움
+    var own = search == null, q = new URLSearchParams(own ? location.search : search), o = {}, m;
     if ((m = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(q.get('pt') || ''))) o.pt = [+m[1], +m[2]];
     if (o.pt && (Math.abs(o.pt[0]) > 90 || Math.abs(o.pt[1]) > 180)) delete o.pt;
     if (/^[\w-]{10,}$/.test(q.get('gd') || '')) o.gd = q.get('gd');
     if (q.get('n')) o.n = q.get('n').slice(0, 100);
     if (!o.pt && !o.gd) return null;
+    if (!own) return o;
     ['pt', 'gd', 'n'].forEach(function (k) { q.delete(k); });
     var rest = q.toString();
     try { history.replaceState(history.state, '', location.pathname + (rest ? '?' + rest : '')); } catch (e) {}
@@ -1571,6 +1572,25 @@
   }
   var _link = linkParams();
   if (_link) linkWhenReady(_link);
+  // PC: 엑셀 링크마다 새 탭이 열리던 것(2026-11-01) — 새 탭은 index 머리의 작은 스크립트가 'jty_link<경로>' 에 값을 넘기고 닫힌다.
+  //  여기(이미 열린 탭)는 'jty_alive<경로>' 에 살아 있음을 적어 두고(숨은 탭은 크롬이 타이머를 1분에 한 번으로 늦춰 90초 기준), 넘어온 값을 받아 연다.
+  (function () {
+    if (!(window.matchMedia && matchMedia('(pointer:fine)').matches)) return;   // 휴대폰은 안 함
+    var p = location.pathname.replace(/index\.html?$/i, ''), KA = 'jty_alive' + p, KL = 'jty_link' + p;
+    function beat() { lsSet(KA, String(Date.now())); }
+    beat(); setInterval(beat, 20000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) beat(); });
+    window.addEventListener('pagehide', function () { lsDel(KA); });
+    window.addEventListener('storage', function (e) {
+      if (e.key !== KL || !e.newValue) return;
+      var v; try { v = JSON.parse(e.newValue); } catch (er) { return; }
+      if (!v || Date.now() - v.t > 15000) return;
+      var o = linkParams(v.q);
+      if (!o) return;
+      try { window.focus(); } catch (er) {}
+      linkWhenReady(o);
+    });
+  })();
 
   // ══════════════════════════════════════════════════
   //  ⚙ 설정 버튼 + 지도 파일 가져오기 (2026-10-22, 2026-10-24 바꿈)

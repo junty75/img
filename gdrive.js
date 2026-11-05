@@ -351,7 +351,7 @@
   function updBtn() {
     var fs = getFolders();
     btn.classList.toggle('gd-folder', fs.length > 0);
-    btn.title = '구글 드라이브에서 지금 화면 안에서 찍은 사진을 찾아 지도에 올리기\n검색 폴더: '
+    btn.title = '구글 드라이브 사진을 지도에 올리기 (지금 화면 안 / 폴더 전체 고르기)\n검색 폴더: '
       + folderLabel(fs) + '\n(길게 누르면 폴더·파일·업로드 설정)';
   }
   // 폴더 id → 그 폴더와 모든 하위 폴더 id 집합
@@ -724,28 +724,60 @@
         files = files.filter(function (f) { return set[f[6]]; });
         where = '\n(검색 폴더: ' + folderLabel(ok) + ' + 하위 폴더)' + (gone.length ? '\n(못 찾은 폴더: ' + folderLabel(gone) + ')' : '');
       }
-      var hit = files.filter(function (f) { return f[2] >= b.s && f[2] <= b.n && f[3] >= b.w && f[3] <= b.e; });
       var onMap = onMapTest();
-      var list = hit.filter(function (f) { return !onMap(f); });
-      if (!hit.length) {
+      var isNew = function (f) { return !onMap(f); };
+      var hit = files.filter(function (f) { return f[2] >= b.s && f[2] <= b.n && f[3] >= b.w && f[3] <= b.e; });
+      var listAll = files.filter(isNew);
+      if (!files.length) {
         done();
-        alert('이 화면 안에서 찍힌 드라이브 사진이 없습니다.' + where + '\n(위치 있는 사진 ' + files.length + '장 중)\n\n'
-          + '지도를 넓혀 보거나, 최근에 올린 사진이면 드라이브 버튼을 길게 눌러 "목록 새로 받기" 하세요.');
+        alert('이 폴더에 위치 있는 드라이브 사진이 없습니다.' + where + '\n\n'
+          + '최근에 올린 사진이면 드라이브 버튼을 길게 눌러 "목록 새로 받기" 하세요.');
         return;
       }
-      if (!list.length) { done(); alert('이 화면의 드라이브 사진 ' + hit.length + '장은 이미 지도에 올렸습니다.' + where); return; }
-      if (list.length > 30) {
-        hideLoading();
-        if (!confirm('이 화면 안에 드라이브 사진 ' + list.length + '장이 있습니다.' + where + '\n모두 내려받아 지도에 올릴까요? (데이터를 많이 쓸 수 있음)\n\n'
-          + '취소하고 지도를 확대해 영역을 좁힐 수도 있습니다.')) { done(); return; }
-      }
-      return download(list, tok, job, b);
+      if (!listAll.length) { done(); alert('이 폴더의 드라이브 사진 ' + files.length + '장은 모두 이미 지도에 올렸습니다.' + where); return; }
+      done();
+      showScopeChoice(hit, hit.filter(isNew), files, listAll, where, tok, b);
     }).catch(function (e) {
       if (cancelled(job, '사진 불러오기를 중단했습니다.')) return;
       done();
       if (e.auth) { login({ b: b, force: !!force }); return; }
       alert('드라이브 조회 실패: ' + e.message + '\n\n클라이언트 ID·Drive API 사용 설정·테스트 사용자 등록을 확인하세요.\n(드라이브 버튼을 길게 누르면 설정)');
     });
+  }
+
+  // 어디까지 올릴지 고르기: 지금 지도 화면 안 / 폴더 전체 (2026-11-05, 사용자 요청) — 장수를 보여 주고 매번 묻는다
+  function showScopeChoice(hit, listHit, files, listAll, where, tok, b) {
+    function label(icon, title, list, whole) {
+      if (!whole) return icon + ' ' + title + ' — 사진 없음';
+      if (!list.length) return icon + ' ' + title + ' — ' + whole + '장 모두 이미 올림';
+      return icon + ' ' + title + ' — ' + list.length + '장 올리기';
+    }
+    var wide = ' style="display:block;width:100%;text-align:left;padding:13px 14px;font-size:15px;"';
+    openPanel('<b style="font-size:15px;">드라이브 사진 어디까지 올릴까요?</b>' +
+      '<div style="color:#666;font-size:12px;margin-top:4px;white-space:pre-line;">' + esc(where.replace(/^\n/, '')) + '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">' +
+        '<button class="pri" id="gdScopeView"' + wide + (listHit.length ? '' : ' disabled') + '>' + esc(label('🗺', '지금 지도 화면 안', listHit, hit.length)) + '</button>' +
+        '<button id="gdScopeAll"' + wide + '>' + esc(label('📁', '폴더 전체', listAll, files.length)) + '</button>' +
+        '<button id="gdScopeCancel"' + wide + '>취소</button>' +
+      '</div>' +
+      '<div style="color:#888;font-size:12px;margin-top:8px;">이미 지도에 있는 사진은 빼고 올립니다. 최근에 올린 사진이 없으면 드라이브 버튼을 길게 눌러 "목록 새로 받기" 하세요.</div>');
+    if (!listHit.length) $('gdScopeView').style.opacity = '.45';
+    $('gdScopeCancel').onclick = closePanel;
+    $('gdScopeView').onclick = function () { closePanel(); startDownload(listHit, '이 화면 안에', tok, b); };
+    $('gdScopeAll').onclick = function () { closePanel(); startDownload(listAll, '폴더 전체에', tok, listBounds(listAll)); };
+  }
+  function startDownload(list, whereText, tok, fit) {
+    if (_busy) return;
+    if (list.length > 30 && !confirm(whereText + ' 드라이브 사진 ' + list.length + '장이 있습니다.\n모두 내려받아 지도에 올릴까요? (데이터를 많이 쓰고 오래 걸릴 수 있음)')) return;
+    _busy = true;
+    return download(list, tok, startJob(), fit);
+  }
+  // 올린 사진이 다 보이는 범위 (사진이 한 장·한 곳이어도 너무 확대되지 않게 여유를 둔다)
+  function listBounds(list) {
+    var s = 90, n = -90, w = 180, e = -180;
+    list.forEach(function (f) { s = Math.min(s, f[2]); n = Math.max(n, f[2]); w = Math.min(w, f[3]); e = Math.max(e, f[3]); });
+    var py = Math.max(0.002, (n - s) * 0.1), px = Math.max(0.002, (e - w) * 0.1);
+    return { s: s - py, n: n + py, w: w - px, e: e + px };
   }
 
   function download(list, tok, job, b) {

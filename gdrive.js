@@ -775,14 +775,63 @@
     return { s: s - py, n: n + py, w: w - px, e: e + px };
   }
 
+  // 드라이브 사진 받기 — 데이터를 아끼려고 JPEG 는 드라이브 썸네일(긴 변 THUMB_S)을 먼저 받는다 (2026-11-05, 사용자 요청).
+  // 썸네일엔 EXIF 가 없어 위치·촬영일시·설명을 드라이브 정보로 다시 써 넣는다. 안 되면 원본(alt=media).
+  // 썸네일 서버는 Authorization 머리를 CORS 로 막으므로 머리 없이 요청한다. 2번 연달아 실패하면 이번 실행에선 안 시도.
+  var THUMB_S = 1024, THUMB_MIN = 250 * 1024;    // 이보다 작은 원본은 썸네일을 받아도 아낄 게 적어 원본으로
+  var _thumbFails = 0;
+  function newDlStat() { return { thumb: 0, orig: 0, got: 0, full: 0, why: '' }; }
+  async function fetchThumb(base, tok, job, st) {
+    var m = await (await api(base + '?fields=size,thumbnailLink,description,imageMediaMetadata(location,time)', tok, { signal: jobSignal(job) })).json();
+    var size = parseInt(m.size, 10) || 0;
+    if (size && size <= THUMB_MIN) return null;
+    try {
+      if (!m.thumbnailLink) throw new Error('썸네일 없음');
+      var url = /=s\d+[^=\/]*$/.test(m.thumbnailLink) ? m.thumbnailLink.replace(/=s\d+[^=\/]*$/, '=s' + THUMB_S) : m.thumbnailLink + '=s' + THUMB_S;
+      var r = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: jobSignal(job) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var bl = await r.blob();
+      var head = new Uint8Array(await bl.slice(0, 2).arrayBuffer());
+      if (head[0] !== 0xFF || head[1] !== 0xD8) throw new Error('JPEG 아님');     // EXIF 를 쓸 수 있는 건 JPEG 뿐
+      var pm = {}, md = m.imageMediaMetadata || {}, loc = md.location;
+      if (loc && typeof loc.latitude === 'number') { pm.lat = loc.latitude; pm.lng = loc.longitude; }
+      if (md.time) pm.taken = md.time;
+      if (m.description) pm.desc = m.description;
+      var out = await writeMetaBlob(bl, pm, 0);
+      _thumbFails = 0;
+      st.thumb++; st.got += bl.size; st.full += size || bl.size;
+      return out;
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      if (m.thumbnailLink) _thumbFails++;                 // 막 올린 사진은 링크가 잠깐 없을 수 있어 실패로 안 침
+      st.why = e.message;
+      console.warn('[thumb] 썸네일 실패 — 원본으로 받음:', e.message);
+      return null;
+    }
+  }
+  async function fetchPhoto(id, mime, tok, job, st) {
+    var base = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(id);
+    if (_thumbFails < 2 && /jpe?g/i.test(mime || '')) {
+      var th = await fetchThumb(base, tok, job, st);
+      if (th) return th;
+    }
+    var bl = await (await api(base + '?alt=media', tok, { signal: jobSignal(job) })).blob();
+    st.orig++; st.got += bl.size; st.full += bl.size;
+    return bl;
+  }
+  function dlStatToast(st) {
+    var mb = function (v) { return (v / 1048576).toFixed(1) + 'MB'; };
+    toast('받은 데이터 ' + mb(st.got) + (st.thumb ? ' (원본이면 ' + mb(st.full) + ')' : '')
+      + ' · 썸네일 ' + st.thumb + '장, 원본 ' + st.orig + '장' + (st.why ? ' · 썸네일 실패: ' + st.why : ''), 7000);
+  }
+
   function download(list, tok, job, b) {
-    var got = [], fail = 0, n = 0, idx = 0;
+    var got = [], fail = 0, n = 0, idx = 0, st = newDlStat();
     status('드라이브에서 사진 받는 중... (0/' + list.length + ')');
     function worker() {
       if (idx >= list.length || (job && job.cancelled)) return Promise.resolve();
       var f = list[idx++];
-      return api('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(f[0]) + '?alt=media', tok, { signal: jobSignal(job) })
-        .then(function (r) { return r.blob(); })
+      return fetchPhoto(f[0], f[5], tok, job, st)
         .then(function (bl) {
                 var file = new File([bl], f[1], { type: f[5] || bl.type || 'image/jpeg' });
                 file._fromDrive = true;                       // 드라이브에서 온 사진은 다시 업로드하지 않음
@@ -801,6 +850,7 @@
         if (b) fitBounds(b);                              // 묶음별로 움직인 지도를 검색했던 화면으로
         if (cancelled(job, '사진 불러오기를 중단했습니다. (' + nOk + '/' + got.length + '장 올림)')) return;
         done();
+        dlStatToast(st);
         if (fail) alert(got.length + '장을 올렸고, ' + fail + '장은 받지 못했습니다.');
       });
     }).catch(function (e) { if (cancelled(job)) return; done(); alert('올리기 실패: ' + e.message); });
@@ -1583,7 +1633,7 @@
     try {
       var base = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(o.gd);
       var meta = await (await api(base + '?fields=name,mimeType', tok, { signal: jobSignal(job) })).json();
-      var bl = await (await api(base + '?alt=media', tok, { signal: jobSignal(job) })).blob();
+      var bl = await fetchPhoto(o.gd, meta.mimeType, tok, job, newDlStat());
       if (cancelled(job, '사진 받기를 중단했습니다.')) return;
       var file = new File([bl], meta.name || o.n || 'photo.jpg', { type: meta.mimeType || bl.type || 'image/jpeg' });
       file._fromDrive = true; file._gdId = o.gd;

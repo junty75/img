@@ -324,8 +324,8 @@
       flex-direction: column; padding: 16px;
     }
     #photoViewer.show { display: flex; }
-    #photoViewer img { max-width: 100%; max-height: 85vh; border-radius: 8px; object-fit: contain; }
-    #photoViewer .pv-name { color: rgba(255,255,255,0.8); font-size: 13px; margin-top: 10px; }
+    #photoViewer img { max-width: 100%; max-height: 85vh; min-height: 0; border-radius: 8px; object-fit: contain; }
+    #photoViewer .pv-name { color: rgba(255,255,255,0.8); font-size: 13px; margin-top: 10px; text-align: center; flex-shrink: 0; }
 
     /* 마커 추가 모달 */
     #markerModal {
@@ -486,6 +486,7 @@
   <img id="viewerImg" src="" alt="">
   <div class="pv-name" id="viewerName"></div>
   <div class="pv-name" id="viewerTaken" style="margin-top:4px;"></div>
+  <div class="pv-name" id="viewerAddr" style="margin-top:4px;"></div>
 </div>
 
 <!-- iOS 홈화면 추가 안내 -->
@@ -2185,12 +2186,36 @@ async function _autoSaveNow() {
 const photoViewer = document.getElementById('photoViewer');
 // 사진 자체를 눌러도 닫힌다 (예전엔 사진 바깥/아래만 닫혀서 헷갈렸음)
 photoViewer.addEventListener('click', () => photoViewer.classList.remove('show'));
-function openViewer(src, name) {
+// 사진 크게 보기의 주소 — 마커 지금 자리의 지번 주소 (찾은 곳은 기억해 다시 안 묻는다, 못 찾거나 오프라인이면 빈칸)
+const _viewerAddrs = new Map();
+function showViewerAddr(ll) {
+  const el = document.getElementById('viewerAddr');
+  el.textContent = '';
+  el._key = '';
+  if (!ll || ll.lat == null || ll.lng == null) return;
+  const key = ll.lat.toFixed(5) + ',' + ll.lng.toFixed(5);
+  el._key = key;
+  if (_viewerAddrs.has(key)) { el.textContent = _viewerAddrs.get(key); return; }
+  lookupViewerAddr(ll.lat, ll.lng).then(t => {
+    if (t) _viewerAddrs.set(key, t);
+    if (el._key === key) el.textContent = t;   // 그새 다른 사진을 열었으면 안 넣음
+  });
+}
+function lookupViewerAddr(lat, lng) {
+  return new Promise(res => {
+    if (typeof geocoder === 'undefined' || !geocoder) return res('');
+    geocoder.coord2Address(lng, lat, (r, s) => {
+      res(s === kakao.maps.services.Status.OK && r[0] ? (r[0].address?.address_name || r[0].road_address?.address_name || '') : '');
+    });
+  });
+}
+function openViewer(src, name, ll) {
   document.getElementById('viewerImg').src = src;
   document.getElementById('viewerName').textContent = name;
   // 파일 이름 아래 촬영일시 (EXIF 2026:01:02 03:04:05 → 2026-01-02 03:04, 없으면 빈칸)
-  const taken = readPhotoMeta(src).taken;
+  const meta = readPhotoMeta(src), taken = meta.taken;
   document.getElementById('viewerTaken').textContent = taken ? '촬영일시 ' + String(taken).replace(/^(\d{4}):(\d\d):(\d\d)/, '$1-$2-$3').slice(0, 16) : '';
+  showViewerAddr(ll || meta);
   photoViewer.classList.add('show');
 }
 
@@ -3457,7 +3482,7 @@ function addPhotoMarker(latlng, imgSrc, name) {
   });
   // 길게 누르기 → 수정/삭제 모달
   const entry = { marker, iw, name, imgSrc, desc: '', taken: '' };
-  div.querySelector('img').onclick = () => openViewer(entry.imgSrc, entry.name);
+  div.querySelector('img').onclick = () => { const p = entry.marker.getPosition(); openViewer(entry.imgSrc, entry.name, { lat: p.getLat(), lng: p.getLng() }); };
   attachLongPress(marker, () => {
     iw.close();
     openMarkerEditModal(entry);

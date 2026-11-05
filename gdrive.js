@@ -8,7 +8,7 @@
   var SCOPE = 'https://www.googleapis.com/auth/drive';
   var LS_CID = 'gdrive_client_id', LS_TOK = 'gdrive_token', LS_PEND = 'gdrive_pending',
       LS_STATE = 'gdrive_state', LS_CACHE = 'gdrive_list_cache2', LS_FOLDER = 'gdrive_folder',
-      LS_UPF = 'gdrive_up_folder', LS_UPNET = 'gdrive_up_net', LS_UPQ = 'gdrive_up_q', LS_CAMSAVE = 'gdrive_cam_save', LS_METAP = 'gdrive_meta_pend';
+      LS_UPF = 'gdrive_up_folder', LS_UPNET = 'gdrive_up_net', LS_UPQ = 'gdrive_up_q', LS_CAMSAVE = 'gdrive_cam_save', LS_METAP = 'gdrive_meta_pend', LS_SCOPE = 'gdrive_scope';
   // 업로드 사진 용량 (map.html 의 사진용량 선택과 같은 단계). 0 = 원본. 고른 값은 LS_UPQ 에 기억
   var UPQ_OPTS = [[100, '100KB↓'], [200, '200KB↓'], [300, '300KB↓'], [500, '500KB↓'], [800, '800KB↓'], [1024, '1MB↓'], [0, '원본']];
   try { localStorage.removeItem('gdrive_list_cache'); } catch (e) {}   // 폴더 정보 없는 옛 캐시 (2026-10-03)
@@ -343,6 +343,8 @@
   function setFolders(a) { if (a && a.length) lsSet(LS_FOLDER, JSON.stringify(a)); else lsDel(LS_FOLDER); updBtn(); }
   // 폴더를 안 고르면 아무 폴더도 찾지 않는다(예전엔 전체 드라이브) — 짧게 누르면 폴더 고르기 창 (2026-10-30)
   function folderLabel(a) { return a.length ? a.map(function (f) { return f.path || f.name; }).join(', ') : '없음 (폴더를 골라 주세요)'; }
+  // 드라이브 버튼을 눌렀을 때 올릴 범위 — 설정에서 고름, 기본은 지금 지도 화면 안 (2026-11-05)
+  function getScope() { return lsGet(LS_SCOPE) === 'all' ? 'all' : 'view'; }
   function getUpFolder() { return lsJson(LS_UPF); }
   function getUpNet() { return lsGet(LS_UPNET) || 'off'; }      // off | wifi | any
   function uploadOn() { return getUpNet() !== 'off' && !!getUpFolder(); }
@@ -351,7 +353,7 @@
   function updBtn() {
     var fs = getFolders();
     btn.classList.toggle('gd-folder', fs.length > 0);
-    btn.title = '구글 드라이브 사진을 지도에 올리기 (지금 화면 안 / 폴더 전체 고르기)\n검색 폴더: '
+    btn.title = '구글 드라이브 사진을 지도에 올리기 (' + (getScope() === 'all' ? '폴더 전체' : '지금 지도 화면 안') + ')\n검색 폴더: '
       + folderLabel(fs) + '\n(길게 누르면 폴더·파일·업로드 설정)';
   }
   // 폴더 id → 그 폴더와 모든 하위 폴더 id 집합
@@ -371,7 +373,7 @@
   // ── 설정 (드라이브 버튼 길게 누르기) ──
   function showSetup() {
     if (!clientId()) { showCidForm(); return; }
-    var fs = getFolders(), uf = getUpFolder(), net = getUpNet();
+    var fs = getFolders(), uf = getUpFolder(), net = getUpNet(), scope = getScope();
     countQueue().then(function (q) {
       openPanel(
         '<b style="font-size:15px;">구글 드라이브 설정</b>' +
@@ -382,6 +384,12 @@
           }).join('') : '<div class="path">📁 없음 — 폴더를 골라야 사진을 찾습니다</div>') +
         '<div class="btns"><button class="pri" id="gdPick">' + (fs.length ? '폴더 추가 · 파일 열기' : '폴더 고르기 · 파일 열기') + '</button></div>' +
         '<div style="color:#888;font-size:12px;margin-top:4px;">폴더 화면에서 KMZ·GPX·BGPX·HTM 파일을 누르면 지도에 불러옵니다. 왼쪽 칸을 체크하면 여러 개를 한 번에 엽니다. 찾기 폴더는 여러 개 추가할 수 있습니다.</div>' +
+        '<div class="sec"><b>드라이브 버튼을 누르면 올릴 사진</b>' +
+          '<div class="net" style="margin-top:8px;">' +
+            '<label><input type="radio" name="gdscope" value="view"' + (scope === 'view' ? ' checked' : '') + '>지금 지도 화면 안</label>' +
+            '<label><input type="radio" name="gdscope" value="all"' + (scope === 'all' ? ' checked' : '') + '>폴더 전체</label></div>' +
+          '<div style="color:#888;font-size:12px;margin-top:4px;">이미 지도에 있는 사진은 빼고 올립니다.</div>' +
+        '</div>' +
         '<div class="sec"><b>자동 업로드</b> (📷 촬영 사진 + 📂 로 넣은 휴대폰 사진)' +
           '<div class="path" style="margin-top:4px;">⬆ ' + esc(uf ? uf.path || uf.name : '업로드 폴더 없음') + '</div>' +
           '<div class="btns"><button id="gdUpPick">업로드 폴더 고르기</button></div>' +
@@ -411,6 +419,9 @@
       $('gdPick').onclick = function () { openPicker('browse', null); };
       Array.prototype.forEach.call($('gdBox').querySelectorAll('button[data-rmf]'), function (b2) {
         b2.onclick = function () { var a = getFolders(); a.splice(+b2.getAttribute('data-rmf'), 1); setFolders(a); showSetup(); };
+      });
+      Array.prototype.forEach.call(document.querySelectorAll('input[name=gdscope]'), function (r) {
+        r.onchange = function () { lsSet(LS_SCOPE, r.value); updBtn(); };
       });
       $('gdUpPick').onclick = function () { openPicker('upload', uf && uf.id !== 'root' ? uf.id : null); };
       Array.prototype.forEach.call(document.querySelectorAll('input[name=gdnet]'), function (r) {
@@ -724,19 +735,24 @@
         files = files.filter(function (f) { return set[f[6]]; });
         where = '\n(검색 폴더: ' + folderLabel(ok) + ' + 하위 폴더)' + (gone.length ? '\n(못 찾은 폴더: ' + folderLabel(gone) + ')' : '');
       }
-      var onMap = onMapTest();
-      var isNew = function (f) { return !onMap(f); };
-      var hit = files.filter(function (f) { return f[2] >= b.s && f[2] <= b.n && f[3] >= b.w && f[3] <= b.e; });
-      var listAll = files.filter(isNew);
       if (!files.length) {
         done();
         alert('이 폴더에 위치 있는 드라이브 사진이 없습니다.' + where + '\n\n'
           + '최근에 올린 사진이면 드라이브 버튼을 길게 눌러 "목록 새로 받기" 하세요.');
         return;
       }
-      if (!listAll.length) { done(); alert('이 폴더의 드라이브 사진 ' + files.length + '장은 모두 이미 지도에 올렸습니다.' + where); return; }
+      var all = getScope() === 'all', onMap = onMapTest();
+      var pool = all ? files : files.filter(function (f) { return f[2] >= b.s && f[2] <= b.n && f[3] >= b.w && f[3] <= b.e; });
+      var list = pool.filter(function (f) { return !onMap(f); });
+      if (!pool.length) {
+        done();
+        alert('이 화면 안에서 찍힌 드라이브 사진이 없습니다.' + where + '\n(위치 있는 사진 ' + files.length + '장 중)\n\n'
+          + '지도를 넓혀 보거나, 드라이브 버튼을 길게 눌러 "폴더 전체" 로 바꾸세요. 최근에 올린 사진이면 "목록 새로 받기" 하세요.');
+        return;
+      }
+      if (!list.length) { done(); alert((all ? '이 폴더' : '이 화면') + '의 드라이브 사진 ' + pool.length + '장은 모두 이미 지도에 올렸습니다.' + where); return; }
       done();
-      showScopeChoice(hit, hit.filter(isNew), files, listAll, where, tok, b);
+      return startDownload(list, all ? '폴더 전체에' : '이 화면 안에', tok, all ? listBounds(list) : b);
     }).catch(function (e) {
       if (cancelled(job, '사진 불러오기를 중단했습니다.')) return;
       done();
@@ -745,27 +761,6 @@
     });
   }
 
-  // 어디까지 올릴지 고르기: 지금 지도 화면 안 / 폴더 전체 (2026-11-05, 사용자 요청) — 장수를 보여 주고 매번 묻는다
-  function showScopeChoice(hit, listHit, files, listAll, where, tok, b) {
-    function label(icon, title, list, whole) {
-      if (!whole) return icon + ' ' + title + ' — 사진 없음';
-      if (!list.length) return icon + ' ' + title + ' — ' + whole + '장 모두 이미 올림';
-      return icon + ' ' + title + ' — ' + list.length + '장 올리기';
-    }
-    var wide = ' style="display:block;width:100%;text-align:left;padding:13px 14px;font-size:15px;"';
-    openPanel('<b style="font-size:15px;">드라이브 사진 어디까지 올릴까요?</b>' +
-      '<div style="color:#666;font-size:12px;margin-top:4px;white-space:pre-line;">' + esc(where.replace(/^\n/, '')) + '</div>' +
-      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">' +
-        '<button class="pri" id="gdScopeView"' + wide + (listHit.length ? '' : ' disabled') + '>' + esc(label('🗺', '지금 지도 화면 안', listHit, hit.length)) + '</button>' +
-        '<button id="gdScopeAll"' + wide + '>' + esc(label('📁', '폴더 전체', listAll, files.length)) + '</button>' +
-        '<button id="gdScopeCancel"' + wide + '>취소</button>' +
-      '</div>' +
-      '<div style="color:#888;font-size:12px;margin-top:8px;">이미 지도에 있는 사진은 빼고 올립니다. 최근에 올린 사진이 없으면 드라이브 버튼을 길게 눌러 "목록 새로 받기" 하세요.</div>');
-    if (!listHit.length) $('gdScopeView').style.opacity = '.45';
-    $('gdScopeCancel').onclick = closePanel;
-    $('gdScopeView').onclick = function () { closePanel(); startDownload(listHit, '이 화면 안에', tok, b); };
-    $('gdScopeAll').onclick = function () { closePanel(); startDownload(listAll, '폴더 전체에', tok, listBounds(listAll)); };
-  }
   function startDownload(list, whereText, tok, fit) {
     if (_busy) return;
     if (list.length > 30 && !confirm(whereText + ' 드라이브 사진 ' + list.length + '장이 있습니다.\n모두 내려받아 지도에 올릴까요? (데이터를 많이 쓰고 오래 걸릴 수 있음)')) return;

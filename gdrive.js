@@ -2546,7 +2546,11 @@
   //  · 안드로이드 사진 선택창은 위치를 지우므로(7절) 사진 선택창은 안 쓴다. 폴더 고르기가 없으면 accept 없는 파일 고르기(파일 앱)로 대신.
   //  · 사진마다 앞 128KB 만 exifr 로 읽어 위치·촬영일시 → 결과는 이름|크기|수정시각 키로 localStorage 에 기억(다음엔 안 읽음).
   //  · 범위는 드라이브 버튼과 같은 설정(gdrive_scope). 이미 지도에 있는 사진(이름·1km)은 뺌. 드라이브 자동 업로드는 안 함(_noUp).
-  var LS_PHEX = 'phone_exif_cache', PH_DB = 'jty-photo', PH_HEAD = 131072;
+  // 기억 값: [위도, 경도, 촬영] = 위치 있음 / ['n', 기종] = EXIF 는 있는데 위치만 없음(안드로이드가 지움?) / ['x'] = EXIF 없음 / ['e'] = 읽기 실패
+  // 2026-11-13 오후: 휴대폰에서 '위치 못 읽음' 보고 → 사유를 나눠 세려고 기억 이름을 바꿈(옛 기억은 사유 없이 [] 라 버림)
+  var LS_PHEX = 'phone_exif_cache2', PH_DB = 'jty-photo', PH_HEAD = 131072;
+  lsDel('phone_exif_cache');
+  function phHasLoc(v) { return v && v.length >= 2 && typeof v[0] === 'number'; }
   var _phDir = null, _phDirOk = false;
   function phDb() {
     return new Promise(function (res, rej) {
@@ -2589,28 +2593,47 @@
       if (ent.kind === 'directory') {
         if (depth < 6 && !/^(thumbnails|cache)$/i.test(ent.name)) { st.dirs++; await phWalk(ent, out, job, depth + 1, pre + ent.name + '/', st); }
       } else if (/\.(jpe?g|png)$/i.test(ent.name)) out.push({ h: ent, name: ent.name, path: pre + ent.name });
+      else if (/\.(heic|heif|dng|webp)$/i.test(ent.name)) st.other++;          // 위치를 못 읽는 형식 — 진단에 개수만
       if (Date.now() - st.shown > 400) { st.shown = Date.now(); status('휴대폰 폴더 훑는 중... 사진 ' + out.length + '장 (폴더 ' + st.dirs + '개)'); }
     }
   }
-  // 위치 읽기: [위도, 경도, 촬영일시 문자열] 또는 [] (위치 없음)
+  // 위치 읽기: [위도, 경도, 촬영일시 문자열] 또는 사유 코드(위 LS_PHEX 설명). 실제 삼성 사진(약 5MB)으로 앞 128KB 만 읽어도 전체와 같음 확인.
   async function phReadLoc(file) {
     if (!window.exifr) throw new Error('exifr 미로드');
     var blob = /\.png$/i.test(file.name) ? file : file.slice(0, PH_HEAD);   // PNG 는 위치가 끝에 있을 수 있음
     var ex = null;
-    try { ex = await exifr.parse(blob, { tiff: true, exif: true, gps: true, xmp: false, icc: false, iptc: false, jfif: false, ihdr: false }); } catch (e) {}
-    if (!ex || typeof ex.latitude !== 'number' || !isFinite(ex.latitude) || (!ex.latitude && !ex.longitude)) return [];
+    try { ex = await exifr.parse(blob, { tiff: true, exif: true, gps: true, xmp: false, icc: false, iptc: false, jfif: false, ihdr: false }); }
+    catch (e) { return ['e']; }
+    if (!ex || !Object.keys(ex).length) return ['x'];
+    if (typeof ex.latitude !== 'number' || !isFinite(ex.latitude) || (!ex.latitude && !ex.longitude)) return ['n', String(ex.Model || ex.Make || '')];
     var t = ex.DateTimeOriginal || ex.CreateDate || ex.ModifyDate;
     return [ex.latitude, ex.longitude, t instanceof Date ? t.toISOString() : String(t || '')];
+  }
+  // 위치 없는 사진 사유 세기 → 알림 문구
+  function phDiagText(r, items, src, other) {
+    var c = { n: 0, x: 0, e: 0 }, ex = '';
+    r.bad.forEach(function (o) { c[o.v[0]] = (c[o.v[0]] || 0) + 1; if (o.v[0] === 'n' && !ex) ex = o.name + (o.v[1] ? ' (' + o.v[1] + ')' : ''); });
+    var s = '읽은 방법: ' + src + '\n사진 ' + items.length + '장 — 위치 있음 ' + r.list.length + '장' +
+      (c.n ? '\n· EXIF 는 있는데 위치만 없음 ' + c.n + '장' + (ex ? '\n   예) ' + ex : '') : '') +
+      (c.x ? '\n· EXIF 자체가 없음 ' + c.x + '장 (스크린샷·메신저로 받은 사진 등)' : '') +
+      (c.e ? '\n· 읽기 실패 ' + c.e + '장' : '') +
+      (other ? '\n· HEIC 등 다른 형식이라 건너뜀 ' + other + '장' : '');
+    if (c.n && c.n >= (r.list.length + c.n) / 2)
+      s += '\n\n위치만 빠진 사진이 많습니다. 카메라 「위치 태그」가 켜져 있는데도 이렇다면 안드로이드가 이 경로로 넘겨줄 때 위치를 지운 것입니다.' +
+        '\n⚙ 설정의 「📄 파일 앱에서 골라 올리기」로도 해 보고 결과를 비교해 주세요.';
+    if (other && !items.length) s += '\n\n카메라 설정의 「고효율 사진(HEIF)」을 끄면 JPG 로 저장됩니다.';
+    return s;
   }
   // items: [{h, name, path}](폴더) 또는 [{f, name}](파일 고르기). 위치는 기억(LS_PHEX)에서 — 폴더는 '폴더이름/상대경로' 가 열쇠라
   // 기억된 사진은 파일을 열지 않는다. 처음 보는 사진만 6개씩 동시에 열어 읽고, 150장마다 기억에 저장(멈춰도 다음에 이어서).
   async function phCollect(items, job, pfx) {
-    var cache = lsJson(LS_PHEX) || {}, res = [], noLoc = 0, todo = [], t0 = Date.now();
+    var cache = lsJson(LS_PHEX) || {}, res = [], bad = [], todo = [], t0 = Date.now();
     function keyOf(it) { return it.h ? pfx + it.path : it.f.name + '|' + it.f.size + '|' + (it.f.lastModified || 0); }
+    function put(it, v) { if (phHasLoc(v)) res.push({ it: it, lat: v[0], lng: v[1], t: v[2] }); else bad.push({ name: it.name, v: v && v.length ? v : ['x'] }); }
     items.forEach(function (it) {
       it.key = keyOf(it);
       var v = cache[it.key];
-      if (v) { if (v.length) res.push({ it: it, lat: v[0], lng: v[1], t: v[2] }); else noLoc++; }
+      if (v && v[0] !== 'e') put(it, v);                  // 읽기 실패는 다시 읽어 봄
       else todo.push(it);
     });
     if (pfx) {                                             // 이 폴더에서 없어진 사진 몫은 기억에서 지움(다른 폴더 몫은 그대로)
@@ -2623,9 +2646,9 @@
       while (idx < todo.length && !job.cancelled && !fatal) {
         var it = todo[idx++], v;
         try { var f = it.f || (it.f = await it.h.getFile()); v = await phReadLoc(f); }
-        catch (e) { if (e.message === 'exifr 미로드') { fatal = e; return; } v = []; }
+        catch (e) { if (e.message === 'exifr 미로드') { fatal = e; return; } v = ['e']; }
         cache[it.key] = v;
-        if (v.length) res.push({ it: it, lat: v[0], lng: v[1], t: v[2] }); else noLoc++;
+        put(it, v);
         if (it.h) it.f = null;                             // 열어 둔 파일은 놓아 줌(올릴 사진만 나중에 다시 엶)
         n++;
         if (n - lastSave >= 150) { lastSave = n; save(); }
@@ -2644,24 +2667,25 @@
     save();
     if (fatal) throw fatal;
     if (job.cancelled) return null;
-    return { list: res, noLoc: noLoc, readN: n, readMs: Date.now() - t0 };
+    return { list: res, bad: bad, readN: n, readMs: Date.now() - t0 };
   }
-  async function phoneScan(pickNew) {
+  // forceFiles = 폴더 고르기 대신 파일 고르기(파일 앱) — 위치가 지워지는 경로인지 비교용
+  async function phoneScan(pickNew, forceFiles) {
     if (_busy) return;
     var b = getBounds();
     if (!b) return;
-    var all = getScope() === 'all', items = [], pfx = '', walkMs = 0;
+    var all = getScope() === 'all', items = [], pfx = '', walkMs = 0, other = 0, src = '';
     closePanel();
     var job = null;
     try {
-      if (phSupported()) {
+      if (phSupported() && !forceFiles) {
         var dir = pickNew ? await phPickDir() : await phGetDir();
         _busy = true; job = startJob();
         status('휴대폰 폴더 훑는 중...');
-        var tw = Date.now();
-        await phWalk(dir, items, job, 0, '', { dirs: 0, shown: 0 });
-        walkMs = Date.now() - tw;
-        pfx = 'd:' + dir.name + '/';
+        var tw = Date.now(), wst = { dirs: 0, shown: 0, other: 0 };
+        await phWalk(dir, items, job, 0, '', wst);
+        walkMs = Date.now() - tw; other = wst.other;
+        pfx = 'd:' + dir.name + '/'; src = '폴더 「' + dir.name + '」';
         if (cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
       } else {
         var files = await new Promise(function (res) {
@@ -2671,24 +2695,26 @@
           inp.oncancel = function () { res([]); };
           inp.click();
         });
-        items = files.filter(isImage).map(function (f) { return { f: f, name: f.name }; });
-        if (!items.length) return;
+        src = '파일 고르기';
+        other = files.filter(function (f) { return /\.(heic|heif|dng|webp)$/i.test(f.name); }).length;
+        items = files.filter(function (f) { return /\.(jpe?g|png)$/i.test(f.name) || /^image\/(jpeg|png)$/.test(f.type || ''); }).map(function (f) { return { f: f, name: f.name }; });
+        if (!items.length) { if (files.length) alert('JPG·PNG 사진이 없습니다.' + (other ? '\nHEIC 등 다른 형식 ' + other + '장은 위치를 못 읽습니다.' : '')); return; }
         _busy = true; job = startJob();
       }
-      if (!items.length) { done(); alert('고른 폴더에 사진(JPG·PNG)이 없습니다.\n보통 DCIM → Camera 폴더를 고르세요.'); return; }
+      if (!items.length) { done(); alert('고른 폴더에 사진(JPG·PNG)이 없습니다.' + (other ? '\nHEIC 등 다른 형식 ' + other + '장은 위치를 못 읽습니다 — 카메라 설정의 「고효율 사진(HEIF)」을 끄면 JPG 로 저장됩니다.' : '') + '\n보통 DCIM → Camera 폴더를 고르세요.'); return; }
       var r = await phCollect(items, job, pfx);
       if (!r || cancelled(job, '휴대폰 사진 찾기를 멈췄습니다. 읽은 데까지는 기억해 두어 다음에 이어서 읽습니다.')) return;
       console.log('[phone] 훑기 ' + walkMs + 'ms · 사진 ' + items.length + ' · 새로 읽음 ' + r.readN + '장 ' + r.readMs + 'ms');
       if (!r.list.length) {
         done();
-        alert('위치(GPS)가 있는 사진이 없습니다. (사진 ' + items.length + '장)\n\n카메라 설정에서 「위치 태그」를 켰는지 확인하세요.'); return;
+        alert('위치(GPS)가 있는 사진이 없습니다.\n\n' + phDiagText(r, items, src, other)); return;
       }
       var onMap = onMapTest();
       var pool = all ? r.list : r.list.filter(function (o) { return o.lat >= b.s && o.lat <= b.n && o.lng >= b.w && o.lng <= b.e; });
       var list = pool.filter(function (o) { return !onMap(['', o.it.name, o.lat, o.lng]); });
       if (!pool.length) {
         done();
-        alert('이 화면 안에서 찍힌 휴대폰 사진이 없습니다.\n(위치 있는 사진 ' + r.list.length + '장 중)\n\n지도를 넓혀 보거나, 설정에서 "폴더 전체" 로 바꾸세요.'); return;
+        alert('이 화면 안에서 찍힌 휴대폰 사진이 없습니다.\n지도를 넓혀 보거나, 설정에서 "폴더 전체" 로 바꾸세요.\n\n' + phDiagText(r, items, src, other)); return;
       }
       if (!list.length) { done(); alert((all ? '이 폴더' : '이 화면') + '의 휴대폰 사진 ' + pool.length + '장은 모두 이미 지도에 있습니다.'); return; }
       hideLoading();
@@ -2705,7 +2731,8 @@
       if (cancelled(job, '휴대폰 사진 올리기를 멈췄습니다. (' + nOk + '/' + list.length + '장 올림)')) return;
       done();
       toast('휴대폰 사진 ' + nOk + '장을 지도에 올렸습니다.' + (pool.length > list.length ? ' (이미 있던 ' + (pool.length - list.length) + '장 뺌)' : '') +
-        '<br><span style="font-size:12px;">폴더 훑기 ' + (walkMs / 1000).toFixed(1) + '초 · 사진 ' + items.length + '장' + (r.readN ? ' · 새로 읽음 ' + r.readN + '장 ' + (r.readMs / 1000).toFixed(1) + '초' : '') + '</span>', 7000);
+        '<br><span style="font-size:12px;">' + esc(src) + (walkMs ? ' 훑기 ' + (walkMs / 1000).toFixed(1) + '초' : '') + ' · 사진 ' + items.length + '장 중 위치 있음 ' + r.list.length + '장' +
+        (r.readN ? ' · 새로 읽음 ' + r.readN + '장 ' + (r.readMs / 1000).toFixed(1) + '초' : '') + '</span>', 8000);
     } catch (e) {
       if (job) { if (cancelled(job)) return; done(); }
       if (e && e.name === 'AbortError') return;             // 폴더 고르기 취소
@@ -2725,12 +2752,15 @@
             '<label><input type="radio" name="phscope" value="view"' + (scope === 'view' ? ' checked' : '') + '>지금 지도 화면 안</label>' +
             '<label><input type="radio" name="phscope" value="all"' + (scope === 'all' ? ' checked' : '') + '>폴더 전체</label></div>' +
           '<div class="btns"><button class="pri" id="phScan">📱 휴대폰 사진 올리기</button>' + (phSupported() ? '<button id="phPick">폴더 바꾸기</button>' : '') + '</div>' +
+          '<div class="btns">' + (phSupported() ? '<button id="phFiles">📄 파일 앱에서 골라 올리기</button>' : '') + '<button id="phForget">위치 기억 지우기</button></div>' +
           '<div style="color:#888;font-size:12px;">보통 DCIM → Camera 폴더를 고르세요(하위 폴더 포함). 브라우저가 권한을 기억 못 해 쓸 때마다 「허용」을 한 번 묻습니다. ' +
             '이미 지도에 있는 사진은 빼고, 드라이브로 자동 업로드는 하지 않습니다. 지도 빈 곳을 길게 눌러도 됩니다. 범위는 드라이브 버튼과 같은 설정입니다.</div></div>';
       },
       bind: function () {
         $('phScan').onclick = function () { phoneScan(false); };
         if ($('phPick')) $('phPick').onclick = function () { phoneScan(true); };
+        if ($('phFiles')) $('phFiles').onclick = function () { phoneScan(false, true); };
+        $('phForget').onclick = function () { lsDel(LS_PHEX); toast('휴대폰 사진 위치 기억을 지웠습니다. 다음에 처음부터 다시 읽습니다.', 3000); };
         Array.prototype.forEach.call(document.querySelectorAll('input[name=phscope]'), function (r) {
           r.onchange = function () { lsSet(LS_SCOPE, r.value); updBtn(); };
         });

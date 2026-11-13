@@ -2621,8 +2621,8 @@
   //  · 범위는 드라이브 버튼과 같은 설정(gdrive_scope). 이미 지도에 있는 사진(이름·1km)은 뺌. 드라이브 자동 업로드는 안 함(_noUp).
   // 기억 값: [위도, 경도, 촬영] = 위치 있음 / ['n', 기종] = EXIF 는 있는데 위치만 없음(안드로이드가 지움?) / ['x'] = EXIF 없음 / ['e'] = 읽기 실패
   // 2026-11-13 오후: 휴대폰에서 '위치 못 읽음' 보고 → 사유를 나눠 세려고 기억 이름을 바꿈(옛 기억은 사유 없이 [] 라 버림)
-  var LS_PHEX = 'phone_exif_cache2', PH_DB = 'jty-photo', PH_HEAD = 131072;
-  lsDel('phone_exif_cache');
+  var LS_PHEX = 'phone_exif_cache3', PH_DB = 'jty-photo';
+  lsDel('phone_exif_cache'); lsDel('phone_exif_cache2');   // cache2 = 앞 128KB 만 읽어 '위치만 없음' 으로 잘못 기억된 것
   function phHasLoc(v) { return v && v.length >= 2 && typeof v[0] === 'number'; }
   var _phDir = null, _phDirOk = false;
   function phDb() {
@@ -2671,14 +2671,22 @@
     }
   }
   // 위치 읽기: [위도, 경도, 촬영일시 문자열] 또는 사유 코드(위 LS_PHEX 설명). 실제 삼성 사진(약 5MB)으로 앞 128KB 만 읽어도 전체와 같음 확인.
+  // 2026-11-13 저녁 고침: 앞 128KB 만 읽었더니 S22(SM-S901N) 사진 1444장이 전부 '위치만 없음' — 기종(IFD0)은 앞에 있지만 GPS 칸이 128KB 뒤에 있었던 것(추정).
+  // → 📂 의 readPhotoMetaFallback(index.html)과 똑같이 원본 File 전체를 넘긴다(exifr 은 필요한 조각만 골라 읽음) + XMP + exifr.gps() 한 번 더.
   async function phReadLoc(file) {
     if (!window.exifr) throw new Error('exifr 미로드');
-    var blob = /\.png$/i.test(file.name) ? file : file.slice(0, PH_HEAD);   // PNG 는 위치가 끝에 있을 수 있음
     var ex = null;
-    try { ex = await exifr.parse(blob, { tiff: true, exif: true, gps: true, xmp: false, icc: false, iptc: false, jfif: false, ihdr: false }); }
-    catch (e) { return ['e']; }
-    if (!ex || !Object.keys(ex).length) return ['x'];
-    if (typeof ex.latitude !== 'number' || !isFinite(ex.latitude) || (!ex.latitude && !ex.longitude)) return ['n', String(ex.Model || ex.Make || '')];
+    try { ex = await exifr.parse(file, { tiff: true, ifd0: true, exif: true, gps: true, xmp: true }); }
+    catch (e) { ex = null; }
+    var la = ex && ex.latitude, lo = ex && ex.longitude;
+    if (typeof la !== 'number' || typeof lo !== 'number') {
+      try { var g = await exifr.gps(file); if (g) { la = g.latitude; lo = g.longitude; } } catch (e) {}
+    }
+    if (!ex && typeof la !== 'number') return ['x'];
+    if (ex && !Object.keys(ex).length && typeof la !== 'number') return ['x'];
+    if (typeof la !== 'number' || !isFinite(la) || typeof lo !== 'number' || !isFinite(lo) || (!la && !lo)) return ['n', String(ex && (ex.Model || ex.Make) || '')];
+    ex = ex || {};
+    ex.latitude = la; ex.longitude = lo;
     var t = ex.DateTimeOriginal || ex.CreateDate || ex.ModifyDate;
     return [ex.latitude, ex.longitude, t instanceof Date ? t.toISOString() : String(t || '')];
   }

@@ -962,7 +962,7 @@
     }
     // 휴대폰에서 고른 사진 → 업로드 대기열 (드라이브에서 온 것·촬영 버튼 사진은 제외 — 촬영은 따로 넣음)
     if (uploadOn()) {
-      var imgs = out.filter(function (f) { return isImage(f) && !f._fromDrive && !f._fromCam; });
+      var imgs = out.filter(function (f) { return isImage(f) && !f._fromDrive && !f._fromCam && !f._noUp; });   // _noUp = 📱 휴대폰 사진 찾기(이미 휴대폰에 있는 사진)
       for (var j = 0; j < imgs.length; j++) imgs[j]._gdRec = await enqueue({ blob: imgs[j], name: imgs[j].name, key: imgs[j].name + '|' + imgs[j].size + '|' + (imgs[j].lastModified || 0) });
     }
     if (!out.length) return 0;
@@ -2539,8 +2539,172 @@
   document.head.appendChild(gcss);
   gear.onclick = function () { showSettings(); };
 
+  // ════ 📱 휴대폰 사진 찾기 (2026-11-13) — 드라이브 사진 찾기처럼, 휴대폰 폴더(DCIM/Camera 등)에서 화면 안 사진만 지도에 ════
+  //  · 웹앱은 갤러리를 스스로 못 뒤진다 → 사용자가 폴더를 한 번 고름(showDirectoryPicker). 손잡이는 IndexedDB 'jty-photo' 에 두고
+  //    다음엔 권한만 다시 묻는다(브라우저가 권한을 기억 못 함 — 이 기능을 쓸 때 한 번). 앱이 켜져 있는 동안은 안 물음.
+  //  · 안드로이드 사진 선택창은 위치를 지우므로(7절) 사진 선택창은 안 쓴다. 폴더 고르기가 없으면 accept 없는 파일 고르기(파일 앱)로 대신.
+  //  · 사진마다 앞 128KB 만 exifr 로 읽어 위치·촬영일시 → 결과는 이름|크기|수정시각 키로 localStorage 에 기억(다음엔 안 읽음).
+  //  · 범위는 드라이브 버튼과 같은 설정(gdrive_scope). 이미 지도에 있는 사진(이름·1km)은 뺌. 드라이브 자동 업로드는 안 함(_noUp).
+  var LS_PHEX = 'phone_exif_cache', PH_DB = 'jty-photo', PH_HEAD = 131072;
+  var _phDir = null, _phDirOk = false;
+  function phDb() {
+    return new Promise(function (res, rej) {
+      var r = indexedDB.open(PH_DB, 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('kv'); };
+      r.onsuccess = function () { res(r.result); }; r.onerror = function () { rej(r.error); };
+    });
+  }
+  function phKv(k, v) {
+    return phDb().then(function (db) {
+      return new Promise(function (res) {
+        var tx = db.transaction('kv', v === undefined ? 'readonly' : 'readwrite'), st = tx.objectStore('kv');
+        var rq = v === undefined ? st.get(k) : v === null ? st.delete(k) : st.put(v, k);
+        rq.onsuccess = function () { res(v === undefined ? rq.result : true); }; rq.onerror = function () { res(null); };
+      });
+    }).catch(function () { return null; });
+  }
+  phKv('dir').then(function (h) { if (h && !_phDir) _phDir = h; });
+  function phSupported() { return typeof window.showDirectoryPicker === 'function'; }
+  async function phPickDir() {
+    var h = await window.showDirectoryPicker({ id: 'jtyphoto', mode: 'read', startIn: 'pictures' });
+    _phDir = h; _phDirOk = true; phKv('dir', h);
+    return h;
+  }
+  async function phGetDir() {
+    if (_phDir) {
+      try {
+        if (_phDirOk || (await _phDir.queryPermission({ mode: 'read' })) === 'granted' ||
+            (await _phDir.requestPermission({ mode: 'read' })) === 'granted') { _phDirOk = true; return _phDir; }
+      } catch (e) { console.warn('[phone] 저장된 폴더 권한 실패', e); }
+    }
+    return phPickDir();
+  }
+  async function phWalk(dir, out, job, depth) {
+    for await (var ent of dir.values()) {
+      if (job.cancelled) return;
+      if (ent.name.charAt(0) === '.') continue;
+      if (ent.kind === 'directory') { if (depth < 6 && !/^(thumbnails|cache)$/i.test(ent.name)) await phWalk(ent, out, job, depth + 1); }
+      else if (/\.(jpe?g|png)$/i.test(ent.name)) out.push(ent);
+      if (out.length % 200 === 0) status('휴대폰 사진 찾는 중... ' + out.length + '장');
+    }
+  }
+  // 위치 읽기: [위도, 경도, 촬영일시 문자열] 또는 [] (위치 없음)
+  async function phReadLoc(file) {
+    if (!window.exifr) throw new Error('exifr 미로드');
+    var blob = /\.png$/i.test(file.name) ? file : file.slice(0, PH_HEAD);   // PNG 는 위치가 끝에 있을 수 있음
+    var ex = null;
+    try { ex = await exifr.parse(blob, { tiff: true, exif: true, gps: true, xmp: false, icc: false, iptc: false, jfif: false, ihdr: false }); } catch (e) {}
+    if ((!ex || typeof ex.latitude !== 'number') && blob !== file) {
+      try { ex = await exifr.parse(file, { tiff: true, exif: true, gps: true, xmp: true }); } catch (e) {}   // 앞부분에 없으면 전체(드묾)
+    }
+    if (!ex || typeof ex.latitude !== 'number' || !isFinite(ex.latitude) || (!ex.latitude && !ex.longitude)) return [];
+    var t = ex.DateTimeOriginal || ex.CreateDate || ex.ModifyDate;
+    return [ex.latitude, ex.longitude, t instanceof Date ? t.toISOString() : String(t || '')];
+  }
+  async function phCollect(files, job) {
+    var cache = lsJson(LS_PHEX) || {}, live = {}, res = [], noLoc = 0, readN = 0;
+    for (var i = 0; i < files.length; i++) {
+      if (job.cancelled) return null;
+      var f = files[i], key = f.name + '|' + f.size + '|' + (f.lastModified || 0), v = cache[key];
+      if (!v) {
+        try { v = await phReadLoc(f); } catch (e) { if (e.message === 'exifr 미로드') throw e; v = []; }
+        readN++;
+      }
+      live[key] = v;
+      if (v.length) res.push({ f: f, lat: v[0], lng: v[1], t: v[2] }); else noLoc++;
+      if (i % 25 === 0) status('휴대폰 사진 위치 읽는 중... ' + (i + 1) + ' / ' + files.length);
+    }
+    try { lsSet(LS_PHEX, JSON.stringify(live)); } catch (e) {}           // 지금 폴더에 있는 사진 몫만 남김
+    return { list: res, noLoc: noLoc, readN: readN };
+  }
+  async function phoneScan(pickNew) {
+    if (_busy) return;
+    var b = getBounds();
+    if (!b) return;
+    var all = getScope() === 'all', files = [];
+    closePanel();
+    var job = null;
+    try {
+      if (phSupported()) {
+        var dir = pickNew ? await phPickDir() : await phGetDir();
+        _busy = true; job = startJob();
+        status('휴대폰 사진 찾는 중...');
+        var hs = [];
+        await phWalk(dir, hs, job, 0);
+        if (cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
+        for (var i = 0; i < hs.length; i++) {
+          if (job.cancelled) break;
+          try { files.push(await hs[i].getFile()); } catch (e) {}
+        }
+      } else {
+        files = await new Promise(function (res) {
+          var inp = document.createElement('input');
+          inp.type = 'file'; inp.multiple = true;              // accept 를 주면 안드로이드가 위치 지우는 사진 선택창을 띄움 → 일부러 안 줌
+          inp.onchange = function () { res(Array.prototype.slice.call(inp.files || [])); };
+          inp.oncancel = function () { res([]); };
+          inp.click();
+        });
+        files = files.filter(isImage);
+        if (!files.length) return;
+        _busy = true; job = startJob();
+      }
+      if (cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
+      if (!files.length) { done(); alert('고른 폴더에 사진(JPG·PNG)이 없습니다.\n보통 DCIM → Camera 폴더를 고르세요.'); return; }
+      var r = await phCollect(files, job);
+      if (!r || cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
+      if (!r.list.length) {
+        done();
+        alert('위치(GPS)가 있는 사진이 없습니다. (사진 ' + files.length + '장)\n\n카메라 설정에서 「위치 태그」를 켰는지 확인하세요.'); return;
+      }
+      var onMap = onMapTest();
+      var pool = all ? r.list : r.list.filter(function (o) { return o.lat >= b.s && o.lat <= b.n && o.lng >= b.w && o.lng <= b.e; });
+      var list = pool.filter(function (o) { return !onMap(['', o.f.name, o.lat, o.lng]); });
+      console.log('[phone] 사진 ' + files.length + ' · 위치 있음 ' + r.list.length + ' · 새로 읽음 ' + r.readN + ' · 범위 안 ' + pool.length + ' · 올릴 것 ' + list.length);
+      if (!pool.length) {
+        done();
+        alert('이 화면 안에서 찍힌 휴대폰 사진이 없습니다.\n(위치 있는 사진 ' + r.list.length + '장 중)\n\n지도를 넓혀 보거나, 설정에서 "폴더 전체" 로 바꾸세요.'); return;
+      }
+      if (!list.length) { done(); alert((all ? '이 폴더' : '이 화면') + '의 휴대폰 사진 ' + pool.length + '장은 모두 이미 지도에 있습니다.'); return; }
+      hideLoading();
+      if (list.length > 30 && !confirm((all ? '폴더 전체에' : '이 화면 안에') + ' 휴대폰 사진 ' + list.length + '장이 있습니다.\n모두 지도에 올릴까요? (오래 걸릴 수 있음)')) { done(); return; }
+      status('지도에 사진 올리는 중... (0/' + list.length + ')');
+      list.sort(function (a, c) { return (a.t || '').localeCompare(c.t || ''); });
+      var fit = all ? listBounds(list.map(function (o) { return ['', '', o.lat, o.lng]; })) : b;
+      var feed = list.map(function (o) { o.f._noUp = true; return o.f; });
+      var nOk = await feedFiles(feed, job);
+      fitBounds(fit);
+      if (cancelled(job, '휴대폰 사진 올리기를 멈췄습니다. (' + nOk + '/' + list.length + '장 올림)')) return;
+      done();
+      toast('휴대폰 사진 ' + nOk + '장을 지도에 올렸습니다.' + (pool.length > list.length ? ' (이미 있던 ' + (pool.length - list.length) + '장 뺌)' : ''), 5000);
+    } catch (e) {
+      if (job) { if (cancelled(job)) return; done(); }
+      if (e && e.name === 'AbortError') return;             // 폴더 고르기 취소
+      console.warn('[phone]', e);
+      alert('휴대폰 사진 찾기 실패: ' + (e && e.message || e));
+    }
+  }
+  window.phoneScan = phoneScan;
+
   // 설정 창의 섹션들 — 다른 설정을 넣을 땐 여기에 {html, bind} 를 하나 더 (위에서부터 차례로 보인다)
   var SETTINGS_SECTIONS = [
+    { html: function () {
+        var scope = getScope();
+        return '<div class="sec" style="border-top:none;margin-top:4px;padding-top:0;"><b>📱 휴대폰 사진</b> <span style="color:#888;font-size:12px;">(위치 있는 사진을 지도에)</span>' +
+          '<div style="margin-top:4px;">찾는 폴더: <b>' + esc(phSupported() ? (_phDir ? _phDir.name : '아직 안 고름') : '쓸 때마다 사진 고르기') + '</b></div>' +
+          '<div class="net" style="margin-top:6px;">' +
+            '<label><input type="radio" name="phscope" value="view"' + (scope === 'view' ? ' checked' : '') + '>지금 지도 화면 안</label>' +
+            '<label><input type="radio" name="phscope" value="all"' + (scope === 'all' ? ' checked' : '') + '>폴더 전체</label></div>' +
+          '<div class="btns"><button class="pri" id="phScan">📱 휴대폰 사진 올리기</button>' + (phSupported() ? '<button id="phPick">폴더 바꾸기</button>' : '') + '</div>' +
+          '<div style="color:#888;font-size:12px;">보통 DCIM → Camera 폴더를 고르세요(하위 폴더 포함). 브라우저가 권한을 기억 못 해 쓸 때마다 「허용」을 한 번 묻습니다. ' +
+            '이미 지도에 있는 사진은 빼고, 드라이브로 자동 업로드는 하지 않습니다. 지도 빈 곳을 길게 눌러도 됩니다. 범위는 드라이브 버튼과 같은 설정입니다.</div></div>';
+      },
+      bind: function () {
+        $('phScan').onclick = function () { phoneScan(false); };
+        if ($('phPick')) $('phPick').onclick = function () { phoneScan(true); };
+        Array.prototype.forEach.call(document.querySelectorAll('input[name=phscope]'), function (r) {
+          r.onchange = function () { lsSet(LS_SCOPE, r.value); updBtn(); };
+        });
+      } },
     { html: function () {
         var h = '<div class="sec" style="border-top:none;margin-top:4px;padding-top:0;"><b>🗺 지도 파일</b> <span style="color:#888;font-size:12px;">(PC 「🛰 지도저장」·지도 다운로더 .mbtiles)</span>';
         if (!fsSupported()) {
@@ -3342,6 +3506,7 @@
       ['📐 면적 재기', function () { startMeasure('area', lat, lng); }],
       ['🧭 길찾기', function () { openRouteStartMenu(lat, lng, cx, cy); }],
       ['🗺 지적도 불러오기', function () { window.loadCadastralAt(lat, lng); }],
+      ['📱 휴대폰 사진 올리기', function () { window.phoneScan && window.phoneScan(false); }],
       ['📤 공유하기', function () { openShareLocation(lat, lng); }]
     ]);
   };

@@ -2713,7 +2713,7 @@ async function readPhotoMetaFallback(file) {
   out.diag = out.lat != null ? 'GPS 읽음'
     : (!ex || Object.keys(ex).length === 0)
       ? 'EXIF 자체가 없음 — 사진이 재저장(스크린샷·메신저 경유 등)된 파일'
-      : 'EXIF 는 있는데 GPS 만 없음 — 안드로이드 갤러리 선택창이 위치를 지운 것.\n사진 고를 때 갤러리 말고 "파일" 앱으로 선택하세요.';
+      : 'EXIF 는 있는데 GPS 만 없음 — 안드로이드가 넘겨줄 때 위치를 지운 것.\n고르는 창에서 다른 파일 앱(예: 「파일관리자」)으로 사진을 고르세요.\n(「사진 및 동영상」·갤러리·「내 파일」은 위치가 지워짐)';
   return out;
 }
 

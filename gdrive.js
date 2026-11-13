@@ -2621,8 +2621,13 @@
   //  · 범위는 드라이브 버튼과 같은 설정(gdrive_scope). 이미 지도에 있는 사진(이름·1km)은 뺌. 드라이브 자동 업로드는 안 함(_noUp).
   // 기억 값: [위도, 경도, 촬영] = 위치 있음 / ['n', 기종] = EXIF 는 있는데 위치만 없음(안드로이드가 지움?) / ['x'] = EXIF 없음 / ['e'] = 읽기 실패
   // 2026-11-13 오후: 휴대폰에서 '위치 못 읽음' 보고 → 사유를 나눠 세려고 기억 이름을 바꿈(옛 기억은 사유 없이 [] 라 버림)
-  var LS_PHEX = 'phone_exif_cache3', PH_DB = 'jty-photo';
-  lsDel('phone_exif_cache'); lsDel('phone_exif_cache2');   // cache2 = 앞 128KB 만 읽어 '위치만 없음' 으로 잘못 기억된 것
+  // 2026-11-13 밤 결론: 안드로이드(2026년 변경)는 크롬에 넘기는 사진의 위치를 지운다 — 사진 및 동영상·갤러리·내 파일·폴더 모두.
+  //   크롬엔 ACCESS_MEDIA_LOCATION 이 없고 웹에서 요청할 길도 없음. **다른 파일 앱(사용자는 「파일관리자」, Material Files 등)으로 고르면 위치가 남는다(사용자 확인)** —
+  //   그 앱이 자기 권한으로 원본 파일을 읽어 넘기기 때문. 그래서 고르기 창 앞에 안내(phGuide)를 띄운다.
+  //   cache4: 열쇠 = 이름|크기(다른 앱이 넘긴 파일은 수정 시각이 매번 다를 수 있음), '위치만 없음'은 기억 안 함
+  //   (지워진 사본과 원본이 이름·크기가 같아서, 기본 고르기로 한 번 읽은 '없음' 이 다른 앱으로 고른 원본까지 가리면 안 됨).
+  var LS_PHEX = 'phone_exif_cache4', PH_DB = 'jty-photo', LS_PHGUIDE = 'phone_guide_off';
+  lsDel('phone_exif_cache'); lsDel('phone_exif_cache2'); lsDel('phone_exif_cache3');   // cache2·3 = 위치를 지운 사본으로 읽은 '위치만 없음' 투성이
   function phHasLoc(v) { return v && v.length >= 2 && typeof v[0] === 'number'; }
   var _phDir = null, _phDirOk = false;
   function phDb() {
@@ -2701,7 +2706,8 @@
       (other ? '\n· HEIC 등 다른 형식이라 건너뜀 ' + other + '장' : '');
     if (c.n && c.n >= (r.list.length + c.n) / 2)
       s += '\n\n위치만 빠진 사진이 많습니다. 안드로이드가 넘겨줄 때 위치를 지운 것입니다.' +
-        '\n고르는 창에서 「사진 및 동영상」(갤러리 사진 목록)으로 고르세요. 「내 파일」·폴더로 고르면 위치가 지워집니다.';
+        '\n고르는 창에서 다른 파일 앱(예: 「파일관리자」)을 골라 사진을 고르세요.' +
+        '\n「사진 및 동영상」·갤러리·「내 파일」로 고르면 위치가 지워집니다.';
     if (other && !items.length) s += '\n\n카메라 설정의 「고효율 사진(HEIF)」을 끄면 JPG 로 저장됩니다.';
     return s;
   }
@@ -2709,12 +2715,12 @@
   // 기억된 사진은 파일을 열지 않는다. 처음 보는 사진만 6개씩 동시에 열어 읽고, 150장마다 기억에 저장(멈춰도 다음에 이어서).
   async function phCollect(items, job, pfx) {
     var cache = lsJson(LS_PHEX) || {}, res = [], bad = [], todo = [], t0 = Date.now();
-    function keyOf(it) { return it.h ? pfx + it.path : it.f.name + '|' + it.f.size + '|' + (it.f.lastModified || 0); }
+    function keyOf(it) { return it.h ? pfx + it.path : it.f.name + '|' + it.f.size; }
     function put(it, v) { if (phHasLoc(v)) res.push({ it: it, lat: v[0], lng: v[1], t: v[2] }); else bad.push({ name: it.name, v: v && v.length ? v : ['x'] }); }
     items.forEach(function (it) {
       it.key = keyOf(it);
       var v = cache[it.key];
-      if (v && v[0] !== 'e') put(it, v);                  // 읽기 실패는 다시 읽어 봄
+      if (v && v[0] !== 'e' && v[0] !== 'n') put(it, v);  // 읽기 실패·위치만 없음은 다시 읽어 봄(위 cache4 설명)
       else todo.push(it);
     });
     if (pfx) {                                             // 이 폴더에서 없어진 사진 몫은 기억에서 지움(다른 폴더 몫은 그대로)
@@ -2728,7 +2734,7 @@
         var it = todo[idx++], v;
         try { var f = it.f || (it.f = await it.h.getFile()); v = await phReadLoc(f); }
         catch (e) { if (e.message === 'exifr 미로드') { fatal = e; return; } v = ['e']; }
-        cache[it.key] = v;
+        if (v[0] === 'n') delete cache[it.key]; else cache[it.key] = v;
         put(it, v);
         if (it.h) it.f = null;                             // 열어 둔 파일은 놓아 줌(올릴 사진만 나중에 다시 엶)
         n++;
@@ -2750,8 +2756,37 @@
     if (job.cancelled) return null;
     return { list: res, bad: bad, readN: n, readMs: Date.now() - t0 };
   }
-  // 기본 = 사진 고르기(📂 버튼과 같은 accept → 크롬 「사진 및 동영상」). 2026-11-13 사용자 S22 실측: 폴더(DCIM)·accept 없는 파일 고르기·「내 파일」은
-  // 안드로이드가 GPS 를 지우고 넘김(1444/1444장 위치만 없음), 📂 의 사진 고르기는 위치가 남음(사용자 확인). useDir = 예전 폴더 훑기(지금 UI 에선 안 씀).
+  // 고르기 창을 열기 전 안내 — 「다른 파일 앱으로 고르기」(위 cache4 설명). '다음부터 안 보기' 면 바로 연다.
+  // open() 은 버튼 click 안에서 바로 불러야 한다(파일 고르기 창은 사용자 손짓 안에서만 열림). 뒤로가기로 닫히면 아무 일 없음.
+  function phGuide(open, cancel) {
+    if (lsGet(LS_PHGUIDE) === '1') { open(); return; }
+    var all = getScope() === 'all';
+    var bg = document.createElement('div');
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9500;display:flex;align-items:center;justify-content:center;';
+    bg.innerHTML = '<div style="background:#fff;border-radius:14px;padding:18px 18px 14px;width:300px;max-width:calc(100vw - 32px);box-shadow:0 4px 24px rgba(0,0,0,.25);font-size:14px;line-height:1.55;color:#333;">' +
+      '<div style="font-weight:700;font-size:15px;margin-bottom:8px;">📱 휴대폰 사진 올리기</div>' +
+      '<div style="color:#c62828;font-size:12.5px;margin-bottom:8px;">「사진 및 동영상」·갤러리·「내 파일」로 고르면 안드로이드가 위치를 지웁니다.</div>' +
+      '① 다음 창에서 <b>다른 파일 앱</b>(예: 「파일관리자」)을 고르고<br>' +
+      '② <b>DCIM → Camera</b> 폴더에서<br>' +
+      '③ <b>모두 선택</b>(또는 여러 장) → 고르기' +
+      '<div style="color:#666;font-size:12.5px;margin-top:8px;">고른 사진 중 ' + (all ? '위치가 있는 사진을 <b>모두</b> 올립니다(설정: 폴더 전체).' : '위치가 <b>지금 지도 화면 안</b>인 사진만 올립니다.') + ' 이미 지도에 있는 사진은 뺍니다.</div>' +
+      '<label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:13px;color:#555;"><input type="checkbox" id="phGuideOff">다음부터 이 안내 보지 않기</label>' +
+      '<div style="display:flex;gap:8px;margin-top:12px;">' +
+        '<button data-k="go" style="flex:1;padding:11px;border:none;border-radius:10px;background:#1a73e8;color:#fff;font-size:14px;font-weight:600;">고르기 창 열기</button>' +
+        '<button data-k="no" style="flex:0 0 76px;padding:11px;border:none;border-radius:10px;background:#f1f3f4;color:#555;font-size:14px;">취소</button></div></div>';
+    bg.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('button');
+      if (!b && e.target !== bg) return;                    // 상자 안 빈 곳·체크 상자는 무시
+      if (b && b.dataset.k === 'go') {
+        if (bg.querySelector('#phGuideOff').checked) lsSet(LS_PHGUIDE, '1');
+        bg.remove(); open();
+      } else { bg.remove(); cancel(); }
+    });
+    document.body.appendChild(bg);
+  }
+  // 기본 = 파일 고르기(📂 버튼과 같은 accept). 사진만 받는 accept 로 바꾸면 크롬이 안드로이드 사진 고르기를 바로 띄워 다른 파일 앱을 고를 수 없다 — 바꾸지 말 것.
+  // 2026-11-13 사용자 S22 실측: 폴더(DCIM)·「내 파일」·「사진 및 동영상」 모두 GPS 를 지우고 넘김, 다른 파일 앱으로 고르면 위치가 남음.
+  // useDir = 예전 폴더 훑기(지금 UI 에선 안 씀 — 폴더 고르기는 안드로이드 문서 창만 되고 다른 파일 앱이 끼지 못해 늘 위치가 지워짐).
   async function phoneScan(pickNew, useDir) {
     if (_busy) return;
     var b = getBounds();
@@ -2771,14 +2806,16 @@
         if (cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
       } else {
         var files = await new Promise(function (res) {
-          var inp = document.createElement('input');
-          inp.type = 'file'; inp.multiple = true;
-          // 📂 fileInput 과 글자 하나까지 같은 accept — 같은 고르기 창이 떠야 한다(📂 로는 위치가 읽혔음, 사용자 확인). 고른 것 중 JPG·PNG 만 씀.
-          var fi = document.getElementById('fileInput');
-          inp.accept = (fi && fi.accept) || '.kmz,.zip,.kml,.htm,.html,image/jpeg,image/png,.jpg,.jpeg,.png';
-          inp.onchange = function () { res(Array.prototype.slice.call(inp.files || [])); };
-          inp.oncancel = function () { res([]); };
-          inp.click();
+          phGuide(function () {
+            var inp = document.createElement('input');
+            inp.type = 'file'; inp.multiple = true;
+            // 📂 fileInput 과 같은 accept(지도 파일 + 사진) — 크롬이 앱 고르는 창을 띄워 다른 파일 앱을 고를 수 있다. 고른 것 중 JPG·PNG 만 씀.
+            var fi = document.getElementById('fileInput');
+            inp.accept = (fi && fi.accept) || '.kmz,.zip,.kml,.htm,.html,image/jpeg,image/png,.jpg,.jpeg,.png';
+            inp.onchange = function () { res(Array.prototype.slice.call(inp.files || [])); };
+            inp.oncancel = function () { res([]); };
+            inp.click();
+          }, function () { res([]); });
         });
         src = '사진 고르기';
         other = files.filter(function (f) { return /\.(heic|heif|dng|webp)$/i.test(f.name); }).length;
@@ -2836,13 +2873,15 @@
             '<label><input type="radio" name="phscope" value="view"' + (scope === 'view' ? ' checked' : '') + '>지금 지도 화면 안</label>' +
             '<label><input type="radio" name="phscope" value="all"' + (scope === 'all' ? ' checked' : '') + '>폴더 전체</label></div>' +
           '<div class="btns"><button class="pri" id="phScan">📱 휴대폰 사진 올리기</button><button id="phForget">위치 기억 지우기</button></div>' +
-          '<div style="color:#888;font-size:12px;">고르는 창에서 <b>「사진 및 동영상」</b>으로 사진을 여러 장 고르면(날짜 묶음째 골라도 됨) 그중 위치가 범위 안인 것만 올립니다. ' +
-            '「내 파일」·폴더로 고르면 안드로이드가 위치를 지웁니다. ' +
-            '이미 지도에 있는 사진은 빼고, 드라이브로 자동 업로드는 하지 않습니다. 지도 빈 곳을 길게 눌러도 됩니다. 범위는 드라이브 버튼과 같은 설정입니다.</div></div>';
+          '<div style="color:#888;font-size:12px;">고르는 창에서 <b>다른 파일 앱</b>(예: 「파일관리자」)을 골라 DCIM → Camera 사진을 모두(또는 여러 장) 고르면 그중 위치가 범위 안인 것만 올립니다. ' +
+            '「사진 및 동영상」·갤러리·「내 파일」로 고르면 안드로이드가 위치를 지웁니다. ' +
+            '이미 지도에 있는 사진은 빼고, 드라이브로 자동 업로드는 하지 않습니다. 지도 빈 곳을 길게 눌러도 됩니다. 범위는 드라이브 버튼과 같은 설정입니다.' +
+            (lsGet(LS_PHGUIDE) === '1' ? ' <a href="#" id="phGuideOn" style="color:#1a73e8;">안내 창 다시 보기</a>' : '') + '</div></div>';
       },
       bind: function () {
         $('phScan').onclick = function () { phoneScan(false); };
         $('phForget').onclick = function () { lsDel(LS_PHEX); toast('휴대폰 사진 위치 기억을 지웠습니다. 다음에 처음부터 다시 읽습니다.', 3000); };
+        if ($('phGuideOn')) $('phGuideOn').onclick = function (e) { e.preventDefault(); lsDel(LS_PHGUIDE); this.remove(); toast('다음에 휴대폰 사진 올리기를 누르면 안내 창이 다시 나옵니다.', 3000); };
         Array.prototype.forEach.call(document.querySelectorAll('input[name=phscope]'), function (r) {
           r.onchange = function () { lsSet(LS_SCOPE, r.value); updBtn(); };
         });

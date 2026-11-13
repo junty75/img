@@ -2692,8 +2692,8 @@
       (c.e ? '\n· 읽기 실패 ' + c.e + '장' : '') +
       (other ? '\n· HEIC 등 다른 형식이라 건너뜀 ' + other + '장' : '');
     if (c.n && c.n >= (r.list.length + c.n) / 2)
-      s += '\n\n위치만 빠진 사진이 많습니다. 카메라 「위치 태그」가 켜져 있는데도 이렇다면 안드로이드가 이 경로로 넘겨줄 때 위치를 지운 것입니다.' +
-        '\n⚙ 설정의 「📄 파일 앱에서 골라 올리기」로도 해 보고 결과를 비교해 주세요.';
+      s += '\n\n위치만 빠진 사진이 많습니다. 안드로이드가 넘겨줄 때 위치를 지운 것입니다.' +
+        '\n고르는 창에서 「사진 및 동영상」(갤러리 사진 목록)으로 고르세요. 「내 파일」·폴더로 고르면 위치가 지워집니다.';
     if (other && !items.length) s += '\n\n카메라 설정의 「고효율 사진(HEIF)」을 끄면 JPG 로 저장됩니다.';
     return s;
   }
@@ -2742,8 +2742,9 @@
     if (job.cancelled) return null;
     return { list: res, bad: bad, readN: n, readMs: Date.now() - t0 };
   }
-  // forceFiles = 폴더 고르기 대신 파일 고르기(파일 앱) — 위치가 지워지는 경로인지 비교용
-  async function phoneScan(pickNew, forceFiles) {
+  // 기본 = 사진 고르기(📂 버튼과 같은 accept → 크롬 「사진 및 동영상」). 2026-11-13 사용자 S22 실측: 폴더(DCIM)·accept 없는 파일 고르기·「내 파일」은
+  // 안드로이드가 GPS 를 지우고 넘김(1444/1444장 위치만 없음), 📂 의 사진 고르기는 위치가 남음(사용자 확인). useDir = 예전 폴더 훑기(지금 UI 에선 안 씀).
+  async function phoneScan(pickNew, useDir) {
     if (_busy) return;
     var b = getBounds();
     if (!b) return;
@@ -2751,7 +2752,7 @@
     closePanel();
     var job = null;
     try {
-      if (phSupported() && !forceFiles) {
+      if (useDir && phSupported()) {
         var dir = pickNew ? await phPickDir() : await phGetDir();
         _busy = true; job = startJob();
         status('휴대폰 폴더 훑는 중...');
@@ -2763,12 +2764,15 @@
       } else {
         var files = await new Promise(function (res) {
           var inp = document.createElement('input');
-          inp.type = 'file'; inp.multiple = true;              // accept 를 주면 안드로이드가 위치 지우는 사진 선택창을 띄움 → 일부러 안 줌
+          inp.type = 'file'; inp.multiple = true;
+          // 📂 fileInput 과 글자 하나까지 같은 accept — 같은 고르기 창이 떠야 한다(📂 로는 위치가 읽혔음, 사용자 확인). 고른 것 중 JPG·PNG 만 씀.
+          var fi = document.getElementById('fileInput');
+          inp.accept = (fi && fi.accept) || '.kmz,.zip,.kml,.htm,.html,image/jpeg,image/png,.jpg,.jpeg,.png';
           inp.onchange = function () { res(Array.prototype.slice.call(inp.files || [])); };
           inp.oncancel = function () { res([]); };
           inp.click();
         });
-        src = '파일 고르기';
+        src = '사진 고르기';
         other = files.filter(function (f) { return /\.(heic|heif|dng|webp)$/i.test(f.name); }).length;
         items = files.filter(function (f) { return /\.(jpe?g|png)$/i.test(f.name) || /^image\/(jpeg|png)$/.test(f.type || ''); }).map(function (f) { return { f: f, name: f.name }; });
         if (!items.length) { if (files.length) alert('JPG·PNG 사진이 없습니다.' + (other ? '\nHEIC 등 다른 형식 ' + other + '장은 위치를 못 읽습니다.' : '')); return; }
@@ -2820,19 +2824,16 @@
     { html: function () {
         var scope = getScope();
         return '<div class="sec" style="border-top:none;margin-top:4px;padding-top:0;"><b>📱 휴대폰 사진</b> <span style="color:#888;font-size:12px;">(위치 있는 사진을 지도에)</span>' +
-          '<div style="margin-top:4px;">찾는 폴더: <b>' + esc(phSupported() ? (_phDir ? _phDir.name : '아직 안 고름') : '쓸 때마다 사진 고르기') + '</b></div>' +
           '<div class="net" style="margin-top:6px;">' +
             '<label><input type="radio" name="phscope" value="view"' + (scope === 'view' ? ' checked' : '') + '>지금 지도 화면 안</label>' +
             '<label><input type="radio" name="phscope" value="all"' + (scope === 'all' ? ' checked' : '') + '>폴더 전체</label></div>' +
-          '<div class="btns"><button class="pri" id="phScan">📱 휴대폰 사진 올리기</button>' + (phSupported() ? '<button id="phPick">폴더 바꾸기</button>' : '') + '</div>' +
-          '<div class="btns">' + (phSupported() ? '<button id="phFiles">📄 파일 앱에서 골라 올리기</button>' : '') + '<button id="phForget">위치 기억 지우기</button></div>' +
-          '<div style="color:#888;font-size:12px;">보통 DCIM → Camera 폴더를 고르세요(하위 폴더 포함). 브라우저가 권한을 기억 못 해 쓸 때마다 「허용」을 한 번 묻습니다. ' +
+          '<div class="btns"><button class="pri" id="phScan">📱 휴대폰 사진 올리기</button><button id="phForget">위치 기억 지우기</button></div>' +
+          '<div style="color:#888;font-size:12px;">고르는 창에서 <b>「사진 및 동영상」</b>으로 사진을 여러 장 고르면(날짜 묶음째 골라도 됨) 그중 위치가 범위 안인 것만 올립니다. ' +
+            '「내 파일」·폴더로 고르면 안드로이드가 위치를 지웁니다. ' +
             '이미 지도에 있는 사진은 빼고, 드라이브로 자동 업로드는 하지 않습니다. 지도 빈 곳을 길게 눌러도 됩니다. 범위는 드라이브 버튼과 같은 설정입니다.</div></div>';
       },
       bind: function () {
         $('phScan').onclick = function () { phoneScan(false); };
-        if ($('phPick')) $('phPick').onclick = function () { phoneScan(true); };
-        if ($('phFiles')) $('phFiles').onclick = function () { phoneScan(false, true); };
         $('phForget').onclick = function () { lsDel(LS_PHEX); toast('휴대폰 사진 위치 기억을 지웠습니다. 다음에 처음부터 다시 읽습니다.', 3000); };
         Array.prototype.forEach.call(document.querySelectorAll('input[name=phscope]'), function (r) {
           r.onchange = function () { lsSet(LS_SCOPE, r.value); updBtn(); };

@@ -8,7 +8,8 @@
   var SCOPE = 'https://www.googleapis.com/auth/drive';
   var LS_CID = 'gdrive_client_id', LS_TOK = 'gdrive_token', LS_PEND = 'gdrive_pending',
       LS_STATE = 'gdrive_state', LS_CACHE = 'gdrive_list_cache2', LS_FOLDER = 'gdrive_folder',
-      LS_UPF = 'gdrive_up_folder', LS_UPNET = 'gdrive_up_net', LS_UPQ = 'gdrive_up_q', LS_CAMSAVE = 'gdrive_cam_save', LS_METAP = 'gdrive_meta_pend', LS_SCOPE = 'gdrive_scope';
+      LS_UPF = 'gdrive_up_folder', LS_UPNET = 'gdrive_up_net', LS_UPQ = 'gdrive_up_q', LS_CAMSAVE = 'gdrive_cam_save', LS_METAP = 'gdrive_meta_pend', LS_SCOPE = 'gdrive_scope',
+      LS_CAMPEND = 'cam_pending', LS_CAMLOG = 'cam_log';
   // 업로드 사진 용량 (map.html 의 사진용량 선택과 같은 단계). 0 = 원본. 고른 값은 LS_UPQ 에 기억
   var UPQ_OPTS = [[100, '100KB↓'], [200, '200KB↓'], [300, '300KB↓'], [500, '500KB↓'], [800, '800KB↓'], [1024, '1MB↓'], [0, '원본']];
   try { localStorage.removeItem('gdrive_list_cache'); } catch (e) {}   // 폴더 정보 없는 옛 캐시 (2026-10-03)
@@ -985,11 +986,45 @@
 
   // ════ EXIF 기록 워커 — 페이지(메인 스레드)에서 큰 사진을 다루면 지도 백화가 났던 이력 ════
   // 지도 쪽 writePhotoMeta 와 보조 함수를 그대로 워커에 옮겨 같은 결과를 낸다(_fixExif 정규화 포함).
-  var _exW = null, _exSeq = 0, _exCb = {};
-  function exifWorker() {
+  // 2026-11-13: 예전엔 워커가 piexif 를 인터넷(CDN)에서 importScripts 했다 → 현장(신호 약함)에서 받기가 걸리면
+  // 사진마다 '사진 정리 중' 60초(용량 줄이기면 120초), 걸린 워커를 계속 써서 다음 사진도 똑같이 멈췄다(PC 재현).
+  // → 페이지가 이미 받아 둔 piexif 원문(서비스워커 라이브러리 캐시·브라우저 캐시)을 워커 안에 그대로 넣는다. 못 구하면 예전처럼 importScripts.
+  //   워커가 준비됐는지 'ping' 으로 확인(5초) — 안 되면 버리고 원본 사용, 다음 사진 때 새로 띄움.
+  var PIEXIF_URL = 'https://cdn.jsdelivr.net/npm/piexifjs';
+  var _exW = null, _exSeq = 0, _exCb = {}, _exReady = null, _pxSrc = null;
+  function piexifSrc() {
+    if (_pxSrc) return Promise.resolve(_pxSrc);
+    var ac = window.AbortController ? new AbortController() : null;
+    var to = setTimeout(function () { try { ac && ac.abort(); } catch (e) {} }, 4000);
+    return fetch(PIEXIF_URL, { cache: 'force-cache', signal: ac ? ac.signal : undefined })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+      .then(function (t) { clearTimeout(to); if (!/piexif/.test(t)) throw new Error('내용 이상'); _pxSrc = t; return t; })
+      .catch(function (e) { clearTimeout(to); console.warn('[exif] piexif 원문 못 구함 — importScripts 로', e.message || e); return null; });
+  }
+  function exifKill(why) {
+    try { _exW && _exW.terminate(); } catch (e) {}
+    var cbs = _exCb; _exCb = {}; _exW = null; _exReady = null;
+    Object.keys(cbs).forEach(function (k) { cbs[k]({ err: why }); });
+  }
+  // 준비된 워커를 돌려주는 Promise (5초 안에 준비 안 되면 실패)
+  function exifWorkerReady() {
+    if (_exReady) return _exReady;
+    var p = _exReady = piexifSrc().then(function (px) {
+      var w = exifWorker(px);
+      return new Promise(function (res, rej) {
+        var id = ++_exSeq;
+        var to = setTimeout(function () { delete _exCb[id]; exifKill('EXIF 도구 준비 안 됨(신호 약함?)'); rej(new Error('EXIF 도구 준비 안 됨(신호 약함?)')); }, 5000);
+        _exCb[id] = function (d) { clearTimeout(to); if (d.err) rej(new Error(d.err)); else res(w); };
+        w.postMessage({ id: id, ping: 1 });
+      });
+    });
+    p.catch(function () { if (_exReady === p) _exReady = null; });
+    return p;
+  }
+  function exifWorker(px) {
     if (_exW) return _exW;
     var fns = ['_xpBytes', '_xpStr', '_gpsRat', 'exifNow', '_fixExif', '_exifSafeCarry', 'writePhotoMeta'];
-    var src = 'self.window = self; importScripts("https://cdn.jsdelivr.net/npm/piexifjs");\n'
+    var src = 'self.window = self;\n' + (px ? px + '\n;self.piexif = self.piexif || window.piexif;\n' : 'importScripts("' + PIEXIF_URL + '");\n')
       + fns.map(function (n) { return String(window[n] || eval(n)); }).join('\n') + '\n'
       + 'function _rd(b) { return new FileReaderSync().readAsDataURL(new Blob([b], { type: "image/jpeg" })); }\n'   // 형식 표시가 비면 piexif 가 JPEG 아님으로 거부
       // 용량 줄이기 (map.html 사진용량과 같은 방식: 긴 변 1920 → 화질을 낮춰 목표 이하. 그래도 크면 크기를 더 줄임)
@@ -1008,6 +1043,7 @@
       + '  bmp.close(); return out;'
       + '}\n'
       + 'onmessage = async function (e) { var d = e.data; try {'
+      + '  if (d.ping) { if (typeof piexif === "undefined") throw new Error("piexif 없음"); postMessage({ id: d.id }); return; }'
       + '  var url = _rd(d.blob);'
       + '  if (d.kb > 0) {'
       + '    var cu = _rd(await _shrink(d.blob, d.kb)), ex = null;'
@@ -1026,23 +1062,23 @@
     // piexif 를 못 받으면(오프라인에서 처음 띄울 때) 워커가 죽는다 → 기다리던 작업을 바로 실패시키고 다음에 새로 띄움
     _exW.onerror = function (ev) {
       try { ev.preventDefault(); } catch (e) {}
-      var cbs = _exCb; _exCb = {}; _exW = null;
-      Object.keys(cbs).forEach(function (k) { cbs[k]({ err: 'EXIF 도구를 못 불러옴(오프라인?)' }); });
+      exifKill('EXIF 도구를 못 불러옴(오프라인?)');
     };
     return _exW;
   }
-  // 인터넷 될 때 미리 띄워 둔다 — 띄울 때 piexif 를 받아 두므로 나중에 산속(오프라인)에서 찍어도 동작
-  setTimeout(function () { try { if (navigator.onLine) exifWorker(); } catch (e) {} }, 3000);
-  window.addEventListener('online', function () { try { exifWorker(); } catch (e) {} });
+  // 미리 띄워 둔다(시작 3초 뒤·온라인 될 때). 원문을 페이지 캐시에서 가져오므로 오프라인이어도 대개 된다.
+  setTimeout(function () { exifWorkerReady().catch(function () {}); }, 3000);
+  window.addEventListener('online', function () { exifWorkerReady().catch(function () {}); });
   // meta = { title, desc, lat, lng, taken } — 주는 항목만 기록, 나머지 EXIF 는 유지.
   // kb > 0 이면 그 용량 이하 JPEG 로 줄인 뒤 기록(이땐 PNG 등도 가능), 0 이면 JPEG 만.
   function writeMetaBlob(blob, meta, kb) {
-    return new Promise(function (res, rej) {
-      var w; try { w = exifWorker(); } catch (er) { rej(er); return; }
-      var id = ++_exSeq;
-      var to = setTimeout(function () { delete _exCb[id]; rej(new Error('EXIF 기록 시간 초과')); }, 60000);
-      _exCb[id] = function (d) { clearTimeout(to); if (d.err) rej(new Error(d.err)); else res(d.blob); };
-      w.postMessage({ id: id, blob: blob, meta: meta || {}, kb: kb || 0 });
+    return exifWorkerReady().then(function (w) {
+      return new Promise(function (res, rej) {
+        var id = ++_exSeq;
+        var to = setTimeout(function () { delete _exCb[id]; exifKill('EXIF 기록 시간 초과'); rej(new Error('EXIF 기록 시간 초과')); }, 60000);
+        _exCb[id] = function (d) { clearTimeout(to); if (d.err) rej(new Error(d.err)); else res(d.blob); };
+        w.postMessage({ id: id, blob: blob, meta: meta || {}, kb: kb || 0 });
+      });
     });
   }
 
@@ -1058,13 +1094,48 @@
         function () { res(null); }, { enableHighAccuracy: true, timeout: 30000, maximumAge: 60000 });
     });
     camInput.value = '';
+    camLog('카메라 열기');
+    lsSet(LS_CAMPEND, String(Date.now()));
     camInput.click();
   }
+  // ── 촬영 알아채기·기록 (2026-11-13, 사용자 「현장에서 📷 찍고 확인을 눌렀는데 안 올라가서 4번 만에 됨」) ──
+  //  카메라 앱이 떠 있는 동안 안드로이드가 메모리 부족으로 지도 앱을 정리하면, 돌아올 때 앱이 다시 시작돼 사진이 전달되지 않는다(가장 유력, 확인 전).
+  //  📷 를 누를 때 localStorage 에 표시(LS_CAMPEND) → ① 사진을 받으면 지움 ② 앱이 다시 시작됐는데 표시가 남아 있으면 '앱이 다시 시작됨'
+  //  ③ 앱은 그대로인데 돌아온 뒤 6초 안에 사진이 안 오면 '사진 못 받음'. 기록(LS_CAMLOG, 최근 30개)은 ⚙ 설정 「📷 촬영 기록」에서 본다.
+  function camLog(ev) {
+    var a = lsJson(LS_CAMLOG) || [], d = new Date(), p = function (n) { return String(n).padStart(2, '0'); };
+    a.push(p(d.getMonth() + 1) + '/' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + ' ' + ev);
+    lsSet(LS_CAMLOG, JSON.stringify(a.slice(-30)));
+  }
+  function camPending() { var t = parseInt(lsGet(LS_CAMPEND) || '0', 10); return t && Date.now() - t < 15 * 60000 ? t : 0; }
+  (function () {                                            // 페이지가 (다시) 열릴 때
+    var t = camPending();
+    if (!t) { lsDel(LS_CAMPEND); return; }
+    lsDel(LS_CAMPEND);
+    camLog('앱이 다시 시작됨 — 카메라를 연 지 ' + Math.round((Date.now() - t) / 1000) + '초, 사진 못 받음');
+    setTimeout(function () {
+      alert('카메라를 쓰는 동안 휴대폰이 지도 앱을 다시 시작해서 방금 찍은 사진을 받지 못했습니다.\n' +
+        '(메모리가 모자랄 때 안드로이드가 뒤에 있는 앱을 정리합니다)\n\n📷 로 다시 찍어 주세요. 다른 앱을 닫아 두면 덜 생깁니다.');
+    }, 2500);
+  })();
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || !camPending()) return;
+    camLog('카메라에서 돌아옴');
+    setTimeout(function () {
+      if (!camPending()) return;                            // 그새 사진을 받았거나 취소
+      lsDel(LS_CAMPEND);
+      camLog('돌아온 뒤 사진이 안 옴');
+      toast('카메라에서 사진을 받지 못했습니다. 📷 로 다시 찍어 주세요.', 6000);
+    }, 6000);
+  });
+  camInput.addEventListener('cancel', function () { lsDel(LS_CAMPEND); camLog('촬영 취소'); });
   camInput.onchange = function () {
     var file = camInput.files && camInput.files[0];
-    if (!file) return;
+    lsDel(LS_CAMPEND);
+    camLog(file ? '사진 받음 ' + Math.round(file.size / 1024) + 'KB' : '사진 없이 돌아옴');
+    if (!file) { toast('카메라에서 사진을 받지 못했습니다. 📷 로 다시 찍어 주세요.', 6000); return; }
     askMeta({ title: '', desc: '', preview: file, isNew: true }, function (meta) {
-      if (meta) processShot(file, meta);
+      if (meta) processShot(file, meta); else camLog('사진 버림');
     });
   };
   // 제목·설명 입력 창 (촬영 직후 / 찍은 사진 목록에서 수정)
@@ -1101,6 +1172,7 @@
   }
   async function processShot(file, meta) {
     status('사진 정리 중...');
+    var t0 = Date.now();
     try {
       var m = { title: meta.title, desc: meta.desc };
       var fb = null;
@@ -1113,7 +1185,7 @@
       var out = file, full = file, kb = getUpKB(), isJpg = /jpe?g$/i.test(file.type) || /\.jpe?g$/i.test(file.name);
       var name = shotName(meta.title);
       // 휴대폰 저장용 = 원본 화질 + 제목·설명·위치 EXIF. 드라이브가 와이파이 대기 중일 때 지도에서 지워도 남도록
-      if (isJpg) { try { full = await writeMetaBlob(file, m, 0); } catch (e) { console.warn('EXIF 기록 실패 — 원본 사용', e); } }
+      if (isJpg) { try { full = await writeMetaBlob(file, m, 0); } catch (e) { console.warn('EXIF 기록 실패 — 원본 사용', e); camLog('EXIF 기록 실패(원본 사용): ' + e.message); } }
       if (camSaveOn()) {
         try { var su = URL.createObjectURL(full); await downloadPhoto(su, name); setTimeout(function () { URL.revokeObjectURL(su); }, 15000); }
         catch (e) { console.warn('휴대폰 저장 실패', e); }
@@ -1130,8 +1202,9 @@
       // 대기열에 먼저 넣어 번호를 받고, 마커에 그 번호를 달아 둔다(사진 정보 수정 때 드라이브 파일을 찾으려고)
       f2._gdRec = await enqueue({ blob: f2, name: name, title: meta.title, desc: meta.desc, cam: true, hold: !uploadOn() });
       await feedFiles([f2]);
+      camLog('지도에 올림 (' + ((Date.now() - t0) / 1000).toFixed(1) + '초)');
       pump();
-    } catch (e) { hideLoading(); alert('사진 처리 실패: ' + e.message); }
+    } catch (e) { hideLoading(); camLog('처리 실패: ' + e.message); alert('사진 처리 실패: ' + e.message); }
   }
 
   // ════ 업로드 대기열 (IndexedDB 'gdrive_up') ════
@@ -2820,7 +2893,14 @@
         tileCount().then(function (n) { var el = $('gdTileInfo'); if (el) el.textContent = tileInfoText(n); });
         $('gdPre').onclick = function () { preloadTiles(+$('gdPreLv').value); };
         $('gdTileClr').onclick = function () { clearTiles(showSettings); };
-      } }
+      } },
+    { html: function () {                                   // 📷 촬영 기록 — 현장에서 사진이 안 올라갈 때 원인 확인용
+        var a = (lsJson(LS_CAMLOG) || []).slice(-12).reverse();
+        return '<div class="sec"><b>📷 촬영 기록</b> <span style="color:#888;font-size:12px;">(사진이 안 올라갈 때 이 화면을 보내 주세요)</span>' +
+          '<div style="margin-top:4px;font-size:12px;line-height:1.6;white-space:pre-line;">' + (a.length ? esc(a.join('\n')) : '기록 없음') + '</div>' +
+          (a.length ? '<div class="btns"><button id="gsCamLogClr">기록 지우기</button></div>' : '') + '</div>';
+      },
+      bind: function () { if ($('gsCamLogClr')) $('gsCamLogClr').onclick = function () { lsDel(LS_CAMLOG); showSettings(); }; } }
   ];
   function showSettings() {
     openPanel('<b style="font-size:15px;">⚙️ 설정</b>' + SETTINGS_SECTIONS.map(function (s) { return s.html(); }).join('') +

@@ -244,6 +244,7 @@
     '#gdBox .path{font-size:14px;font-weight:600;color:#1a73e8;word-break:break-all;}' +
     '#gdBox .btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}' +
     '#gdBox .net label{display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:14px;}' +
+    '#loadingMsg{white-space:pre-line;}' +           // 로딩 문구 줄바꿈(\n) — showLoading 은 textContent 로 넣는다
     '#gdBox .prev{display:block;max-width:100%;max-height:30vh;margin:6px auto 10px;border-radius:8px;}';
   document.head.appendChild(css);
 
@@ -1741,7 +1742,7 @@
     var job = startJob(), ok = [], bad = [];
     _merging = true;
     for (var i = 0; i < files.length && !job.cancelled; i++) {
-      var f = files[i], label = '지도 파일 가져오는 중 (' + (i + 1) + '/' + files.length + ')<br>' + esc(f.name);
+      var f = files[i], label = '지도 파일 가져오는 중 (' + (i + 1) + '/' + files.length + ')\n' + f.name;
       try { await fsImportOne(f, job, label); ok.push(f.name); }
       catch (e) { if (!job.cancelled) { bad.push(f.name + '(' + (e && e.why || fsErrText(e)) + ')'); console.warn('[지도 파일] 가져오기 실패', f.name, e); } }
     }
@@ -1795,7 +1796,7 @@
         var r = await rd.read();
         if (r.done) break;
         await w.write(r.value); got += r.value.byteLength;
-        if (Date.now() - t0 > 400) { t0 = Date.now(); status(label + '<br>앱 안으로 옮기는 중 ' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB'); }
+        if (Date.now() - t0 > 400) { t0 = Date.now(); status(label + '\n앱 안으로 옮기는 중 ' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB'); }
       }
       await w.close(); w = null;
     } finally {
@@ -1848,7 +1849,7 @@
     if (!resume) {
       try { await fsRoomCheck(f.size, f.name, true); } catch (e) { alert('못 가져왔습니다: ' + f.name + '\n(' + (e.why || fsErrText(e)) + ')'); return; }
     }
-    var job = startJob(), label = '드라이브에서 받는 중<br>' + esc(f.name), why = null, keep = false;
+    var job = startJob(), label = '드라이브에서 받는 중\n' + f.name, why = null, keep = false;
     _merging = true;
     wakeOn();
     try {
@@ -1948,7 +1949,7 @@
     var onJobAbort = function () { if (ac) ac.abort(); };
     document.addEventListener('visibilitychange', onVis);
     if (job.ac) job.ac.signal.addEventListener('abort', onJobAbort);
-    if (resume && got) status(label + '<br>받은 곳(' + (got / P2).toFixed(0) + 'MB)부터 이어 받는 중...');
+    if (resume && got) status(label + '\n받은 곳(' + (got / P2).toFixed(0) + 'MB)부터 이어 받는 중...');
     try {
       while (got < f.size) {
         if (job.cancelled) throw { name: '취소' };
@@ -1982,7 +1983,7 @@
             if (Date.now() - t0 > 500) {
               t0 = Date.now();
               var sp = (got - g0) / Math.max(1, (Date.now() - tS) / 1000);
-              status(label + '<br>' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB · ' + (sp / P2).toFixed(1) + 'MB/초' +
+              status(label + '\n' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB · ' + (sp / P2).toFixed(1) + 'MB/초' +
                      (sp > 0 ? ' · 남은 ' + Math.ceil((f.size - got) / sp / 60) + '분' : '') + '<br><span style="font-size:12px;">화면을 끄면 멈추고, 다시 켜면 이어 받습니다</span>');
             }
           }
@@ -1993,7 +1994,7 @@
           if (e && e.auth) continue;                               // 토큰 지움 → 위에서 다시 로그인
           if (e && (e.name === 'Range 안 됨' || e.status === 404 || e.status === 403)) throw e;
           if (++tries > 30) throw e;
-          status(label + '<br>연결이 끊겨 다시 잇는 중... (' + tries + ')<br>' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB');
+          status(label + '\n연결이 끊겨 다시 잇는 중... (' + tries + ')\n' + (got / P2).toFixed(0) + ' / ' + (f.size / P2).toFixed(0) + 'MB');
           await fsWaitNet(Math.min(30000, 2000 * tries));
         }
       }
@@ -2143,7 +2144,7 @@
         nk.push(pkKey(li, z, x, y)); no.push(pos); nl.push(d.byteLength);
         parts.push(d); pos += d.byteLength; pb += d.byteLength; cnt++;
         if (pb > 4 * P2) { await w.write(new Blob(parts)); parts = []; pb = 0; }
-        if (Date.now() - t0 > 400) { t0 = Date.now(); status(label + '<br>' + cnt + '장 · ' + ((pos - P.end) / P2).toFixed(0) + 'MB'); }
+        if (Date.now() - t0 > 400) { t0 = Date.now(); status(label + '\n' + cnt + '장 · ' + ((pos - P.end) / P2).toFixed(0) + 'MB'); }
       };
       status(label);
       m.bulk = true;
@@ -2579,13 +2580,16 @@
     }
     return phPickDir();
   }
-  async function phWalk(dir, out, job, depth) {
+  // 폴더 훑기 — 파일은 열지 않고 이름(상대 경로)만 모은다. 휴대폰(SAF)에선 파일 하나 여는 데(getFile) 시간이 걸려서
+  // 예전엔 수천 장을 전부 열었다(진행 표시도 없이 '찾는 중' 에 멈춘 것처럼 보임 — 2026-11-13 사용자 「너무 오래 걸려 못 쓰겠다」).
+  async function phWalk(dir, out, job, depth, pre, st) {
     for await (var ent of dir.values()) {
       if (job.cancelled) return;
       if (ent.name.charAt(0) === '.') continue;
-      if (ent.kind === 'directory') { if (depth < 6 && !/^(thumbnails|cache)$/i.test(ent.name)) await phWalk(ent, out, job, depth + 1); }
-      else if (/\.(jpe?g|png)$/i.test(ent.name)) out.push(ent);
-      if (out.length % 200 === 0) status('휴대폰 사진 찾는 중... ' + out.length + '장');
+      if (ent.kind === 'directory') {
+        if (depth < 6 && !/^(thumbnails|cache)$/i.test(ent.name)) { st.dirs++; await phWalk(ent, out, job, depth + 1, pre + ent.name + '/', st); }
+      } else if (/\.(jpe?g|png)$/i.test(ent.name)) out.push({ h: ent, name: ent.name, path: pre + ent.name });
+      if (Date.now() - st.shown > 400) { st.shown = Date.now(); status('휴대폰 폴더 훑는 중... 사진 ' + out.length + '장 (폴더 ' + st.dirs + '개)'); }
     }
   }
   // 위치 읽기: [위도, 경도, 촬영일시 문자열] 또는 [] (위치 없음)
@@ -2594,72 +2598,94 @@
     var blob = /\.png$/i.test(file.name) ? file : file.slice(0, PH_HEAD);   // PNG 는 위치가 끝에 있을 수 있음
     var ex = null;
     try { ex = await exifr.parse(blob, { tiff: true, exif: true, gps: true, xmp: false, icc: false, iptc: false, jfif: false, ihdr: false }); } catch (e) {}
-    if ((!ex || typeof ex.latitude !== 'number') && blob !== file) {
-      try { ex = await exifr.parse(file, { tiff: true, exif: true, gps: true, xmp: true }); } catch (e) {}   // 앞부분에 없으면 전체(드묾)
-    }
     if (!ex || typeof ex.latitude !== 'number' || !isFinite(ex.latitude) || (!ex.latitude && !ex.longitude)) return [];
     var t = ex.DateTimeOriginal || ex.CreateDate || ex.ModifyDate;
     return [ex.latitude, ex.longitude, t instanceof Date ? t.toISOString() : String(t || '')];
   }
-  async function phCollect(files, job) {
-    var cache = lsJson(LS_PHEX) || {}, live = {}, res = [], noLoc = 0, readN = 0;
-    for (var i = 0; i < files.length; i++) {
-      if (job.cancelled) return null;
-      var f = files[i], key = f.name + '|' + f.size + '|' + (f.lastModified || 0), v = cache[key];
-      if (!v) {
-        try { v = await phReadLoc(f); } catch (e) { if (e.message === 'exifr 미로드') throw e; v = []; }
-        readN++;
-      }
-      live[key] = v;
-      if (v.length) res.push({ f: f, lat: v[0], lng: v[1], t: v[2] }); else noLoc++;
-      if (i % 25 === 0) status('휴대폰 사진 위치 읽는 중... ' + (i + 1) + ' / ' + files.length);
+  // items: [{h, name, path}](폴더) 또는 [{f, name}](파일 고르기). 위치는 기억(LS_PHEX)에서 — 폴더는 '폴더이름/상대경로' 가 열쇠라
+  // 기억된 사진은 파일을 열지 않는다. 처음 보는 사진만 6개씩 동시에 열어 읽고, 150장마다 기억에 저장(멈춰도 다음에 이어서).
+  async function phCollect(items, job, pfx) {
+    var cache = lsJson(LS_PHEX) || {}, res = [], noLoc = 0, todo = [], t0 = Date.now();
+    function keyOf(it) { return it.h ? pfx + it.path : it.f.name + '|' + it.f.size + '|' + (it.f.lastModified || 0); }
+    items.forEach(function (it) {
+      it.key = keyOf(it);
+      var v = cache[it.key];
+      if (v) { if (v.length) res.push({ it: it, lat: v[0], lng: v[1], t: v[2] }); else noLoc++; }
+      else todo.push(it);
+    });
+    if (pfx) {                                             // 이 폴더에서 없어진 사진 몫은 기억에서 지움(다른 폴더 몫은 그대로)
+      var seen = {}; items.forEach(function (it) { seen[it.key] = 1; });
+      Object.keys(cache).forEach(function (k) { if (k.indexOf(pfx) === 0 && !seen[k]) delete cache[k]; });
     }
-    try { lsSet(LS_PHEX, JSON.stringify(live)); } catch (e) {}           // 지금 폴더에 있는 사진 몫만 남김
-    return { list: res, noLoc: noLoc, readN: readN };
+    var n = 0, idx = 0, lastSave = 0, fatal = null;
+    function save() { try { lsSet(LS_PHEX, JSON.stringify(cache)); } catch (e) {} }
+    async function worker() {
+      while (idx < todo.length && !job.cancelled && !fatal) {
+        var it = todo[idx++], v;
+        try { var f = it.f || (it.f = await it.h.getFile()); v = await phReadLoc(f); }
+        catch (e) { if (e.message === 'exifr 미로드') { fatal = e; return; } v = []; }
+        cache[it.key] = v;
+        if (v.length) res.push({ it: it, lat: v[0], lng: v[1], t: v[2] }); else noLoc++;
+        if (it.h) it.f = null;                             // 열어 둔 파일은 놓아 줌(올릴 사진만 나중에 다시 엶)
+        n++;
+        if (n - lastSave >= 150) { lastSave = n; save(); }
+        if (n % 10 === 0 || n === todo.length) {
+          var sec = (Date.now() - t0) / 1000, left = Math.round(sec / n * (todo.length - n));
+          status('처음 보는 사진 위치 읽는 중... ' + n + ' / ' + todo.length +
+            (n >= 20 && left > 5 ? '\n남은 시간 약 ' + (left >= 90 ? Math.round(left / 60) + '분' : left + '초') : '') +
+            '\n(한 번 읽은 사진은 기억해 다음부터는 바로 찾습니다)');
+        }
+      }
+    }
+    if (todo.length) {
+      status('처음 보는 사진 위치 읽는 중... 0 / ' + todo.length);
+      await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+    }
+    save();
+    if (fatal) throw fatal;
+    if (job.cancelled) return null;
+    return { list: res, noLoc: noLoc, readN: n, readMs: Date.now() - t0 };
   }
   async function phoneScan(pickNew) {
     if (_busy) return;
     var b = getBounds();
     if (!b) return;
-    var all = getScope() === 'all', files = [];
+    var all = getScope() === 'all', items = [], pfx = '', walkMs = 0;
     closePanel();
     var job = null;
     try {
       if (phSupported()) {
         var dir = pickNew ? await phPickDir() : await phGetDir();
         _busy = true; job = startJob();
-        status('휴대폰 사진 찾는 중...');
-        var hs = [];
-        await phWalk(dir, hs, job, 0);
+        status('휴대폰 폴더 훑는 중...');
+        var tw = Date.now();
+        await phWalk(dir, items, job, 0, '', { dirs: 0, shown: 0 });
+        walkMs = Date.now() - tw;
+        pfx = 'd:' + dir.name + '/';
         if (cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
-        for (var i = 0; i < hs.length; i++) {
-          if (job.cancelled) break;
-          try { files.push(await hs[i].getFile()); } catch (e) {}
-        }
       } else {
-        files = await new Promise(function (res) {
+        var files = await new Promise(function (res) {
           var inp = document.createElement('input');
           inp.type = 'file'; inp.multiple = true;              // accept 를 주면 안드로이드가 위치 지우는 사진 선택창을 띄움 → 일부러 안 줌
           inp.onchange = function () { res(Array.prototype.slice.call(inp.files || [])); };
           inp.oncancel = function () { res([]); };
           inp.click();
         });
-        files = files.filter(isImage);
-        if (!files.length) return;
+        items = files.filter(isImage).map(function (f) { return { f: f, name: f.name }; });
+        if (!items.length) return;
         _busy = true; job = startJob();
       }
-      if (cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
-      if (!files.length) { done(); alert('고른 폴더에 사진(JPG·PNG)이 없습니다.\n보통 DCIM → Camera 폴더를 고르세요.'); return; }
-      var r = await phCollect(files, job);
-      if (!r || cancelled(job, '휴대폰 사진 찾기를 멈췄습니다.')) return;
+      if (!items.length) { done(); alert('고른 폴더에 사진(JPG·PNG)이 없습니다.\n보통 DCIM → Camera 폴더를 고르세요.'); return; }
+      var r = await phCollect(items, job, pfx);
+      if (!r || cancelled(job, '휴대폰 사진 찾기를 멈췄습니다. 읽은 데까지는 기억해 두어 다음에 이어서 읽습니다.')) return;
+      console.log('[phone] 훑기 ' + walkMs + 'ms · 사진 ' + items.length + ' · 새로 읽음 ' + r.readN + '장 ' + r.readMs + 'ms');
       if (!r.list.length) {
         done();
-        alert('위치(GPS)가 있는 사진이 없습니다. (사진 ' + files.length + '장)\n\n카메라 설정에서 「위치 태그」를 켰는지 확인하세요.'); return;
+        alert('위치(GPS)가 있는 사진이 없습니다. (사진 ' + items.length + '장)\n\n카메라 설정에서 「위치 태그」를 켰는지 확인하세요.'); return;
       }
       var onMap = onMapTest();
       var pool = all ? r.list : r.list.filter(function (o) { return o.lat >= b.s && o.lat <= b.n && o.lng >= b.w && o.lng <= b.e; });
-      var list = pool.filter(function (o) { return !onMap(['', o.f.name, o.lat, o.lng]); });
-      console.log('[phone] 사진 ' + files.length + ' · 위치 있음 ' + r.list.length + ' · 새로 읽음 ' + r.readN + ' · 범위 안 ' + pool.length + ' · 올릴 것 ' + list.length);
+      var list = pool.filter(function (o) { return !onMap(['', o.it.name, o.lat, o.lng]); });
       if (!pool.length) {
         done();
         alert('이 화면 안에서 찍힌 휴대폰 사진이 없습니다.\n(위치 있는 사진 ' + r.list.length + '장 중)\n\n지도를 넓혀 보거나, 설정에서 "폴더 전체" 로 바꾸세요.'); return;
@@ -2670,12 +2696,16 @@
       status('지도에 사진 올리는 중... (0/' + list.length + ')');
       list.sort(function (a, c) { return (a.t || '').localeCompare(c.t || ''); });
       var fit = all ? listBounds(list.map(function (o) { return ['', '', o.lat, o.lng]; })) : b;
-      var feed = list.map(function (o) { o.f._noUp = true; return o.f; });
+      var feed = [];
+      for (var q = 0; q < list.length; q++) {               // 올릴 사진만 연다
+        try { var ff = list[q].it.f || await list[q].it.h.getFile(); ff._noUp = true; feed.push(ff); } catch (e) {}
+      }
       var nOk = await feedFiles(feed, job);
       fitBounds(fit);
       if (cancelled(job, '휴대폰 사진 올리기를 멈췄습니다. (' + nOk + '/' + list.length + '장 올림)')) return;
       done();
-      toast('휴대폰 사진 ' + nOk + '장을 지도에 올렸습니다.' + (pool.length > list.length ? ' (이미 있던 ' + (pool.length - list.length) + '장 뺌)' : ''), 5000);
+      toast('휴대폰 사진 ' + nOk + '장을 지도에 올렸습니다.' + (pool.length > list.length ? ' (이미 있던 ' + (pool.length - list.length) + '장 뺌)' : '') +
+        '<br><span style="font-size:12px;">폴더 훑기 ' + (walkMs / 1000).toFixed(1) + '초 · 사진 ' + items.length + '장' + (r.readN ? ' · 새로 읽음 ' + r.readN + '장 ' + (r.readMs / 1000).toFixed(1) + '초' : '') + '</span>', 7000);
     } catch (e) {
       if (job) { if (cancelled(job)) return; done(); }
       if (e && e.name === 'AbortError') return;             // 폴더 고르기 취소

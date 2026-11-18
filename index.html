@@ -535,10 +535,11 @@ function scheduleAddrUpdate(lat, lng) {
       else if (gu && dong) text = `${gu} ${dong}`;
       else if (dong) text = dong;
       else text = addr?.address_name || '';
-      // 번지(지번) 추가
+      // 번지(지번) 추가 — 산번지는 '산67-9' (address_name 의 '산' 마디는 위 parts 에 섞이지만 번지는 여기서 붙임)
       const mainNo = addr?.main_address_no || '';
       const subNo  = addr?.sub_address_no  || '';
-      if (mainNo) text += ' ' + (subNo && subNo !== '0' ? `${mainNo}-${subNo}` : mainNo);
+      const san    = addr?.mountain_yn === 'Y' ? '산' : '';
+      if (mainNo) text += ' ' + san + (subNo && subNo !== '0' ? `${mainNo}-${subNo}` : mainNo);
       document.getElementById('address-display').textContent = text;
     });
   }, 600);
@@ -2205,7 +2206,7 @@ function lookupViewerAddr(lat, lng) {
   return new Promise(res => {
     if (typeof geocoder === 'undefined' || !geocoder) return res('');
     geocoder.coord2Address(lng, lat, (r, s) => {
-      res(s === kakao.maps.services.Status.OK && r[0] ? (r[0].address?.address_name || r[0].road_address?.address_name || '') : '');
+      res(s === kakao.maps.services.Status.OK && r[0] ? (r[0].address?.address_name || r[0].road_address?.address_name || '').replace(/(^|\s)산 (\d)/, '$1산$2') : '');   // '산 67-9' → '산67-9'
     });
   });
 }

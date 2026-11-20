@@ -2931,7 +2931,7 @@
     path.reverse();
     return { pts: path.map(ll), gapA: sa.d, gapB: sb.d };
   }
-  var VW_DATA_KEY = (typeof VWORLD_KEY !== 'undefined' && VWORLD_KEY) || 'EABC42F8-F1D3-4393-A966-38EE01F4B4C6';   // github.io 도메인 등록 키(브이월드 판과 같음)
+  var VW_DATA_KEY = (typeof VWORLD_KEY !== 'undefined' && VWORLD_KEY) || '55FD7275-A6F5-3B69-9966-CD4BFA2FD35F';   // github.io 도메인 등록 키(브이월드 판과 같음)
   var _vwCache = [];   // 최근 받은 상자 [url, feats] — 경로 다시 잇기 때 다시 안 받게
   function vwJsonp(url, ms) {
     return new Promise(function (res) {

@@ -1,9 +1,9 @@
-const CACHE_NAME = 'kmz-viewer-v39';   // 지도 파일에서 카카오 위성·하이브리드·일반, 브이월드 하이브리드·일반도 찾음 (2026-10-24)
+const CACHE_NAME = 'kmz-viewer-v40';   // 두 판 공통 함수를 viewercommon.js 로 분리 (2026-11-23)
 const SHARE_CACHE = 'shared-files';   // 공유받은 파일 임시 보관 (index.html이 소비 후 삭제)
 const TILE_CACHE  = 'map-tiles-v1';   // 지도 타일 (버전 올려도 지우지 않음 — 데이터 절약)
 const LIB_CACHE   = 'map-libs-v1';    // 지도 SDK·CDN 라이브러리
 const KEEP_CACHES = [CACHE_NAME, SHARE_CACHE, TILE_CACHE, LIB_CACHE];
-const STATIC_ASSETS = ['./index.html', './gdrive.js', './manifest.json'];
+const STATIC_ASSETS = ['./index.html', './viewercommon.js', './gdrive.js', './manifest.json'];
 
 const TILE_MAX = 8000;                 // 타일 최대 개수 (평균 20KB → 약 160MB, '지도 미리 받기' 3단계 한 번 ≈ 2500장). 넘으면 오래 저장된 것부터 삭제
 const DAY = 86400000;
